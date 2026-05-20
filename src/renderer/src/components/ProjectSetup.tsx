@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { FilePlus2, Search, Download, FolderOpen, Factory, Pin, PinOff, X, ShieldCheck, Users, UserPlus } from 'lucide-react'
+import { FilePlus2, Search, Download, FolderOpen, Factory, Pin, PinOff, X, Settings, Users, UserPlus } from 'lucide-react'
 import logoUrl from '../assets/logo.png'
 import BrowseProjects from './BrowseProjects'
 import TeamProjects from './TeamProjects'
@@ -15,8 +15,6 @@ interface Props {
    *  Manufacturing View (shop-floor mode). Disabled when there are no
    *  recent projects to open. */
   onEnterManufacturingView?: () => void
-  /** Triggered by the unlocked Admin Panel button (9-click easter egg).
-   *  Parent runs the existing PIN prompt → admin overlay flow. */
   onOpenAdmin?: () => void
   isLoading: boolean
   /**
@@ -222,32 +220,6 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
 
   const pinnedProjects = recentProjects.filter(p => p.pinned)
   const unpinnedProjects = recentProjects.filter(p => !p.pinned)
-
-  // Easter-egg unlock: persisted in localStorage by AdminPage's
-  // 9-click corner sequence. Once unlocked, the welcome screen shows
-  // a permanent Admin Panel button.
-  const [adminUnlocked, setAdminUnlocked] = useState(
-    () => localStorage.getItem('framecad-admin-shortcut-unlocked') === '1'
-  )
-  useEffect(() => {
-    const recheck = () =>
-      setAdminUnlocked(localStorage.getItem('framecad-admin-shortcut-unlocked') === '1')
-    // Same-window unlock (admin overlay closes back into the welcome
-    // screen). storage events only fire cross-window, so AdminPage
-    // dispatches a custom event we listen for here.
-    window.addEventListener('admin-shortcut-unlocked', recheck)
-    // Cross-window or external edit (rare).
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === 'framecad-admin-shortcut-unlocked') recheck()
-    }
-    window.addEventListener('storage', onStorage)
-    window.addEventListener('focus', recheck)
-    return () => {
-      window.removeEventListener('admin-shortcut-unlocked', recheck)
-      window.removeEventListener('storage', onStorage)
-      window.removeEventListener('focus', recheck)
-    }
-  }, [])
 
   // Logo double-click easter egg
   const logoRef = useRef<HTMLDivElement | null>(null)
@@ -736,14 +708,14 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
   if (mode === 'select') {
     return (
       <div className="setup-screen">
-        {adminUnlocked && onOpenAdmin && (
+        {onOpenAdmin && (
           <button
             className="welcome-admin-btn"
             onClick={onOpenAdmin}
-            title="Open the admin panel"
+            title="Settings"
           >
-            <ShieldCheck size={14} strokeWidth={1.75} />
-            <span>Admin Panel</span>
+            <Settings size={14} strokeWidth={1.75} />
+            <span>Settings</span>
           </button>
         )}
         <div ref={logoSpacerRef} className="setup-logo-spacer" aria-hidden="true" />

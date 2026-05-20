@@ -358,8 +358,14 @@ export default function App() {
     window.api.getRemoteAhead().then(setRemoteAhead).catch(() => {})
   }, [files, project])
 
+  const isTeamAdmin = !coordState.configured || coordState.currentUserRole === 'admin' || coordState.currentUserRole === 'mentor'
+
   const openAdminOverlay = useCallback(() => {
     if (showAdmin) return
+    if (!isTeamAdmin) {
+      setShowAdmin(true)
+      return
+    }
     if (adminPinPromptOpen) return
     window.api.adminPinRequired().then(required => {
       if (required) {
@@ -370,7 +376,7 @@ export default function App() {
     }).catch(() => {
       setAdminPinPromptOpen(true)
     })
-  }, [showAdmin, adminPinPromptOpen])
+  }, [showAdmin, adminPinPromptOpen, isTeamAdmin])
 
   const handleSidebarSelect = useCallback((section: SidebarSection) => {
     if (section === 'admin') {
@@ -780,6 +786,7 @@ export default function App() {
         {showAdmin && (
           <AdminPage
             hasProject={false}
+            isAdmin={isTeamAdmin}
             appVersion={appVersion}
             gitName={gitName}
             gitEmail={gitEmail}
@@ -1007,6 +1014,7 @@ export default function App() {
       {showAdmin && (
         <AdminPage
           hasProject={true}
+          isAdmin={isTeamAdmin}
           appVersion={appVersion}
           gitName={gitName}
           gitEmail={gitEmail}
@@ -1015,8 +1023,6 @@ export default function App() {
             setShowAdmin(false)
             refreshGlobalAdmin()
             refreshCoordState()
-            // Pick up any per-project AdminConfig changes (e.g. COTS
-            // toggle, mainRepoUrl) that the user just edited.
             refreshAdminConfig()
           }}
         />

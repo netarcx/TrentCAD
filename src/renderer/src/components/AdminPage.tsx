@@ -30,6 +30,7 @@ function topLevelOf(path: string): string {
 
 interface Props {
   hasProject: boolean
+  isAdmin: boolean
   onClose: () => void
   appVersion: string
   gitName: string
@@ -42,8 +43,8 @@ interface SidebarGroup {
   items: { id: AdminTab; label: string }[]
 }
 
-export default function AdminPage({ hasProject, onClose, appVersion, gitName, gitEmail, onProfileUpdate }: Props) {
-  const [tab, setTab] = useState<AdminTab>('team-settings')
+export default function AdminPage({ hasProject, isAdmin, onClose, appVersion, gitName, gitEmail, onProfileUpdate }: Props) {
+  const [tab, setTab] = useState<AdminTab>(isAdmin ? 'team-settings' : 'profile')
 
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
@@ -412,25 +413,17 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  // Hidden 9-click easter egg for admin shortcut
-  const [cornerClicks, setCornerClicks] = useState(0)
-  const [shortcutToast, setShortcutToast] = useState<string | null>(null)
-  useEffect(() => {
-    if (cornerClicks === 0) return
-    if (cornerClicks >= 9) {
-      localStorage.setItem('framecad-admin-shortcut-unlocked', '1')
-      window.dispatchEvent(new CustomEvent('admin-shortcut-unlocked'))
-      setShortcutToast('Admin shortcut unlocked — look for the button on the welcome screen.')
-      setCornerClicks(0)
-      const t = setTimeout(() => setShortcutToast(null), 4000)
-      return () => clearTimeout(t)
-    }
-    const t = setTimeout(() => setCornerClicks(0), 3000)
-    return () => clearTimeout(t)
-  }, [cornerClicks])
-
-  // Sidebar groups
+  // Sidebar groups — students see only Profile + About
   const sidebarGroups: SidebarGroup[] = useMemo(() => {
+    if (!isAdmin) {
+      return [{
+        label: '',
+        items: [
+          { id: 'profile', label: 'Profile' },
+          { id: 'about', label: 'About' },
+        ]
+      }]
+    }
     const groups: SidebarGroup[] = [
       {
         label: 'Team',
@@ -469,22 +462,16 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
       ]
     })
     return groups
-  }, [hasProject])
+  }, [hasProject, isAdmin])
 
   return (
     <div className="admin-fullscreen">
       <div className="admin-topbar">
-        <div className="admin-topbar-title">Admin {hasProject ? '' : '· Welcome screen'}</div>
+        <div className="admin-topbar-title">Settings</div>
         <div className="admin-topbar-actions">
           <button className="toolbar-btn" onClick={onClose}>Close (Esc)</button>
         </div>
       </div>
-      {shortcutToast && <div className="admin-shortcut-toast">{shortcutToast}</div>}
-      <div
-        className="admin-corner-tap"
-        onClick={() => setCornerClicks(c => c + 1)}
-        aria-hidden="true"
-      />
       <div className="admin-layout">
         <nav className="admin-sidebar">
           {sidebarGroups.map((group, gi) => (

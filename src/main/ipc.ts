@@ -13,7 +13,6 @@ import type { DocType } from './documents'
 import { scanLargeFiles } from './large-files'
 import * as metaOps from './meta'
 import * as exportQueue from './export-queue'
-import { isPinRequired, verifyPin } from './admin-pin'
 import {
   getGlobalAdminState,
   saveGlobalAdmin,
@@ -343,9 +342,6 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
       await shell.openExternal(url)
     }
   })
-
-  ipcMain.handle('admin-pin-required', () => isPinRequired())
-  ipcMain.handle('admin-pin-verify', (_e, pin: string) => verifyPin(pin))
 
   ipcMain.handle('get-admin-config', async () => {
     try { return await adminOps.loadAdminConfig() } catch { return {} }

@@ -2,12 +2,6 @@ import { resolve } from 'path'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 
-// Build-time injection of the admin-PIN hash. CI passes
-// FRAMECAD_ADMIN_PIN_HASH from a GitHub Actions secret; in dev / local
-// builds the var is empty and the admin page opens without a PIN
-// prompt (so devs aren't locked out).
-const adminPinHash = JSON.stringify(process.env.FRAMECAD_ADMIN_PIN_HASH || '')
-
 // Build-time defaults for the global admin settings (Team + Browse).
 // Sourced from GH Actions secrets; local clients override these via the
 // welcome-screen admin page, and their overrides survive app updates
@@ -35,7 +29,6 @@ export default defineConfig({
       }
     },
     define: {
-      __FRAMECAD_ADMIN_PIN_HASH__: adminPinHash,
       __FRAMECAD_DEFAULT_GITHUB_ORG__: defGhOrg,
       __FRAMECAD_DEFAULT_PROJECT_PREFIX__: defPrefix,
       __FRAMECAD_DEFAULT_TEAM_NAME__: defTeam,
@@ -69,7 +62,6 @@ export default defineConfig({
       }
     },
     define: {
-      __FRAMECAD_ADMIN_PIN_HASH__: adminPinHash,
       __FRAMECAD_DEFAULT_GITHUB_ORG__: defGhOrg,
       __FRAMECAD_DEFAULT_PROJECT_PREFIX__: defPrefix,
       __FRAMECAD_DEFAULT_TEAM_NAME__: defTeam,

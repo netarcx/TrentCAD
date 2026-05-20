@@ -11,7 +11,6 @@ import ProjectBrowser from './components/ProjectBrowser'
 import Toolbar from './components/Toolbar'
 import DetailsPanel from './components/DetailsPanel'
 import AdminPage from './components/AdminPage'
-import AdminPinPrompt from './components/AdminPinPrompt'
 import ManufacturingQueue from './components/ManufacturingQueue'
 import ManufacturingModeShell from './components/ManufacturingModeShell'
 import OnboardingTour from './components/OnboardingTour'
@@ -119,9 +118,7 @@ export default function App() {
     }
   }, [coordState, localGlobalAdmin])
 
-  // Welcome-screen admin (kept for when no project is open)
   const [showAdmin, setShowAdmin] = useState(false)
-  const [adminPinPromptOpen, setAdminPinPromptOpen] = useState(false)
 
   // Sidebar navigation (project view)
   const [activeSection, setActiveSection] = useState<SidebarSection>('files')
@@ -361,22 +358,8 @@ export default function App() {
   const isTeamAdmin = !coordState.configured || coordState.currentUserRole === 'admin' || coordState.currentUserRole === 'mentor'
 
   const openAdminOverlay = useCallback(() => {
-    if (showAdmin) return
-    if (!isTeamAdmin) {
-      setShowAdmin(true)
-      return
-    }
-    if (adminPinPromptOpen) return
-    window.api.adminPinRequired().then(required => {
-      if (required) {
-        setAdminPinPromptOpen(true)
-      } else {
-        setShowAdmin(true)
-      }
-    }).catch(() => {
-      setAdminPinPromptOpen(true)
-    })
-  }, [showAdmin, adminPinPromptOpen, isTeamAdmin])
+    if (!showAdmin) setShowAdmin(true)
+  }, [showAdmin])
 
   const handleSidebarSelect = useCallback((section: SidebarSection) => {
     if (section === 'admin') {
@@ -774,15 +757,6 @@ export default function App() {
           isLoading={isLoading}
           globalAdmin={globalAdmin}
         />
-        {adminPinPromptOpen && (
-          <AdminPinPrompt
-            onClose={() => setAdminPinPromptOpen(false)}
-            onSuccess={() => {
-              setAdminPinPromptOpen(false)
-              setShowAdmin(true)
-            }}
-          />
-        )}
         {showAdmin && (
           <AdminPage
             hasProject={false}
@@ -1001,15 +975,6 @@ export default function App() {
         )}
       </div>
 
-      {adminPinPromptOpen && (
-        <AdminPinPrompt
-          onClose={() => setAdminPinPromptOpen(false)}
-          onSuccess={() => {
-            setAdminPinPromptOpen(false)
-            setShowAdmin(true)
-          }}
-        />
-      )}
 
       {showAdmin && (
         <AdminPage

@@ -345,8 +345,6 @@ export interface IpcApi {
   listGitHubRepos(org: string, prefix?: string): Promise<{ success: boolean; repos: GitHubRepoSummary[]; error?: string }>
   createGitHubRepo(org: string, name: string, isPrivate: boolean, description?: string): Promise<{ success: boolean; url?: string; error?: string }>
   getAdminConfig(): Promise<AdminConfig>
-  adminPinRequired(): Promise<boolean>
-  adminPinVerify(pin: string): Promise<boolean>
   getGlobalAdmin(): Promise<GlobalAdminState>
   saveGlobalAdmin(config: GlobalAdminConfig): Promise<void>
   resetGlobalAdmin(): Promise<void>

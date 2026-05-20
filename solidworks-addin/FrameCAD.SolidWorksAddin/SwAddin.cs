@@ -157,12 +157,13 @@ namespace FrameCAD.SolidWorksAddin
                     catch { /* never throw from a SW event handler */ }
                     return 0;  // event handlers return HRESULT-like int
                 };
-                _massHookDestroyHandler = (int destroyType) =>
+                _massHookDestroyHandler = () =>
                 {
                     // Proactively clean up when the doc closes so we
                     // don't leak a stale PartDoc RCW until the next
                     // ActiveDocChangeNotify (which may not fire if
-                    // this was the last open document).
+                    // this was the last open document). DestroyNotify
+                    // delegate signature is int(void) — no args.
                     try { UnhookMassNotify(); } catch { /* best effort */ }
                     return 0;
                 };

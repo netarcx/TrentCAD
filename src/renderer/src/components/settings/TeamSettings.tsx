@@ -96,15 +96,15 @@ export default function TeamSettings() {
             {coordState.repoUrl}
           </p>
           {coordState.lastSyncAt && (
-            <p className="admin-hint" style={{ fontSize: '0.75rem', opacity: 0.6 }}>
+            <p className="admin-hint" style={{ opacity: 0.6 }}>
               Last synced: {new Date(coordState.lastSyncAt).toLocaleString()}
             </p>
           )}
-          <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
             <button className="toolbar-btn" onClick={refreshCoord} disabled={coordLoading}>
               {coordLoading ? 'Syncing...' : 'Sync Now'}
             </button>
-            <button className="toolbar-btn" onClick={handleDisconnect} style={{ color: 'var(--color-danger, #ef4444)' }}>
+            <button className="toolbar-btn" onClick={handleDisconnect} style={{ color: 'var(--red)' }}>
               Disconnect
             </button>
           </div>

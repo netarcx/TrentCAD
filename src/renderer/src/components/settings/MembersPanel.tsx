@@ -135,7 +135,7 @@ export default function MembersPanel() {
 
   return (
     <>
-      {error && <div className="form-error" style={{ margin: '0 0 1rem' }}>{error}</div>}
+      {error && <div className="form-error" style={{ marginBottom: 12 }}>{error}</div>}
       {status && <p className="admin-hint">{status}</p>}
 
       {isAdmin && pending.length > 0 && (
@@ -157,7 +157,7 @@ export default function MembersPanel() {
                     <td>{req.displayName}</td>
                     <td>@{req.githubUsername}</td>
                     <td>{new Date(req.requestedAt).toLocaleDateString()}</td>
-                    <td style={{ display: 'flex', gap: '0.25rem' }}>
+                    <td style={{ display: 'flex', gap: 4 }}>
                       <button className="toolbar-btn primary" onClick={() => handleApprove(req, 'student')}>
                         Approve
                       </button>
@@ -199,7 +199,7 @@ export default function MembersPanel() {
                         <select
                           value={m.role}
                           onChange={e => handleRoleChange(m.githubUsername, e.target.value as MemberRole)}
-                          style={{ padding: '0.15rem 0.25rem', fontSize: '0.8rem' }}
+                          style={{ padding: '2px 4px', fontSize: 12 }}
                         >
                           <option value="admin">Admin</option>
                           <option value="mentor">Mentor</option>
@@ -213,12 +213,12 @@ export default function MembersPanel() {
                     {isAdmin && (
                       <td>
                         {currentUsername && m.githubUsername.toLowerCase() === currentUsername.toLowerCase() ? (
-                          <span style={{ fontSize: '0.75rem', opacity: 0.5 }}>You</span>
+                          <span style={{ fontSize: 11, opacity: 0.5 }}>You</span>
                         ) : (
                           <button
                             className="toolbar-btn"
                             onClick={() => handleRemoveMember(m.githubUsername)}
-                            style={{ color: 'var(--color-danger, #ef4444)', fontSize: '0.75rem' }}
+                            style={{ color: 'var(--red)', fontSize: 11 }}
                           >
                             Remove
                           </button>
@@ -234,16 +234,16 @@ export default function MembersPanel() {
         {isAdmin && (
           <>
             {showAddForm ? (
-              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
-                <div className="form-group" style={{ flex: 1, minWidth: '120px' }}>
+              <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                <div className="form-group" style={{ flex: 1, minWidth: 120 }}>
                   <label>GitHub Username</label>
                   <input value={addUsername} onChange={e => setAddUsername(e.target.value)} placeholder="username" />
                 </div>
-                <div className="form-group" style={{ flex: 1, minWidth: '120px' }}>
+                <div className="form-group" style={{ flex: 1, minWidth: 120 }}>
                   <label>Display Name</label>
                   <input value={addDisplayName} onChange={e => setAddDisplayName(e.target.value)} placeholder="Jane Smith" />
                 </div>
-                <div className="form-group" style={{ minWidth: '80px' }}>
+                <div className="form-group" style={{ minWidth: 80 }}>
                   <label>Role</label>
                   <select value={addRole} onChange={e => setAddRole(e.target.value as MemberRole)}>
                     <option value="student">Student</option>
@@ -255,7 +255,7 @@ export default function MembersPanel() {
                 <button className="toolbar-btn" onClick={() => setShowAddForm(false)}>Cancel</button>
               </div>
             ) : (
-              <button className="toolbar-btn" onClick={() => setShowAddForm(true)} style={{ marginTop: '0.5rem' }}>
+              <button className="toolbar-btn" onClick={() => setShowAddForm(true)} style={{ marginTop: 8 }}>
                 + Add Member
               </button>
             )}

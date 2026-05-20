@@ -3601,40 +3601,6 @@ body.slam-shake {
   gap: 8px;
 }
 
-.admin-corner-tap {
-  position: absolute;
-  bottom: 0;
-  right: 0;
-  width: 40px;
-  height: 40px;
-  cursor: default;
-  z-index: 2001;
-  /* Invisible — only the click area matters. Tooltip-less by design so
-     the easter egg stays hidden until someone discovers it. Kept small
-     enough to avoid covering content scrollbars. */
-}
-
-.admin-shortcut-toast {
-  position: absolute;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 10px 18px;
-  background: var(--accent);
-  color: var(--bg-primary);
-  border-radius: var(--radius);
-  font-size: 13px;
-  font-weight: 600;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-  z-index: 2002;
-  animation: shortcut-toast-in 0.25s ease-out;
-}
-
-@keyframes shortcut-toast-in {
-  from { opacity: 0; transform: translate(-50%, 8px); }
-  to   { opacity: 1; transform: translate(-50%, 0); }
-}
-
 .admin-layout {
   flex: 1;
   display: flex;
@@ -3696,6 +3662,10 @@ body.slam-shake {
   padding: 24px 32px;
   overflow-y: auto;
   min-width: 0;
+}
+
+.admin-content > * {
+  max-width: 720px;
 }
 
 .admin-content h3 {
@@ -4129,6 +4099,62 @@ body.slam-shake {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 16px;
+}
+
+.admin-table-wrap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow-x: auto;
+  margin-top: 8px;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.admin-table th {
+  text-align: left;
+  padding: 8px 10px;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+}
+
+.admin-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.admin-table tr:last-child td {
+  border-bottom: none;
+}
+
+.admin-table tr:hover td {
+  background: var(--bg-secondary);
+}
+
+.admin-content .form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.admin-content .form-error,
+.settings-content .form-error {
+  padding: 8px 12px;
+  background: var(--red-tint);
+  color: var(--red);
+  border-radius: var(--radius);
+  font-size: 12px;
 }
 
 .admin-divider {

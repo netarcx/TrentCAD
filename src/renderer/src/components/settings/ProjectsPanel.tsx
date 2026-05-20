@@ -86,7 +86,7 @@ export default function ProjectsPanel() {
 
   return (
     <>
-      {error && <div className="form-error" style={{ margin: '0 0 1rem' }}>{error}</div>}
+      {error && <div className="form-error" style={{ marginBottom: 12 }}>{error}</div>}
       {status && <p className="admin-hint">{status}</p>}
 
       <div className="admin-section">
@@ -111,7 +111,7 @@ export default function ProjectsPanel() {
                 {projects.map(p => (
                   <tr key={p.repoUrl}>
                     <td>{p.name}</td>
-                    <td style={{ wordBreak: 'break-all', fontSize: '0.75rem' }}>
+                    <td style={{ wordBreak: 'break-all', fontSize: 11 }}>
                       {p.repoUrl.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '')}
                     </td>
                     <td>{p.description || '—'}</td>
@@ -120,7 +120,7 @@ export default function ProjectsPanel() {
                         <button
                           className="toolbar-btn"
                           onClick={() => handleRemoveProject(p.repoUrl)}
-                          style={{ color: 'var(--color-danger, #ef4444)', fontSize: '0.75rem' }}
+                          style={{ color: 'var(--red)', fontSize: 11 }}
                         >
                           Remove
                         </button>
@@ -135,16 +135,16 @@ export default function ProjectsPanel() {
         {isAdmin && (
           <>
             {showAddProject ? (
-              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
-                <div className="form-group" style={{ flex: 1, minWidth: '120px' }}>
+              <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                <div className="form-group" style={{ flex: 1, minWidth: 120 }}>
                   <label>Project Name</label>
                   <input value={projectName} onChange={e => setProjectName(e.target.value)} placeholder="2026 Robot" />
                 </div>
-                <div className="form-group" style={{ flex: 2, minWidth: '200px' }}>
+                <div className="form-group" style={{ flex: 2, minWidth: 200 }}>
                   <label>Repo URL</label>
                   <input value={projectUrl} onChange={e => setProjectUrl(e.target.value)} placeholder="https://github.com/org/repo.git" />
                 </div>
-                <div className="form-group" style={{ flex: 1, minWidth: '120px' }}>
+                <div className="form-group" style={{ flex: 1, minWidth: 120 }}>
                   <label>Description</label>
                   <input value={projectDesc} onChange={e => setProjectDesc(e.target.value)} placeholder="Optional" />
                 </div>
@@ -152,7 +152,7 @@ export default function ProjectsPanel() {
                 <button className="toolbar-btn" onClick={() => setShowAddProject(false)}>Cancel</button>
               </div>
             ) : (
-              <button className="toolbar-btn" onClick={() => setShowAddProject(true)} style={{ marginTop: '0.5rem' }}>
+              <button className="toolbar-btn" onClick={() => setShowAddProject(true)} style={{ marginTop: 8 }}>
                 + Add Project
               </button>
             )}

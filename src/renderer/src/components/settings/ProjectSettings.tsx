@@ -230,6 +230,7 @@ export default function ProjectSettings() {
           className="toolbar-btn"
           onClick={handleSyncCots}
           disabled={!config.cotsRepoUrl || syncingCots}
+          style={{ marginTop: 8 }}
         >
           {syncingCots ? 'Downloading...' : 'Download COTS now'}
         </button>

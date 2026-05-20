@@ -740,7 +740,7 @@ export default function AdminPage({ hasProject, isAdmin, onClose, appVersion, gi
               </p>
               <button
                 className="toolbar-btn"
-                style={{ color: 'var(--color-danger, #ef4444)', marginTop: '0.5rem' }}
+                style={{ color: 'var(--red)', marginTop: 8 }}
                 onClick={async () => {
                   if (!window.confirm('Reset FrameCAD to factory defaults? This clears all local settings and restarts the app.')) return
                   await window.api.resetAllAppState()

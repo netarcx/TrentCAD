@@ -96,6 +96,11 @@ namespace FrameCAD.SolidWorksAddin
         // Single-line manufacturing-notes summary inside the meta panel.
         // Hidden when no notes are set; ToolTip on hover shows the full text.
         private Label _lblMfgNotes;
+        // Two meta-panel heights captured at construction so showing /
+        // hiding the notes line only changes the panel size, not the
+        // y-position of every control inside.
+        private int _metaBaseHeight;
+        private int _metaHeightWithNotes;
         // True while we're programmatically setting the combo from
         // freshly-loaded metadata — suppresses the SelectedIndexChanged
         // handler from re-saving the state right back to the server.
@@ -450,21 +455,6 @@ namespace FrameCAD.SolidWorksAddin
             _pnlMeta.Controls.Add(_lstComments);
             y += 86;
 
-            _lblMfgNotes = new Label
-            {
-                Text = "",
-                ForeColor = CSubtext,
-                Font = new Font("Segoe UI Italic", 8.25f),
-                AutoSize = false,
-                AutoEllipsis = true,
-                Location = new Point(10, y),
-                Size = new Size(180, 16),
-                Visible = false
-            };
-            _pnlMeta.Controls.Add(_lblMfgNotes);
-            // Note: y is only incremented if the label is visible
-            // (handled in LayoutAll via Visible check).
-
             _txtComment = new TextBox
             {
                 BackColor = Color.FromArgb(60, 65, 77),
@@ -492,7 +482,29 @@ namespace FrameCAD.SolidWorksAddin
             _pnlMeta.Controls.Add(_btnAddComment);
             y += 28;
 
-            _pnlMeta.Height = y;
+            // Manufacturing-notes summary at the bottom of the meta
+            // panel. Placed last so showing/hiding it doesn't shove the
+            // other controls around — the parent ScrollableControl will
+            // grow/shrink as the panel height changes in UpdateMetaDisplay.
+            _lblMfgNotes = new Label
+            {
+                Text = "",
+                ForeColor = CSubtext,
+                Font = new Font("Segoe UI Italic", 8.25f),
+                AutoSize = false,
+                AutoEllipsis = true,
+                Location = new Point(10, y),
+                Size = new Size(180, 18),
+                Visible = false
+            };
+            _pnlMeta.Controls.Add(_lblMfgNotes);
+            // _metaBaseHeight = panel height without notes; the +22 form
+            // (height with notes visible) is applied dynamically in
+            // UpdateMetaDisplay so the panel doesn't reserve empty space
+            // for the common no-notes case.
+            _metaBaseHeight = y;
+            _metaHeightWithNotes = y + 22;
+            _pnlMeta.Height = _metaBaseHeight;
             Controls.Add(_pnlMeta);
 
             // "Newer version available" banner — separate panel so it can
@@ -751,6 +763,11 @@ namespace FrameCAD.SolidWorksAddin
                 _healthTimer?.Dispose();
                 _messageClearTimer?.Stop();
                 _messageClearTimer?.Dispose();
+                // ToolTip is a Component, not a Control — it doesn't get
+                // disposed automatically with our parent chain. Dispose
+                // it explicitly so its native tooltip window is freed
+                // when SW unloads the add-in.
+                _toolTip?.Dispose();
             }
             base.Dispose(disposing);
         }
@@ -1247,10 +1264,14 @@ namespace FrameCAD.SolidWorksAddin
                     _lblMfgNotes.Text = "Notes: " + notes;
                     _lblMfgNotes.Visible = true;
                     _toolTip.SetToolTip(_lblMfgNotes, meta.ManufacturingNotes);
+                    if (_pnlMeta.Height != _metaHeightWithNotes)
+                        _pnlMeta.Height = _metaHeightWithNotes;
                 }
                 else
                 {
                     _lblMfgNotes.Visible = false;
+                    if (_pnlMeta.Height != _metaBaseHeight)
+                        _pnlMeta.Height = _metaBaseHeight;
                 }
             }
 

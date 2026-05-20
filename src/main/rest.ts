@@ -211,6 +211,28 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         return
       }
 
+      case 'GET /api/coord-state': {
+        // Exposes the current user's coordination-repo role so the
+        // SolidWorks add-in can match desktop's role tiers (e.g. hide
+        // released/manufactured pills for students). Returns minimal
+        // surface — never the full members.json — so we don't leak the
+        // whole roster through the localhost API. Best-effort: any
+        // failure returns { configured: false, role: null } and the
+        // add-in falls back to allowing everything.
+        try {
+          const coord = await import('./coordination')
+          const state = await coord.getCoordinationState()
+          json(res, 200, {
+            configured: !!state.configured,
+            role: state.currentUserRole ?? null,
+            isMember: state.isMember ?? false
+          })
+        } catch {
+          json(res, 200, { configured: false, role: null, isMember: false })
+        }
+        return
+      }
+
       case 'POST /api/checkout': {
         const body = parseJson(await readBody(req)) as { path?: string } | null
         const safePath = sanitizeProjectRelPath(body?.path ?? null)

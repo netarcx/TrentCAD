@@ -17,6 +17,26 @@ namespace FrameCAD.SolidWorksAddin
         private bool _busy;
         private bool _disposed;
 
+        // Most-recently-fetched coordination-repo role for the current user.
+        // Default { Configured = false } makes IsMentor/IsAdmin true — so a
+        // standalone install (no coord repo) doesn't accidentally gate anyone
+        // out, and we open at most-permissive until we know better.
+        private CoordStateDto _coordState = new CoordStateDto { Configured = false };
+
+        // Shop-floor operator initials, prompted once per session when the
+        // user first marks a part manufactured. Mirrors the desktop kiosk's
+        // operator bar so attribution is consistent across surfaces.
+        private string _operatorInitials = "";
+
+        // Latest fetched metadata for the active file — kept so the
+        // "View all" comments link can show the full thread without a
+        // re-fetch round-trip.
+        private PartMetaDto _currentMeta;
+
+        // ToolTip provider for the action buttons. Owns its own
+        // lifetime tied to the control's Dispose.
+        private readonly ToolTip _toolTip = new ToolTip { AutoPopDelay = 8000, InitialDelay = 350, ReshowDelay = 200 };
+
         private const int Pad = 12;
         private const int BtnHeight = 44;
         private const int BtnGap = 6;
@@ -73,6 +93,9 @@ namespace FrameCAD.SolidWorksAddin
         private ListBox _lstComments;
         private TextBox _txtComment;
         private Button _btnAddComment;
+        // Single-line manufacturing-notes summary inside the meta panel.
+        // Hidden when no notes are set; ToolTip on hover shows the full text.
+        private Label _lblMfgNotes;
         // True while we're programmatically setting the combo from
         // freshly-loaded metadata — suppresses the SelectedIndexChanged
         // handler from re-saving the state right back to the server.
@@ -211,27 +234,46 @@ namespace FrameCAD.SolidWorksAddin
             // --- Buttons ---
             _btnCheckOut = MakeButton("Check Out");
             _btnCheckOut.Click += async (s, e) => await DoCheckOut();
+            _toolTip.SetToolTip(_btnCheckOut,
+                "Reserve this file for editing. Until you check it back in, " +
+                "no one else on the team can edit it. (Assemblies also reserve " +
+                "their child parts.)");
             Controls.Add(_btnCheckOut);
 
             _btnCheckIn = MakeButton("Check In");
             _btnCheckIn.Click += async (s, e) => await DoCheckIn();
+            _toolTip.SetToolTip(_btnCheckIn,
+                "Release your hold on this file so others can edit it. " +
+                "Doesn't publish your edits — use Upload for that.");
             Controls.Add(_btnCheckIn);
 
             _btnSync = MakeButton("Download");
             _btnSync.Click += async (s, e) => await DoSync();
+            _toolTip.SetToolTip(_btnSync,
+                "Pull the latest team changes from GitHub. Run this before " +
+                "starting work so you're not editing a stale version.");
             Controls.Add(_btnSync);
 
             _btnPublish = MakeButton("Upload");
             _btnPublish.Click += async (s, e) => await DoPublish();
+            _toolTip.SetToolTip(_btnPublish,
+                "Push your changes to GitHub so the team sees them. Asks " +
+                "you for a short note describing what changed.");
             Controls.Add(_btnPublish);
 
             _btnNewPart = MakeButton("New Part / Assembly");
             _btnNewPart.Click += async (s, e) => await DoNewPart();
+            _toolTip.SetToolTip(_btnNewPart,
+                "Create a new part or assembly already named with the next " +
+                "team part number, dropped into the right subsystem folder.");
             Controls.Add(_btnNewPart);
 
             _btnFillTitleBlock = MakeButton("Fill Title Block");
             _btnFillTitleBlock.Click += async (s, e) => await DoFillTitleBlock();
             _btnFillTitleBlock.Visible = false;  // only for .slddrw documents
+            _toolTip.SetToolTip(_btnFillTitleBlock,
+                "Populate this drawing's title block with the linked part's " +
+                "number, description, material, and mass from FrameCAD.");
             Controls.Add(_btnFillTitleBlock);
 
             _btnOpenApp = MakeButton("Open FrameCAD");
@@ -402,8 +444,26 @@ namespace FrameCAD.SolidWorksAddin
                 Size = new Size(180, 80),
                 IntegralHeight = false
             };
+            // Double-click on the "View all N comments…" footer row
+            // opens a modal with the full thread.
+            _lstComments.DoubleClick += (s, e) => OnCommentsItemActivated();
             _pnlMeta.Controls.Add(_lstComments);
             y += 86;
+
+            _lblMfgNotes = new Label
+            {
+                Text = "",
+                ForeColor = CSubtext,
+                Font = new Font("Segoe UI Italic", 8.25f),
+                AutoSize = false,
+                AutoEllipsis = true,
+                Location = new Point(10, y),
+                Size = new Size(180, 16),
+                Visible = false
+            };
+            _pnlMeta.Controls.Add(_lblMfgNotes);
+            // Note: y is only incremented if the label is visible
+            // (handled in LayoutAll via Visible check).
 
             _txtComment = new TextBox
             {
@@ -695,10 +755,26 @@ namespace FrameCAD.SolidWorksAddin
             base.Dispose(disposing);
         }
 
+        // 5s when connected and responsive; backed off to 30s while
+        // the desktop app is unreachable so we're not hammering 1
+        // request/5s forever when FrameCAD is closed.
+        private const int HealthPollFastMs = 5000;
+        private const int HealthPollSlowMs = 30000;
+
+        // Set while a CheckConnection is in flight so the timer can't
+        // start a second poll on top — concurrent polls could stomp
+        // on _connected / _currentProjectPath from interleaved
+        // continuations, and pile up if one is slow.
+        private bool _polling;
+
         public void StartHealthPolling()
         {
-            _healthTimer = new Timer { Interval = 5000 };
-            _healthTimer.Tick += async (s, e) => await CheckConnection();
+            _healthTimer = new Timer { Interval = HealthPollFastMs };
+            _healthTimer.Tick += async (s, e) =>
+            {
+                if (_polling) return;
+                await CheckConnection();
+            };
             _healthTimer.Start();
             _ = CheckConnection();
         }
@@ -711,6 +787,8 @@ namespace FrameCAD.SolidWorksAddin
 
         private async System.Threading.Tasks.Task CheckConnection()
         {
+            if (_polling) return;
+            _polling = true;
             var wasConnected = _connected;
             HealthResponse health = null;
             Exception error = null;
@@ -725,6 +803,16 @@ namespace FrameCAD.SolidWorksAddin
 
             if (error == null && health?.Running == true && health?.Project != null)
             {
+                // Best-effort role fetch so the UI matches the desktop's
+                // role tiers (students can't pick released/manufactured).
+                // Failure is non-fatal — fall back to the previous value.
+                try
+                {
+                    var coord = await _api.GetCoordStateAsync();
+                    if (coord != null) _coordState = coord;
+                }
+                catch { /* keep previous role */ }
+
                 await ProcessPendingCreates();
                 await ProcessPendingExports();
             }
@@ -788,6 +876,25 @@ namespace FrameCAD.SolidWorksAddin
                     _lblConnection.Text = "Not Running";
                     SetButtonStates(false, false);
                 }
+
+                // Adjust poll cadence based on what we just observed —
+                // fast when connected so file-state stays fresh, slow
+                // when down so we're not spamming the network 720x/hour
+                // while the desktop app is closed.
+                if (_healthTimer != null && !_disposed)
+                {
+                    var nextInterval = (error == null && health?.Running == true)
+                        ? HealthPollFastMs
+                        : HealthPollSlowMs;
+                    if (_healthTimer.Interval != nextInterval)
+                        _healthTimer.Interval = nextInterval;
+                }
+                // Clear the in-flight flag inside the UI-thread block
+                // so the next timer tick can't start a new poll until
+                // this one's UI work has actually completed (SafeInvoke
+                // uses BeginInvoke, so this runs on the UI thread, not
+                // synchronously with the await above).
+                _polling = false;
             });
         }
 
@@ -896,7 +1003,29 @@ namespace FrameCAD.SolidWorksAddin
             }
         }
 
+        // async void is required here because UpdateForDocument is
+        // invoked synchronously from a SolidWorks event handler
+        // (SwAddin.OnActiveDocChange). The full body is wrapped in a
+        // top-level try/catch so any thrown exception can't escape to
+        // become an unobserved fault and crash the SW host process.
         public async void UpdateForDocument(string absolutePath)
+        {
+            try
+            {
+                await UpdateForDocumentCore(absolutePath);
+            }
+            catch
+            {
+                // Last-resort safety net — every step inside Core
+                // already has its own try/catch around IPC work; this
+                // exists purely to swallow anything we missed (e.g.
+                // SafeInvoke lambda throwing inside LayoutAll on a
+                // disposed control) before it propagates up the COM
+                // boundary and SIGSEGVs SolidWorks.
+            }
+        }
+
+        private async System.Threading.Tasks.Task UpdateForDocumentCore(string absolutePath)
         {
             _currentFilePath = absolutePath;
 
@@ -1023,9 +1152,11 @@ namespace FrameCAD.SolidWorksAddin
             if (_pnlMeta == null) return;
             if (meta == null)
             {
+                _currentMeta = null;
                 HideMetaPanel();
                 return;
             }
+            _currentMeta = meta;
 
             // Populate release-state combo without firing the change
             // handler (which would re-save the state we just loaded).
@@ -1041,9 +1172,18 @@ namespace FrameCAD.SolidWorksAddin
                 _suppressReleaseChange = false;
             }
 
-            _lblMaterialValue.Text = string.IsNullOrWhiteSpace(meta.ManufacturingMaterial)
+            // Material + mass + cost rolled into one line so the panel
+            // stays compact. Empty values get omitted entirely.
+            var matBits = new System.Collections.Generic.List<string>();
+            if (!string.IsNullOrWhiteSpace(meta.ManufacturingMaterial))
+                matBits.Add(meta.ManufacturingMaterial);
+            if (meta.Mass.HasValue)
+                matBits.Add($"{meta.Mass.Value:0.##} lb");
+            if (meta.Cost.HasValue)
+                matBits.Add($"${meta.Cost.Value:0.##}");
+            _lblMaterialValue.Text = matBits.Count == 0
                 ? "(not set)"
-                : meta.ManufacturingMaterial;
+                : string.Join(" · ", matBits);
 
             // Populate the manufacturing-method combo without firing
             // the change handler (same pattern as release state).
@@ -1073,7 +1213,8 @@ namespace FrameCAD.SolidWorksAddin
                 var ordered = meta.Comments
                     .Where(c => c != null)
                     .OrderByDescending(c => c.At ?? "")
-                    .Take(8);
+                    .Take(8)
+                    .ToList();
                 foreach (var c in ordered)
                 {
                     var text = (c.Text ?? "").Replace("\r", " ").Replace("\n", " ");
@@ -1081,12 +1222,37 @@ namespace FrameCAD.SolidWorksAddin
                     var author = string.IsNullOrEmpty(c.Author) ? "?" : c.Author;
                     _lstComments.Items.Add($"{author}: {text}");
                 }
+                // Footer link if the thread is longer than what we showed —
+                // students can drill into the full thread without alt-tabbing
+                // to FrameCAD.
+                if (meta.Comments.Count > ordered.Count)
+                {
+                    _lstComments.Items.Add($"  ↗ View all {meta.Comments.Count} comments…");
+                }
             }
             else
             {
                 _lstComments.Items.Add("(no comments yet)");
             }
             _lstComments.EndUpdate();
+
+            // Manufacturing notes: surface a single-line summary if set,
+            // hidden otherwise. Server stores free-form text, can be long.
+            if (_lblMfgNotes != null)
+            {
+                if (!string.IsNullOrWhiteSpace(meta.ManufacturingNotes))
+                {
+                    var notes = meta.ManufacturingNotes.Replace("\r", " ").Replace("\n", " ");
+                    if (notes.Length > 100) notes = notes.Substring(0, 97) + "...";
+                    _lblMfgNotes.Text = "Notes: " + notes;
+                    _lblMfgNotes.Visible = true;
+                    _toolTip.SetToolTip(_lblMfgNotes, meta.ManufacturingNotes);
+                }
+                else
+                {
+                    _lblMfgNotes.Visible = false;
+                }
+            }
 
             _pnlMeta.Visible = true;
             LayoutAll();
@@ -1098,7 +1264,47 @@ namespace FrameCAD.SolidWorksAddin
             var state = _cmbReleaseState.SelectedItem?.ToString();
             if (string.IsNullOrEmpty(state)) return;
 
-            var result = await _api.SetReleaseStateAsync(_currentFilePath, state);
+            // Role gate — mirror the desktop DetailsPanel rules: only
+            // mentors / admins can mark released or manufactured.
+            // Revert the combo and show a hint instead of silently
+            // letting the API accept it (server is unauthenticated).
+            if (!_coordState.IsMentor && (state == "released" || state == "manufactured"))
+            {
+                ShowMessage("Only mentors can mark a part " + state + ". Set it to in-review and ask a mentor to sign off.", true);
+                // Revert by re-fetching meta and replaying through UpdateMetaDisplay,
+                // which sets the combo via _suppressReleaseChange so no recursive save.
+                try
+                {
+                    var fresh = await _api.GetPartMetaAsync(_currentFilePath);
+                    SafeInvoke(() => UpdateMetaDisplay(fresh));
+                }
+                catch { /* best-effort revert */ }
+                return;
+            }
+
+            // Manufactured needs operator initials — same attribution
+            // model as the desktop shop-floor kiosk. Prompt once per
+            // session; cached in _operatorInitials.
+            string note = null;
+            if (state == "manufactured")
+            {
+                var initials = PromptForOperatorInitials();
+                if (string.IsNullOrEmpty(initials))
+                {
+                    // User cancelled — revert combo without saving.
+                    try
+                    {
+                        var fresh = await _api.GetPartMetaAsync(_currentFilePath);
+                        SafeInvoke(() => UpdateMetaDisplay(fresh));
+                    }
+                    catch { }
+                    return;
+                }
+                _operatorInitials = initials;
+                note = "Finished by " + initials;
+            }
+
+            var result = await _api.SetReleaseStateAsync(_currentFilePath, state, note);
             if (result?.Success == true)
             {
                 ShowMessage($"Release state set to {state}.", false);
@@ -1106,6 +1312,141 @@ namespace FrameCAD.SolidWorksAddin
             else
             {
                 ShowMessage(result?.Error ?? "Could not set release state", true);
+            }
+        }
+
+        /// <summary>
+        /// Fired when the user double-clicks a row in the comments list.
+        /// If the row is the "View all…" footer, opens a modal showing
+        /// every comment in chronological order. Other rows are no-op.
+        /// </summary>
+        private void OnCommentsItemActivated()
+        {
+            if (_currentMeta?.Comments == null || _currentMeta.Comments.Count == 0) return;
+            var sel = _lstComments.SelectedItem as string;
+            if (sel == null) return;
+            // The footer row starts with the arrow glyph we set in UpdateMetaDisplay
+            if (!sel.StartsWith("  ↗")) return;
+            ShowAllCommentsDialog(_currentMeta.Comments);
+        }
+
+        private void ShowAllCommentsDialog(System.Collections.Generic.List<PartCommentDto> comments)
+        {
+            using (var dlg = new Form
+            {
+                Text = "Comments — " + (System.IO.Path.GetFileName(_currentFilePath) ?? ""),
+                StartPosition = FormStartPosition.CenterParent,
+                ClientSize = new Size(520, 420),
+                BackColor = CBase,
+                ForeColor = CText,
+                MinimizeBox = false,
+                MaximizeBox = true,
+                FormBorderStyle = FormBorderStyle.Sizable
+            })
+            {
+                var txt = new TextBox
+                {
+                    Multiline = true,
+                    ReadOnly = true,
+                    ScrollBars = ScrollBars.Vertical,
+                    Dock = DockStyle.Fill,
+                    BackColor = CMantle,
+                    ForeColor = CText,
+                    Font = new Font("Segoe UI", 9.5f),
+                    BorderStyle = BorderStyle.None,
+                    WordWrap = true
+                };
+                // Chronological (oldest first) so threading reads naturally
+                var sb = new System.Text.StringBuilder();
+                foreach (var c in comments.OrderBy(x => x?.At ?? ""))
+                {
+                    if (c == null) continue;
+                    sb.Append(string.IsNullOrEmpty(c.Author) ? "?" : c.Author);
+                    if (!string.IsNullOrEmpty(c.At)) sb.Append(" · ").Append(c.At);
+                    sb.AppendLine();
+                    sb.AppendLine(c.Text ?? "");
+                    sb.AppendLine();
+                }
+                txt.Text = sb.ToString();
+                dlg.Controls.Add(txt);
+                dlg.ShowDialog(this);
+            }
+        }
+
+        /// <summary>
+        /// Modal prompt for operator initials when marking a part
+        /// manufactured. Pre-fills with the last value entered this
+        /// session so a single operator working through a queue
+        /// doesn't keep re-typing. Returns null on cancel.
+        /// </summary>
+        private string PromptForOperatorInitials()
+        {
+            using (var dlg = new Form
+            {
+                Text = "Mark as Manufactured",
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                ClientSize = new Size(320, 140),
+                BackColor = CBase,
+                ForeColor = CText
+            })
+            {
+                var lbl = new Label
+                {
+                    Text = "Enter your initials so the team knows\nwho finished this part:",
+                    Location = new Point(16, 14),
+                    Size = new Size(290, 36),
+                    ForeColor = CText
+                };
+                var txt = new TextBox
+                {
+                    Text = _operatorInitials ?? "",
+                    Location = new Point(16, 58),
+                    Size = new Size(120, 24),
+                    MaxLength = 6,
+                    CharacterCasing = CharacterCasing.Upper,
+                    Font = new Font("Consolas", 11f, FontStyle.Bold),
+                    BackColor = CSurface0,
+                    ForeColor = CText,
+                    BorderStyle = BorderStyle.FixedSingle
+                };
+                var ok = new Button
+                {
+                    Text = "Confirm",
+                    DialogResult = DialogResult.OK,
+                    Location = new Point(16, 96),
+                    Size = new Size(90, 28),
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = CBlue,
+                    ForeColor = CBase
+                };
+                ok.FlatAppearance.BorderSize = 0;
+                var cancel = new Button
+                {
+                    Text = "Cancel",
+                    DialogResult = DialogResult.Cancel,
+                    Location = new Point(112, 96),
+                    Size = new Size(90, 28),
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = CSurface1,
+                    ForeColor = CText
+                };
+                cancel.FlatAppearance.BorderSize = 0;
+                dlg.Controls.AddRange(new Control[] { lbl, txt, ok, cancel });
+                dlg.AcceptButton = ok;
+                dlg.CancelButton = cancel;
+                if (dlg.ShowDialog(this) != DialogResult.OK) return null;
+                var raw = (txt.Text ?? "").Trim();
+                // Normalise: alphanumeric + dot only, uppercased, ≤6 chars.
+                var sb = new System.Text.StringBuilder();
+                foreach (var ch in raw.ToUpperInvariant())
+                {
+                    if (char.IsLetterOrDigit(ch) || ch == '.') sb.Append(ch);
+                    if (sb.Length >= 6) break;
+                }
+                return sb.Length == 0 ? null : sb.ToString();
             }
         }
 
@@ -1279,13 +1620,29 @@ namespace FrameCAD.SolidWorksAddin
             _lblMessage.ForeColor = isError ? CRed : CGreen;
             _messageClearTimer?.Stop();
             _messageClearTimer?.Dispose();
-            _messageClearTimer = new Timer { Interval = 8000 };
-            _messageClearTimer.Tick += (s, e) =>
+            _messageClearTimer = null;
+            // Errors stay visible until the next ShowMessage — students
+            // were missing failure feedback that vanished in 8s. Only
+            // auto-clear success toasts; the next message naturally
+            // replaces any lingering error.
+            if (isError) return;
+            // Capture the timer in a local so the closure operates on
+            // *this* timer, not whatever's in _messageClearTimer when
+            // the tick fires. Without this, a queued tick from an
+            // earlier ShowMessage could stop the new timer and clear
+            // the new message prematurely.
+            var thisTimer = new Timer { Interval = 8000 };
+            thisTimer.Tick += (s, e) =>
             {
-                _messageClearTimer.Stop();
-                if (!_disposed && IsHandleCreated) _lblMessage.Text = "";
+                thisTimer.Stop();
+                thisTimer.Dispose();
+                if (!_disposed && IsHandleCreated && !string.IsNullOrEmpty(_lblMessage.Text))
+                {
+                    _lblMessage.Text = "";
+                }
             };
-            _messageClearTimer.Start();
+            _messageClearTimer = thisTimer;
+            thisTimer.Start();
         }
 
         private System.Collections.Generic.List<string> AssemblyTargets()
@@ -1357,12 +1714,27 @@ namespace FrameCAD.SolidWorksAddin
         private async System.Threading.Tasks.Task DoCheckIn()
         {
             if (string.IsNullOrEmpty(_currentFilePath) || _busy) return;
+            // Cascade preview: if this is an assembly, the children
+            // get checked in too. Confirm with the user so it can't
+            // happen by accident — easy to fat-finger Check In and
+            // release 30 sibling locks unintentionally.
+            var targets = AssemblyTargets();
+            if (targets.Count > 1)
+            {
+                var confirm = MessageBox.Show(this,
+                    $"This will release the lock on the assembly AND {targets.Count - 1} child file(s).\n\n" +
+                    "Continue?",
+                    "Check In Assembly",
+                    MessageBoxButtons.OKCancel,
+                    MessageBoxIcon.Question,
+                    MessageBoxDefaultButton.Button1);
+                if (confirm != DialogResult.OK) return;
+            }
             _busy = true;
             SetButtonStates(false, false);
             ShowMessage("Checking in…");
             try
             {
-                var targets = AssemblyTargets();
                 int ok = 0, fail = 0;
                 string lastError = null;
                 foreach (var p in targets)

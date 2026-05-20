@@ -9,6 +9,12 @@
     <RootNamespace>FrameCAD.SolidWorksAddin</RootNamespace>
     <AssemblyName>FrameCAD.SolidWorksAddin</AssemblyName>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <!-- SolidWorks 2015+ is x64-only and the installer registers via
+         Framework64\v4.0.30319\RegAsm.exe — pin x64 explicitly so any
+         future native dep can't silently break the AnyCPU/x64-RegAsm
+         split. -->
+    <PlatformTarget>x64</PlatformTarget>
+    <Platforms>x64</Platforms>
   </PropertyGroup>
 
   <ItemGroup>

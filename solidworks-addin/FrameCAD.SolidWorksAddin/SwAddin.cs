@@ -30,6 +30,28 @@ namespace FrameCAD.SolidWorksAddin
         // the user has opened this session.
         private PartDoc _massHookPart;
         private DPartDocEvents_FileSavePostNotifyEventHandler _massHookHandler;
+        // DestroyNotify on the hooked PartDoc: when the user closes the
+        // doc without first activating another (LAST-doc-close case),
+        // ActiveDocChangeNotify may not fire, leaving _massHookPart
+        // holding a closed-doc RCW. This hook proactively cleans up.
+        private DPartDocEvents_DestroyNotifyEventHandler _massHookDestroyHandler;
+
+        /// <summary>
+        /// Best-effort release of a COM RCW. SolidWorks holds its own
+        /// references internally — dropping ours just collapses our
+        /// proxy. Wrapped in a try so disposal-time races don't crash
+        /// the add-in.
+        /// </summary>
+        private static void SafeRelease(object com)
+        {
+            if (com == null) return;
+            try
+            {
+                if (System.Runtime.InteropServices.Marshal.IsComObject(com))
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(com);
+            }
+            catch { /* nothing actionable */ }
+        }
 
         [ComRegisterFunction]
         public static void RegisterFunction(Type t)
@@ -88,12 +110,20 @@ namespace FrameCAD.SolidWorksAddin
         /// </summary>
         private void UnhookMassNotify()
         {
-            if (_massHookPart != null && _massHookHandler != null)
+            if (_massHookPart != null)
             {
-                try { _massHookPart.FileSavePostNotify -= _massHookHandler; } catch { /* doc may already be closed */ }
+                if (_massHookHandler != null)
+                {
+                    try { _massHookPart.FileSavePostNotify -= _massHookHandler; } catch { /* doc may already be closed */ }
+                }
+                if (_massHookDestroyHandler != null)
+                {
+                    try { _massHookPart.DestroyNotify -= _massHookDestroyHandler; } catch { /* doc may already be closed */ }
+                }
             }
             _massHookPart = null;
             _massHookHandler = null;
+            _massHookDestroyHandler = null;
         }
 
         /// <summary>
@@ -127,7 +157,18 @@ namespace FrameCAD.SolidWorksAddin
                     catch { /* never throw from a SW event handler */ }
                     return 0;  // event handlers return HRESULT-like int
                 };
+                _massHookDestroyHandler = (int destroyType) =>
+                {
+                    // Proactively clean up when the doc closes so we
+                    // don't leak a stale PartDoc RCW until the next
+                    // ActiveDocChangeNotify (which may not fire if
+                    // this was the last open document).
+                    try { UnhookMassNotify(); } catch { /* best effort */ }
+                    return 0;
+                };
                 part.FileSavePostNotify += _massHookHandler;
+                try { part.DestroyNotify += _massHookDestroyHandler; }
+                catch { _massHookDestroyHandler = null; /* not fatal */ }
                 _massHookPart = part;
             }
             catch
@@ -152,12 +193,14 @@ namespace FrameCAD.SolidWorksAddin
         private async System.Threading.Tasks.Task OnPartSavedPushMassAsync(PartDoc hookedPart, string fileName)
         {
             if (string.IsNullOrEmpty(fileName) || hookedPart == null) return;
+            object extRcw = null;
             try
             {
                 var doc = hookedPart as ModelDoc2;
                 if (doc == null) return;
                 var ext = doc.Extension;
                 if (ext == null) return;
+                extRcw = ext;
 
                 // GetMassProperties2 signature in this interop:
                 //   double[] GetMassProperties2(int Accuracy, out int Status, bool UseSystemUnits)
@@ -178,6 +221,13 @@ namespace FrameCAD.SolidWorksAddin
                 // network drop) silently aborts — user can set mass
                 // manually via the FrameCAD app
             }
+            finally
+            {
+                // Release the Extension RCW so a heavy save cycle
+                // doesn't accumulate one proxy per save.
+                SafeRelease(extRcw);
+            }
+            await System.Threading.Tasks.Task.CompletedTask;
         }
 
         private void CreateTaskPane()
@@ -237,10 +287,12 @@ namespace FrameCAD.SolidWorksAddin
         private string GetActiveDocMaterial()
         {
             if (_swApp == null) return "";
+            object docRcw = null;
             try
             {
                 var doc = _swApp.ActiveDoc as ModelDoc2;
                 if (doc == null) return "";
+                docRcw = doc;
                 var part = doc as PartDoc;
                 if (part == null) return "";  // assembly/drawing — skip
                 // Empty configuration name = active configuration
@@ -253,6 +305,10 @@ namespace FrameCAD.SolidWorksAddin
                 // SW API hit a snag — fail silent, button just shows
                 // "No material set in SW" via the empty return
                 return "";
+            }
+            finally
+            {
+                SafeRelease(docRcw);
             }
         }
 
@@ -274,16 +330,23 @@ namespace FrameCAD.SolidWorksAddin
         private int FillActiveDrawingTitleBlock(System.Collections.Generic.IDictionary<string, string> props)
         {
             if (_swApp == null || props == null || props.Count == 0) return 0;
+            // Track the derived COM objects so we can release them in
+            // finally — keep `var` for the original interop types so the
+            // SW interop assembly version doesn't matter.
+            object extRcw = null;
+            object cpmRcw = null;
             try
             {
                 var doc = _swApp.ActiveDoc as ModelDoc2;
                 if (doc == null) return 0;
                 var ext = doc.Extension;
                 if (ext == null) return 0;
+                extRcw = ext;
                 // Empty config name = document-level (root) custom properties,
                 // which is what drawing title blocks read via $PRP:"name".
                 var cpm = ext.get_CustomPropertyManager("") as ICustomPropertyManager;
                 if (cpm == null) return 0;
+                cpmRcw = cpm;
 
                 int written = 0;
                 foreach (var kv in props)
@@ -313,6 +376,13 @@ namespace FrameCAD.SolidWorksAddin
             {
                 return 0;
             }
+            finally
+            {
+                // Release the derived RCWs we created — long sessions with
+                // many title-block fills would otherwise accumulate proxies.
+                SafeRelease(cpmRcw);
+                SafeRelease(extRcw);
+            }
         }
 
         private System.Collections.Generic.List<string> GetAssemblyChildren(string assemblyPath)
@@ -329,13 +399,23 @@ namespace FrameCAD.SolidWorksAddin
                 if (asm == null) return result;
                 var components = asm.GetComponents(false) as object[];
                 if (components == null) return result;
+                // Release each Component2 RCW after extracting its path —
+                // assemblies with N components otherwise leak N proxies
+                // every time the user checks in / out a top-level assembly.
                 foreach (var c in components)
                 {
                     var comp = c as Component2;
                     if (comp == null) continue;
-                    var path = comp.GetPathName();
-                    if (!string.IsNullOrEmpty(path) && !result.Contains(path, StringComparer.OrdinalIgnoreCase))
-                        result.Add(path);
+                    try
+                    {
+                        var path = comp.GetPathName();
+                        if (!string.IsNullOrEmpty(path) && !result.Contains(path, StringComparer.OrdinalIgnoreCase))
+                            result.Add(path);
+                    }
+                    finally
+                    {
+                        SafeRelease(comp);
+                    }
                 }
             }
             catch { /* SW API rejected — return what we have */ }
@@ -517,19 +597,32 @@ namespace FrameCAD.SolidWorksAddin
 
         private int OnActiveDocChange()
         {
-            var doc = _swApp.ActiveDoc as ModelDoc2;
-            if (doc != null)
+            // Guard against queued events that fire after DisconnectFromSW
+            // has nulled _swApp — reading .ActiveDoc on a null ref would
+            // NRE the SW event chain and (sometimes) take the host down.
+            if (_swApp == null) return 0;
+            try
             {
-                _taskPaneControl?.UpdateForDocument(doc.GetPathName());
+                var doc = _swApp.ActiveDoc as ModelDoc2;
+                if (doc != null)
+                {
+                    _taskPaneControl?.UpdateForDocument(doc.GetPathName());
+                }
+                else
+                {
+                    _taskPaneControl?.ClearDocument();
+                }
+                // Re-attach the mass-save hook to whichever PartDoc is now active.
+                // Done AFTER the task pane updates so the user sees doc info
+                // first; mass push happens later on save.
+                HookMassNotifyOnActiveDoc();
             }
-            else
+            catch
             {
-                _taskPaneControl?.ClearDocument();
+                // SW event handlers must NEVER throw — that corrupts the
+                // event chain and can take down the host. Swallow and
+                // let the next ActiveDocChangeNotify retry.
             }
-            // Re-attach the mass-save hook to whichever PartDoc is now active.
-            // Done AFTER the task pane updates so the user sees doc info
-            // first; mass push happens later on save.
-            HookMassNotifyOnActiveDoc();
             return 0;
         }
     }

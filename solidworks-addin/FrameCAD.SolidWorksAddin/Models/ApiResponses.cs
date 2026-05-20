@@ -224,4 +224,31 @@ namespace FrameCAD.SolidWorksAddin.Models
         [JsonProperty("id")]
         public string Id { get; set; }
     }
+
+    /// <summary>
+    /// Minimal coordination-repo state for UI gating in the add-in.
+    /// Mirrors what /api/coord-state returns — intentionally NOT the
+    /// full members.json (we don't want to leak the team roster
+    /// through the local REST surface).
+    /// </summary>
+    public class CoordStateDto
+    {
+        /// <summary>Whether a coordination repo is connected at all.</summary>
+        [JsonProperty("configured")]
+        public bool Configured { get; set; }
+
+        /// <summary>"admin", "mentor", "student", or null when unknown / standalone.</summary>
+        [JsonProperty("role")]
+        public string Role { get; set; }
+
+        [JsonProperty("isMember")]
+        public bool IsMember { get; set; }
+
+        /// <summary>True if the user can sign off on releases / mark manufactured / force-release locks.</summary>
+        public bool IsMentor =>
+            !Configured || Role == "admin" || Role == "mentor";
+
+        public bool IsAdmin =>
+            !Configured || Role == "admin";
+    }
 }

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Text;
+using System.Threading;
 using Newtonsoft.Json;
 using System.Threading.Tasks;
 using FrameCAD.SolidWorksAddin.Models;
@@ -10,11 +11,29 @@ namespace FrameCAD.SolidWorksAddin
 {
     public class FrameCadApiClient
     {
+        // Global HttpClient timeout is disabled — each call sets its
+        // own deadline via CancellationTokenSource. This is the only
+        // way to give long-running ops (publish, sync of big LFS
+        // pushes) more than the short timeout used for everything
+        // else. Setting HttpClient.Timeout is global; HttpClient
+        // applies min(globalTimeout, perCallTokenDeadline) so without
+        // this you can't ever wait longer than the global.
         private static readonly HttpClient Client = new HttpClient(
             new HttpClientHandler { UseProxy = false, Proxy = null, UseDefaultCredentials = false })
         {
-            Timeout = TimeSpan.FromSeconds(10)
+            Timeout = Timeout.InfiniteTimeSpan
         };
+
+        // Default deadline for snappy ops (status, file lookup, meta).
+        // If FrameCAD is unresponsive past this, surface the failure
+        // rather than hang the task pane.
+        private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
+
+        // Long-running ops that push/pull from GitHub LFS. Bigger
+        // robot assemblies routinely take >1 min on a slow uplink;
+        // 10 min is generous but bounded so a wedged server doesn't
+        // hang the UI forever.
+        private static readonly TimeSpan LongTimeout = TimeSpan.FromMinutes(10);
 
         private readonly string _baseUrl;
         private string _projectRoot;
@@ -47,9 +66,33 @@ namespace FrameCAD.SolidWorksAddin
                 relativePath.Replace("/", System.IO.Path.DirectorySeparatorChar.ToString()));
         }
 
+        // --- HTTP helpers ---------------------------------------------------
+
+        private static CancellationTokenSource NewDeadline(TimeSpan timeout) => new CancellationTokenSource(timeout);
+
+        private async Task<HttpResponseMessage> GetAsync(string path, TimeSpan? timeout = null)
+        {
+            using (var cts = NewDeadline(timeout ?? DefaultTimeout))
+            {
+                return await Client.GetAsync($"{_baseUrl}{path}", cts.Token);
+            }
+        }
+
+        private async Task<HttpResponseMessage> PostJsonAsync(string path, object body, TimeSpan? timeout = null)
+        {
+            var json = body == null ? "{}" : JsonConvert.SerializeObject(body);
+            using (var content = new StringContent(json, Encoding.UTF8, "application/json"))
+            using (var cts = NewDeadline(timeout ?? DefaultTimeout))
+            {
+                return await Client.PostAsync($"{_baseUrl}{path}", content, cts.Token);
+            }
+        }
+
+        // --- API surface -----------------------------------------------------
+
         public async Task<HealthResponse> GetHealthAsync()
         {
-            var response = await Client.GetAsync($"{_baseUrl}/api/health");
+            var response = await GetAsync("/api/health");
             response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadAsStringAsync();
             var health = JsonConvert.DeserializeObject<HealthResponse>(json);
@@ -77,7 +120,7 @@ namespace FrameCAD.SolidWorksAddin
         {
             var relativePath = ToRelativePath(absolutePath);
             var encoded = Uri.EscapeDataString(relativePath);
-            var response = await Client.GetAsync($"{_baseUrl}/api/file?path={encoded}");
+            var response = await GetAsync($"/api/file?path={encoded}");
 
             if (!response.IsSuccessStatusCode)
                 return null;
@@ -89,9 +132,7 @@ namespace FrameCAD.SolidWorksAddin
         public async Task<ApiResult> CheckOutAsync(string absolutePath)
         {
             var relativePath = ToRelativePath(absolutePath);
-            var body = JsonConvert.SerializeObject(new { path = relativePath });
-            var content = new StringContent(body, Encoding.UTF8, "application/json");
-            var response = await Client.PostAsync($"{_baseUrl}/api/checkout", content);
+            var response = await PostJsonAsync("/api/checkout", new { path = relativePath });
             var json = await response.Content.ReadAsStringAsync();
             return JsonConvert.DeserializeObject<ApiResult>(json);
         }
@@ -99,9 +140,7 @@ namespace FrameCAD.SolidWorksAddin
         public async Task<ApiResult> CheckInAsync(string absolutePath)
         {
             var relativePath = ToRelativePath(absolutePath);
-            var body = JsonConvert.SerializeObject(new { path = relativePath });
-            var content = new StringContent(body, Encoding.UTF8, "application/json");
-            var response = await Client.PostAsync($"{_baseUrl}/api/checkin", content);
+            var response = await PostJsonAsync("/api/checkin", new { path = relativePath });
             var json = await response.Content.ReadAsStringAsync();
             return JsonConvert.DeserializeObject<ApiResult>(json);
         }
@@ -110,30 +149,33 @@ namespace FrameCAD.SolidWorksAddin
         /// Tell FrameCAD to `git add` a newly-created file so it's tracked
         /// before the user's first publish. Best-effort — caller swallows
         /// errors because the file will still surface as "untracked" in
-        /// the next status refresh. Uses the shared static HttpClient
-        /// (reuses sockets) instead of constructing a per-call client.
+        /// the next status refresh.
         /// </summary>
         public async Task<ApiResult> StageAsync(string relativePath)
         {
-            var body = JsonConvert.SerializeObject(new { path = relativePath });
-            var content = new StringContent(body, Encoding.UTF8, "application/json");
-            var response = await Client.PostAsync($"{_baseUrl}/api/stage", content);
+            var response = await PostJsonAsync("/api/stage", new { path = relativePath });
+            if (!response.IsSuccessStatusCode)
+                return new ApiResult { Success = false, Error = $"HTTP {(int)response.StatusCode}" };
             var json = await response.Content.ReadAsStringAsync();
             return JsonConvert.DeserializeObject<ApiResult>(json);
         }
 
         public async Task<SyncResult> SyncAsync()
         {
-            var response = await Client.PostAsync($"{_baseUrl}/api/sync", new StringContent("{}", Encoding.UTF8, "application/json"));
+            // Long timeout — pulling a big LFS-tracked assembly from
+            // GitHub can take minutes on a slow link.
+            var response = await PostJsonAsync("/api/sync", new { }, LongTimeout);
             var json = await response.Content.ReadAsStringAsync();
             return JsonConvert.DeserializeObject<SyncResult>(json);
         }
 
         public async Task<PublishResult> PublishAsync(string message)
         {
-            var body = JsonConvert.SerializeObject(new { message });
-            var content = new StringContent(body, Encoding.UTF8, "application/json");
-            var response = await Client.PostAsync($"{_baseUrl}/api/publish", content);
+            // Long timeout — same reason as sync, but worse: publish
+            // pushes LFS objects to GitHub. A 10s ceiling would let
+            // the server happily complete while the add-in shows a
+            // misleading "Upload failed" toast.
+            var response = await PostJsonAsync("/api/publish", new { message }, LongTimeout);
             var json = await response.Content.ReadAsStringAsync();
             return JsonConvert.DeserializeObject<PublishResult>(json);
         }
@@ -142,9 +184,7 @@ namespace FrameCAD.SolidWorksAddin
         {
             var obj = new Dictionary<string, string> { { "folder", folder } };
             if (description != null) obj["description"] = description;
-            var body = JsonConvert.SerializeObject(obj);
-            var content = new StringContent(body, Encoding.UTF8, "application/json");
-            var response = await Client.PostAsync($"{_baseUrl}/api/parts/new-part", content);
+            var response = await PostJsonAsync("/api/parts/new-part", obj);
             var json = await response.Content.ReadAsStringAsync();
             return JsonConvert.DeserializeObject<CreatePartResult>(json);
         }
@@ -153,9 +193,7 @@ namespace FrameCAD.SolidWorksAddin
         {
             var obj = new Dictionary<string, string> { { "name", name }, { "parentFolder", parentFolder } };
             if (description != null) obj["description"] = description;
-            var body = JsonConvert.SerializeObject(obj);
-            var content = new StringContent(body, Encoding.UTF8, "application/json");
-            var response = await Client.PostAsync($"{_baseUrl}/api/parts/new-assembly", content);
+            var response = await PostJsonAsync("/api/parts/new-assembly", obj);
             var json = await response.Content.ReadAsStringAsync();
             return JsonConvert.DeserializeObject<CreatePartResult>(json);
         }
@@ -163,16 +201,14 @@ namespace FrameCAD.SolidWorksAddin
         public async Task<CreateSubsystemResult> CreateSubsystemAsync(string name, string parentFolder = "")
         {
             var obj = new Dictionary<string, string> { { "name", name }, { "parentFolder", parentFolder } };
-            var body = JsonConvert.SerializeObject(obj);
-            var content = new StringContent(body, Encoding.UTF8, "application/json");
-            var response = await Client.PostAsync($"{_baseUrl}/api/parts/new-subsystem", content);
+            var response = await PostJsonAsync("/api/parts/new-subsystem", obj);
             var json = await response.Content.ReadAsStringAsync();
             return JsonConvert.DeserializeObject<CreateSubsystemResult>(json);
         }
 
         public async Task<List<PendingCreate>> GetPendingCreatesAsync()
         {
-            var response = await Client.GetAsync($"{_baseUrl}/api/pending-creates");
+            var response = await GetAsync("/api/pending-creates");
             response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadAsStringAsync();
             return JsonConvert.DeserializeObject<List<PendingCreate>>(json);
@@ -180,14 +216,15 @@ namespace FrameCAD.SolidWorksAddin
 
         public async Task MarkPendingDoneAsync(string id)
         {
-            var body = JsonConvert.SerializeObject(new { id });
-            var content = new StringContent(body, Encoding.UTF8, "application/json");
-            await Client.PostAsync($"{_baseUrl}/api/pending-creates/done", content);
+            // EnsureSuccessStatusCode so a 5xx surfaces instead of silently
+            // looking like success — caller can retry / log.
+            var response = await PostJsonAsync("/api/pending-creates/done", new { id });
+            response.EnsureSuccessStatusCode();
         }
 
         public async Task<List<PendingExport>> GetPendingExportsAsync()
         {
-            var response = await Client.GetAsync($"{_baseUrl}/api/pending-exports");
+            var response = await GetAsync("/api/pending-exports");
             response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadAsStringAsync();
             return JsonConvert.DeserializeObject<List<PendingExport>>(json);
@@ -195,17 +232,14 @@ namespace FrameCAD.SolidWorksAddin
 
         public async Task MarkExportDoneAsync(string id, string error = null)
         {
-            var payload = error == null
-                ? (object)new { id }
-                : new { id, error };
-            var body = JsonConvert.SerializeObject(payload);
-            var content = new StringContent(body, Encoding.UTF8, "application/json");
-            await Client.PostAsync($"{_baseUrl}/api/pending-exports/done", content);
+            object payload = error == null ? (object)new { id } : new { id, error };
+            var response = await PostJsonAsync("/api/pending-exports/done", payload);
+            response.EnsureSuccessStatusCode();
         }
 
         public async Task<List<LockInfo>> GetLocksAsync()
         {
-            var response = await Client.GetAsync($"{_baseUrl}/api/locks");
+            var response = await GetAsync("/api/locks");
             response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadAsStringAsync();
             return JsonConvert.DeserializeObject<List<LockInfo>>(json);
@@ -218,8 +252,7 @@ namespace FrameCAD.SolidWorksAddin
         {
             try
             {
-                var response = await Client.PostAsync($"{_baseUrl}/api/focus",
-                    new StringContent("{}", Encoding.UTF8, "application/json"));
+                var response = await PostJsonAsync("/api/focus", new { });
                 var json = await response.Content.ReadAsStringAsync();
                 return JsonConvert.DeserializeObject<ApiResult>(json) ?? new ApiResult { Success = false, Error = "Empty response" };
             }
@@ -239,7 +272,7 @@ namespace FrameCAD.SolidWorksAddin
             var encoded = Uri.EscapeDataString(relativePath);
             try
             {
-                var response = await Client.GetAsync($"{_baseUrl}/api/meta?path={encoded}");
+                var response = await GetAsync($"/api/meta?path={encoded}");
                 if (!response.IsSuccessStatusCode) return null;
                 var json = await response.Content.ReadAsStringAsync();
                 return JsonConvert.DeserializeObject<PartMetaDto>(json);
@@ -252,15 +285,18 @@ namespace FrameCAD.SolidWorksAddin
 
         /// <summary>
         /// Set the part's release state (draft / in-review / released / manufactured).
+        /// Optional `note` carries operator initials or sign-off text — used by
+        /// the shop-floor "mark manufactured" flow to record who finished a part.
         /// </summary>
-        public async Task<ApiResult> SetReleaseStateAsync(string absolutePath, string state)
+        public async Task<ApiResult> SetReleaseStateAsync(string absolutePath, string state, string note = null)
         {
             var relativePath = ToRelativePath(absolutePath);
-            var body = JsonConvert.SerializeObject(new { path = relativePath, state });
-            var content = new StringContent(body, Encoding.UTF8, "application/json");
+            object payload = note == null
+                ? (object)new { path = relativePath, state }
+                : new { path = relativePath, state, note };
             try
             {
-                var response = await Client.PostAsync($"{_baseUrl}/api/release-state", content);
+                var response = await PostJsonAsync("/api/release-state", payload);
                 var json = await response.Content.ReadAsStringAsync();
                 return JsonConvert.DeserializeObject<ApiResult>(json) ?? new ApiResult { Success = false, Error = "Empty response" };
             }
@@ -281,7 +317,7 @@ namespace FrameCAD.SolidWorksAddin
             var encoded = Uri.EscapeDataString(relativePath);
             try
             {
-                var response = await Client.GetAsync($"{_baseUrl}/api/title-block-data?path={encoded}");
+                var response = await GetAsync($"/api/title-block-data?path={encoded}");
                 if (!response.IsSuccessStatusCode) return null;
                 var json = await response.Content.ReadAsStringAsync();
                 return JsonConvert.DeserializeObject<TitleBlockDataDto>(json);
@@ -300,11 +336,9 @@ namespace FrameCAD.SolidWorksAddin
         public async Task<ApiResult> SetPartMassAutoAsync(string absolutePath, double massPounds)
         {
             var relativePath = ToRelativePath(absolutePath);
-            var body = JsonConvert.SerializeObject(new { path = relativePath, mass = massPounds });
-            var content = new StringContent(body, Encoding.UTF8, "application/json");
             try
             {
-                var response = await Client.PostAsync($"{_baseUrl}/api/part-mass-auto", content);
+                var response = await PostJsonAsync("/api/part-mass-auto", new { path = relativePath, mass = massPounds });
                 var json = await response.Content.ReadAsStringAsync();
                 return JsonConvert.DeserializeObject<ApiResult>(json) ?? new ApiResult { Success = false, Error = "Empty response" };
             }
@@ -320,11 +354,9 @@ namespace FrameCAD.SolidWorksAddin
         public async Task<ApiResult> SetManufacturingMaterialAsync(string absolutePath, string material)
         {
             var relativePath = ToRelativePath(absolutePath);
-            var body = JsonConvert.SerializeObject(new { path = relativePath, material });
-            var content = new StringContent(body, Encoding.UTF8, "application/json");
             try
             {
-                var response = await Client.PostAsync($"{_baseUrl}/api/material", content);
+                var response = await PostJsonAsync("/api/material", new { path = relativePath, material });
                 var json = await response.Content.ReadAsStringAsync();
                 return JsonConvert.DeserializeObject<ApiResult>(json) ?? new ApiResult { Success = false, Error = "Empty response" };
             }
@@ -342,13 +374,10 @@ namespace FrameCAD.SolidWorksAddin
         public async Task<ApiResult> SetManufacturingMethodAsync(string absolutePath, string method)
         {
             var relativePath = ToRelativePath(absolutePath);
-            // method = null sends `{ path, method: null }` so the server
-            // clears the field. JsonConvert serializes null literally.
-            var body = JsonConvert.SerializeObject(new { path = relativePath, method });
-            var content = new StringContent(body, Encoding.UTF8, "application/json");
             try
             {
-                var response = await Client.PostAsync($"{_baseUrl}/api/manufacturing-method", content);
+                // method = null sends `{ path, method: null }` so the server clears the field.
+                var response = await PostJsonAsync("/api/manufacturing-method", new { path = relativePath, method });
                 var json = await response.Content.ReadAsStringAsync();
                 return JsonConvert.DeserializeObject<ApiResult>(json) ?? new ApiResult { Success = false, Error = "Empty response" };
             }
@@ -365,17 +394,38 @@ namespace FrameCAD.SolidWorksAddin
         public async Task<ApiResult> AddCommentAsync(string absolutePath, string text)
         {
             var relativePath = ToRelativePath(absolutePath);
-            var body = JsonConvert.SerializeObject(new { path = relativePath, text });
-            var content = new StringContent(body, Encoding.UTF8, "application/json");
             try
             {
-                var response = await Client.PostAsync($"{_baseUrl}/api/comments", content);
+                var response = await PostJsonAsync("/api/comments", new { path = relativePath, text });
                 var json = await response.Content.ReadAsStringAsync();
                 return JsonConvert.DeserializeObject<ApiResult>(json) ?? new ApiResult { Success = false, Error = "Empty response" };
             }
             catch (Exception ex)
             {
                 return new ApiResult { Success = false, Error = ex.Message };
+            }
+        }
+
+        /// <summary>
+        /// Fetch the current user's coordination-repo role so the add-in
+        /// can gate UI elements (e.g. hide released/manufactured release
+        /// pills for students) to match the desktop's role tiers.
+        /// Returns null on any failure — caller should treat that as
+        /// "unknown role" and fall back to allowing everything, since
+        /// standalone mode (no coord repo) genuinely has no roles.
+        /// </summary>
+        public async Task<CoordStateDto> GetCoordStateAsync()
+        {
+            try
+            {
+                var response = await GetAsync("/api/coord-state");
+                if (!response.IsSuccessStatusCode) return null;
+                var json = await response.Content.ReadAsStringAsync();
+                return JsonConvert.DeserializeObject<CoordStateDto>(json);
+            }
+            catch
+            {
+                return null;
             }
         }
     }

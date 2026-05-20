@@ -8,6 +8,11 @@ protocols:
     schemes:
       - framecad
 directories:
+  # The SolidWorks add-in DLL is shipped from `build/solidworks-addin/`
+  # via build/installer.nsh (`File /r "${BUILD_RESOURCES_DIR}\solidworks-addin\*.*"`).
+  # CI's `build-installer.yml` copies the compiled .NET assembly there
+  # before electron-builder runs. If this path changes, update both the
+  # workflow and installer.nsh to keep the add-in in the installer.
   buildResources: build
   output: dist
 files:

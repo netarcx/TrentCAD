@@ -1,7 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import type { CoordinationState, JoinRequest, MemberRole } from '@shared/types'
 
-export default function MembersPanel() {
+interface Props {
+  /** Only admins can approve joins, add/remove members, or change roles. */
+  isAdmin: boolean
+}
+
+export default function MembersPanel({ isAdmin }: Props) {
   const [coordState, setCoordState] = useState<CoordinationState>({ configured: false })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -26,8 +31,6 @@ export default function MembersPanel() {
   }, [])
 
   useEffect(() => { refresh() }, [refresh])
-
-  const isAdmin = coordState.currentUserRole === 'admin' || coordState.currentUserRole === 'mentor'
 
   const [currentUsername, setCurrentUsername] = useState<string | null>(null)
   useEffect(() => {

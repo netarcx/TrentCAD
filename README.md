@@ -31,7 +31,7 @@ FrameCAD is a desktop app that lets a robotics team collaborate on SolidWorks as
 - 🗂️ **COTS library support** — share a separate Git repo of off-the-shelf parts across all your team's robot projects.
 - 🚦 **Pre-publish guards** catch giant non-LFS files *before* you waste an hour uploading something GitHub will reject.
 - 🛠️ **Repository health scanner** lists every file over 50 MB with badges (`BLOCKER` / `WARNING` / `OK (LFS)`) so you can clean up before the build season crunch.
-- 🔑 **Admin PIN gate** + install-wide settings baked from GitHub Actions secrets keeps team config consistent across student laptops.
+- 🔑 **Role-gated settings** — admins and mentors see full team/project configuration; students see only their profile. Powered by the coordination repo's member roster.
 - 🌐 **Self-hosted LFS storage** (opt-in) — point project LFS at your own server when GitHub's bandwidth quota gets tight.
 - 🚀 **Auto-update** from GitHub Releases on Windows and Linux.
 

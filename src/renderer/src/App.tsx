@@ -355,7 +355,12 @@ export default function App() {
     window.api.getRemoteAhead().then(setRemoteAhead).catch(() => {})
   }, [files, project])
 
-  const isTeamAdmin = !coordState.configured || coordState.currentUserRole === 'admin' || coordState.currentUserRole === 'mentor'
+  // Role tiers — `isAdmin` ⊇ `isMentor` ⊇ student. Standalone mode
+  // (no coordination repo configured) grants full admin so solo users
+  // aren't locked out of their own app. Once a coord repo is connected
+  // the roles come from members.json.
+  const isAdmin = !coordState.configured || coordState.currentUserRole === 'admin'
+  const isMentor = isAdmin || coordState.currentUserRole === 'mentor'
 
   const openAdminOverlay = useCallback(() => {
     if (!showAdmin) setShowAdmin(true)
@@ -760,7 +765,8 @@ export default function App() {
         {showAdmin && (
           <AdminPage
             hasProject={false}
-            isAdmin={isTeamAdmin}
+            isAdmin={isAdmin}
+            isMentor={isMentor}
             appVersion={appVersion}
             gitName={gitName}
             gitEmail={gitEmail}
@@ -971,6 +977,7 @@ export default function App() {
             onCheckIn={checkIn}
             onClose={isOverlayTier ? () => setInspectorOpen(false) : undefined}
             onNavigate={navigateToPath}
+            isMentor={isMentor}
           />
         )}
       </div>
@@ -979,7 +986,8 @@ export default function App() {
       {showAdmin && (
         <AdminPage
           hasProject={true}
-          isAdmin={isTeamAdmin}
+          isAdmin={isAdmin}
+          isMentor={isMentor}
           appVersion={appVersion}
           gitName={gitName}
           gitEmail={gitEmail}

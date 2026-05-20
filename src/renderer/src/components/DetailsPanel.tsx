@@ -15,6 +15,10 @@ interface Props {
   /** Jump-to-file callback used by the Where Used list. Wired by the
    *  parent so clicking an assembly there selects it in the file tree. */
   onNavigate?: (path: string) => void
+  /** Mentor/admin gate. Students can only move release state between
+   *  draft and in-review; sign-off transitions (released, manufactured,
+   *  and any downgrade out of those) require mentor or above. */
+  isMentor?: boolean
 }
 
 function stateLabel(state: FileState): string {
@@ -62,7 +66,7 @@ function formatTime(iso: string): string {
   return d.toLocaleDateString()
 }
 
-export default function DetailsPanel({ file, onCheckOut, onCheckIn, onClose, onNavigate }: Props) {
+export default function DetailsPanel({ file, onCheckOut, onCheckIn, onClose, onNavigate, isMentor = true }: Props) {
   const [meta, setMeta] = useState<PartMeta>({})
   const [loading, setLoading] = useState(false)
   const [commentText, setCommentText] = useState('')
@@ -324,17 +328,36 @@ export default function DetailsPanel({ file, onCheckOut, onCheckIn, onClose, onN
               )}
             </div>
             <div className="release-buttons">
-              {RELEASE_STATES.map(s => (
-                <button
-                  key={s}
-                  className={`release-pill release-${s}${currentState === s ? ' active' : ''}`}
-                  onClick={() => handleSetState(s)}
-                  disabled={loading || savingState !== null}
-                >
-                  {savingState === s ? '...' : releaseLabel(s)}
-                </button>
-              ))}
+              {RELEASE_STATES.map(s => {
+                // Students can only flip between draft and in-review.
+                // Anything that's already been signed off (released or
+                // manufactured) is locked for them — only mentors can
+                // touch those transitions in either direction.
+                const studentBlocked =
+                  !isMentor && (
+                    s === 'released' ||
+                    s === 'manufactured' ||
+                    currentState === 'released' ||
+                    currentState === 'manufactured'
+                  )
+                return (
+                  <button
+                    key={s}
+                    className={`release-pill release-${s}${currentState === s ? ' active' : ''}`}
+                    onClick={() => handleSetState(s)}
+                    disabled={loading || savingState !== null || studentBlocked}
+                    title={studentBlocked ? 'Only mentors can set this state' : undefined}
+                  >
+                    {savingState === s ? '...' : releaseLabel(s)}
+                  </button>
+                )
+              })}
             </div>
+            {!isMentor && (currentState === 'released' || currentState === 'manufactured') && (
+              <div className="admin-hint" style={{ marginTop: 6 }}>
+                A mentor has signed off on this part. Only a mentor can change its release state now.
+              </div>
+            )}
           </div>
 
           <div className="details-section">

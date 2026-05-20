@@ -30,7 +30,13 @@ function topLevelOf(path: string): string {
 
 interface Props {
   hasProject: boolean
+  /** Full admin — sees team-wide config (Team Settings, Members,
+   *  Project Settings) and dangerous ops (factory reset). */
   isAdmin: boolean
+  /** Mentor OR admin — sees workflow tools (Parts Manager, Approvals,
+   *  Documents, Export Queue, Locks, Health, Tools, Project Registry).
+   *  isAdmin implies isMentor. */
+  isMentor: boolean
   onClose: () => void
   appVersion: string
   gitName: string
@@ -43,8 +49,13 @@ interface SidebarGroup {
   items: { id: AdminTab; label: string }[]
 }
 
-export default function AdminPage({ hasProject, isAdmin, onClose, appVersion, gitName, gitEmail, onProfileUpdate }: Props) {
-  const [tab, setTab] = useState<AdminTab>(isAdmin ? 'team-settings' : 'profile')
+export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appVersion, gitName, gitEmail, onProfileUpdate }: Props) {
+  const initialTab: AdminTab = isAdmin
+    ? 'team-settings'
+    : isMentor
+      ? (hasProject ? 'parts' : 'projects')
+      : 'profile'
+  const [tab, setTab] = useState<AdminTab>(initialTab)
 
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
@@ -413,9 +424,13 @@ export default function AdminPage({ hasProject, isAdmin, onClose, appVersion, gi
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  // Sidebar groups — students see only Profile + About
+  // Sidebar groups by role tier:
+  //   student → Profile, About only
+  //   mentor  → student + Project workflow (Parts/Approvals/Docs/Export),
+  //             Maintenance (Locks/Health/Tools), Project Registry
+  //   admin   → mentor + Team (Settings/Members), Project Settings
   const sidebarGroups: SidebarGroup[] = useMemo(() => {
-    if (!isAdmin) {
+    if (!isMentor) {
       return [{
         label: '',
         items: [
@@ -424,27 +439,28 @@ export default function AdminPage({ hasProject, isAdmin, onClose, appVersion, gi
         ]
       }]
     }
-    const groups: SidebarGroup[] = [
-      {
-        label: 'Team',
-        items: [
-          { id: 'team-settings', label: 'Team Settings' },
-          { id: 'members', label: 'Members' },
-          { id: 'projects', label: 'Projects' },
-        ]
-      }
-    ]
+    const groups: SidebarGroup[] = []
+
+    // Team group: admin-only (Team Settings + Members) + the shared
+    // Projects tab (registry) which mentors also see.
+    const teamItems: { id: AdminTab; label: string }[] = []
+    if (isAdmin) {
+      teamItems.push({ id: 'team-settings', label: 'Team Settings' })
+      teamItems.push({ id: 'members', label: 'Members' })
+    }
+    teamItems.push({ id: 'projects', label: 'Projects' })
+    groups.push({ label: 'Team', items: teamItems })
+
     if (hasProject) {
-      groups.push({
-        label: 'Project',
-        items: [
-          { id: 'project-settings', label: 'Settings' },
-          { id: 'parts', label: 'Parts Manager' },
-          { id: 'approvals', label: 'Approvals' },
-          { id: 'documents', label: 'Documents' },
-          { id: 'export-queue', label: 'Export Queue' },
-        ]
-      })
+      const projectItems: { id: AdminTab; label: string }[] = []
+      if (isAdmin) projectItems.push({ id: 'project-settings', label: 'Settings' })
+      projectItems.push(
+        { id: 'parts', label: 'Parts Manager' },
+        { id: 'approvals', label: 'Approvals' },
+        { id: 'documents', label: 'Documents' },
+        { id: 'export-queue', label: 'Export Queue' },
+      )
+      groups.push({ label: 'Project', items: projectItems })
       groups.push({
         label: 'Maintenance',
         items: [
@@ -462,7 +478,7 @@ export default function AdminPage({ hasProject, isAdmin, onClose, appVersion, gi
       ]
     })
     return groups
-  }, [hasProject, isAdmin])
+  }, [hasProject, isAdmin, isMentor])
 
   return (
     <div className="admin-fullscreen">
@@ -491,10 +507,10 @@ export default function AdminPage({ hasProject, isAdmin, onClose, appVersion, gi
         </nav>
         <div className="admin-content">
 
-        {tab === 'team-settings' && <TeamSettings />}
-        {tab === 'members' && <MembersPanel />}
-        {tab === 'projects' && <ProjectsPanel />}
-        {tab === 'project-settings' && hasProject && <ProjectSettings />}
+        {tab === 'team-settings' && isAdmin && <TeamSettings />}
+        {tab === 'members' && isAdmin && <MembersPanel isAdmin={isAdmin} />}
+        {tab === 'projects' && isMentor && <ProjectsPanel isMentor={isMentor} />}
+        {tab === 'project-settings' && hasProject && isAdmin && <ProjectSettings />}
 
         {tab === 'parts' && hasProject && (
           <PartsManager
@@ -753,24 +769,26 @@ export default function AdminPage({ hasProject, isAdmin, onClose, appVersion, gi
                 toggle it manually with Ctrl+7.
               </p>
             </div>
-            <div className="admin-section">
-              <h3>Reset</h3>
-              <p className="admin-hint">
-                Wipe all local settings — recent projects, team connection,
-                and admin overrides — and restart as if FrameCAD was just installed.
-              </p>
-              <button
-                className="toolbar-btn"
-                style={{ color: 'var(--red)', marginTop: 8 }}
-                onClick={async () => {
-                  if (!window.confirm('Reset FrameCAD to factory defaults? This clears all local settings and restarts the app.')) return
-                  await window.api.resetAllAppState()
-                  window.location.reload()
-                }}
-              >
-                Reset to factory defaults
-              </button>
-            </div>
+            {isAdmin && (
+              <div className="admin-section">
+                <h3>Reset</h3>
+                <p className="admin-hint">
+                  Wipe all local settings — recent projects, team connection,
+                  and admin overrides — and restart as if FrameCAD was just installed.
+                </p>
+                <button
+                  className="toolbar-btn"
+                  style={{ color: 'var(--red)', marginTop: 8 }}
+                  onClick={async () => {
+                    if (!window.confirm('Reset FrameCAD to factory defaults? This clears all local settings and restarts the app.')) return
+                    await window.api.resetAllAppState()
+                    window.location.reload()
+                  }}
+                >
+                  Reset to factory defaults
+                </button>
+              </div>
+            )}
           </>
         )}
 

@@ -1,7 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import type { CoordinationState } from '@shared/types'
 
-export default function ProjectsPanel() {
+interface Props {
+  /** Mentors and admins can add/remove projects from the registry. */
+  isMentor: boolean
+}
+
+export default function ProjectsPanel({ isMentor }: Props) {
   const [coordState, setCoordState] = useState<CoordinationState>({ configured: false })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -27,7 +32,7 @@ export default function ProjectsPanel() {
 
   useEffect(() => { refresh() }, [refresh])
 
-  const isAdmin = coordState.currentUserRole === 'admin' || coordState.currentUserRole === 'mentor'
+  const canEdit = isMentor
 
   const handleAddProject = async () => {
     if (!projectName.trim() || !projectUrl.trim()) return
@@ -104,7 +109,7 @@ export default function ProjectsPanel() {
                   <th>Name</th>
                   <th>URL</th>
                   <th>Description</th>
-                  {isAdmin && <th>Actions</th>}
+                  {canEdit &&<th>Actions</th>}
                 </tr>
               </thead>
               <tbody>
@@ -115,7 +120,7 @@ export default function ProjectsPanel() {
                       {p.repoUrl.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '')}
                     </td>
                     <td>{p.description || '—'}</td>
-                    {isAdmin && (
+                    {canEdit &&(
                       <td>
                         <button
                           className="toolbar-btn"
@@ -132,7 +137,7 @@ export default function ProjectsPanel() {
             </table>
           </div>
         )}
-        {isAdmin && (
+        {canEdit &&(
           <>
             {showAddProject ? (
               <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>

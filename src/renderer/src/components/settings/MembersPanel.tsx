@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
-import type { CoordinationState, JoinRequest, MemberRole } from '@shared/types'
+import { useState, useEffect } from 'react'
+import type { JoinRequest, MemberRole } from '@shared/types'
+import { useCoordState, forceRefreshCoordState } from '../../hooks/useCoordState'
 
 interface Props {
   /** Only admins can approve joins, add/remove members, or change roles. */
@@ -7,8 +8,11 @@ interface Props {
 }
 
 export default function MembersPanel({ isAdmin }: Props) {
-  const [coordState, setCoordState] = useState<CoordinationState>({ configured: false })
-  const [loading, setLoading] = useState(true)
+  // Pull from the shared coord-state cache instead of issuing our own
+  // syncCoordinationRepo() on mount — that used to git-pull every time
+  // the user switched to the Members tab, even when nothing had changed.
+  const { state: cachedState, loading } = useCoordState()
+  const coordState = cachedState ?? { configured: false }
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
 
@@ -17,20 +21,13 @@ export default function MembersPanel({ isAdmin }: Props) {
   const [addDisplayName, setAddDisplayName] = useState('')
   const [addRole, setAddRole] = useState<MemberRole>('student')
 
-  const refresh = useCallback(async () => {
-    setLoading(true)
+  // After a mutation succeeds, force-refresh so other mounted consumers
+  // (and our own UI) see the new roster.
+  const refresh = async () => {
     setError(null)
-    try {
-      const state = await window.api.syncCoordinationRepo()
-      setCoordState(state)
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => { refresh() }, [refresh])
+    try { await forceRefreshCoordState() }
+    catch (err) { setError((err as Error).message) }
+  }
 
   const [currentUsername, setCurrentUsername] = useState<string | null>(null)
   useEffect(() => {

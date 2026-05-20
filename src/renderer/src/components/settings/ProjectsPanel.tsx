@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import type { CoordinationState } from '@shared/types'
+import { useState } from 'react'
+import { useCoordState, forceRefreshCoordState } from '../../hooks/useCoordState'
 
 interface Props {
   /** Mentors and admins can add/remove projects from the registry. */
@@ -7,8 +7,10 @@ interface Props {
 }
 
 export default function ProjectsPanel({ isMentor }: Props) {
-  const [coordState, setCoordState] = useState<CoordinationState>({ configured: false })
-  const [loading, setLoading] = useState(true)
+  // Reads the shared coord-state cache; doesn't trigger its own
+  // syncCoordinationRepo() on every tab switch.
+  const { state: cachedState, loading } = useCoordState()
+  const coordState = cachedState ?? { configured: false }
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
 
@@ -17,20 +19,11 @@ export default function ProjectsPanel({ isMentor }: Props) {
   const [projectUrl, setProjectUrl] = useState('')
   const [projectDesc, setProjectDesc] = useState('')
 
-  const refresh = useCallback(async () => {
-    setLoading(true)
+  const refresh = async () => {
     setError(null)
-    try {
-      const state = await window.api.syncCoordinationRepo()
-      setCoordState(state)
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => { refresh() }, [refresh])
+    try { await forceRefreshCoordState() }
+    catch (err) { setError((err as Error).message) }
+  }
 
   const canEdit = isMentor
 

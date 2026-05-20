@@ -12,6 +12,7 @@ import Toolbar from './components/Toolbar'
 import DetailsPanel from './components/DetailsPanel'
 import AdminPage from './components/AdminPage'
 import ManufacturingQueue from './components/ManufacturingQueue'
+import { useApiBusy } from './hooks/useApiBusy'
 import ManufacturingModeShell from './components/ManufacturingModeShell'
 import OnboardingTour from './components/OnboardingTour'
 import Sidebar, { type SidebarSection } from './components/Sidebar'
@@ -1047,6 +1048,7 @@ export default function App() {
       {depsModal}
 
       <div className="status-bar">
+        <BusyLabel />
         {projectTotals && projectTotals.totalParts > 0 && (!adminConfig.hideMass || !adminConfig.hideCost) && (
           <>
             {!adminConfig.hideMass && (
@@ -1093,5 +1095,22 @@ export default function App() {
         )}
       </div>
     </div>
+  )
+}
+
+/**
+ * Status-bar pill that names what FrameCAD is currently doing in the
+ * background (e.g. "Cloning project", "Syncing"). Lit only when the
+ * activity has run past the 300 ms grace period in apiBusy, so quick
+ * reads don't flicker the label on every click.
+ */
+function BusyLabel(): JSX.Element | null {
+  const { busy, label } = useApiBusy()
+  if (!busy) return null
+  return (
+    <span className="status-item busy-label" aria-live="polite">
+      <span className="busy-label-spinner" />
+      {label}…
+    </span>
   )
 }

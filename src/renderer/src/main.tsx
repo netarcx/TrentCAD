@@ -1,9 +1,16 @@
 import { createRoot } from 'react-dom/client'
 import { Component, type ReactNode } from 'react'
 import App from './App'
+import BusyStripe from './components/BusyStripe'
+import { wrapWindowApi } from './lib/apiBusy'
 import '@fontsource/opendyslexic/400.css'
 import '@fontsource/opendyslexic/700.css'
 import './styles/global.css'
+
+// Patch window.api so every IPC call increments / decrements a global
+// activity counter. Must run BEFORE React mounts so the first calls
+// from useEffect (getProjectConfig, etc.) are tracked.
+wrapWindowApi()
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null }
@@ -15,4 +22,9 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
   }
 }
 
-createRoot(document.getElementById('root')!).render(<ErrorBoundary><App /></ErrorBoundary>)
+createRoot(document.getElementById('root')!).render(
+  <ErrorBoundary>
+    <BusyStripe />
+    <App />
+  </ErrorBoundary>
+)

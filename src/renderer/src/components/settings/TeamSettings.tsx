@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
-import type { GlobalAdminConfig, GlobalAdminState, CoordinationState } from '@shared/types'
+import { useState, useEffect } from 'react'
+import type { GlobalAdminConfig, GlobalAdminState } from '@shared/types'
+import { useCoordState, forceRefreshCoordState, invalidateCoordState } from '../../hooks/useCoordState'
 import ErrorMsg from '../ErrorMsg'
 
 export default function TeamSettings() {
@@ -9,8 +10,10 @@ export default function TeamSettings() {
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
 
-  const [coordState, setCoordState] = useState<CoordinationState>({ configured: false })
-  const [coordLoading, setCoordLoading] = useState(true)
+  // Shared coord-state cache — no longer triggers our own git-pull
+  // every time the tab opens.
+  const { state: cachedCoord, loading: coordLoading } = useCoordState()
+  const coordState = cachedCoord ?? { configured: false }
 
   useEffect(() => {
     window.api.getGlobalAdmin()
@@ -21,19 +24,11 @@ export default function TeamSettings() {
       .catch(() => {})
   }, [])
 
-  const refreshCoord = useCallback(async () => {
-    setCoordLoading(true)
-    try {
-      const state = await window.api.syncCoordinationRepo()
-      setCoordState(state)
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setCoordLoading(false)
-    }
-  }, [])
-
-  useEffect(() => { refreshCoord() }, [refreshCoord])
+  const refreshCoord = async () => {
+    setError(null)
+    try { await forceRefreshCoordState() }
+    catch (err) { setError((err as Error).message) }
+  }
 
   const set = <K extends keyof GlobalAdminConfig>(key: K, value: GlobalAdminConfig[K]) => {
     setForm(prev => ({ ...prev, [key]: value }))
@@ -75,6 +70,9 @@ export default function TeamSettings() {
     setError(null)
     try {
       await window.api.disconnectCoordinationRepo()
+      // Drop the cache — the repo we were just connected to is no
+      // longer relevant; force the next consumer to re-fetch.
+      invalidateCoordState()
       await refreshCoord()
     } catch (err) {
       setError((err as Error).message)

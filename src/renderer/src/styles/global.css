@@ -4112,6 +4112,64 @@ body.slam-shake {
   to { transform: rotate(360deg); }
 }
 
+/* Global "FrameCAD is doing something" indicator. A 2px animated stripe
+   pinned to the top of the window, visible whenever any IPC call has
+   been in flight for more than 300 ms. Lives above everything (z-index
+   tops the admin overlay at 1950) so a long clone is visible even mid-
+   modal. */
+.busy-stripe {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--bg-secondary);
+  overflow: hidden;
+  z-index: 2500;
+  pointer-events: none;
+}
+
+.busy-stripe-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  background: linear-gradient(90deg,
+    transparent,
+    var(--accent),
+    transparent);
+  animation: busy-stripe-slide 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes busy-stripe-slide {
+  0%   { left: -40%; }
+  100% { left: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .busy-stripe-bar {
+    animation: none;
+    left: 30%;
+    opacity: 0.6;
+  }
+}
+
+/* Status-bar activity label, e.g. "⟳ Cloning project…" */
+.status-bar .busy-label {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.busy-label-spinner {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
 
 .modal-actions {
   display: flex;

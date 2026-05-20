@@ -57,6 +57,22 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
       : 'profile'
   const [tab, setTab] = useState<AdminTab>(initialTab)
 
+  // If the user's role changes mid-session (e.g. demoted via the
+  // coordination repo refresh), the tab they're on may no longer be
+  // visible to them — snap them back to a tab they can actually see
+  // so they aren't staring at a blank content pane.
+  useEffect(() => {
+    const adminOnly: AdminTab[] = ['team-settings', 'members', 'project-settings']
+    const mentorOrAbove: AdminTab[] = ['projects', 'parts', 'approvals', 'documents', 'export-queue', 'locks', 'health', 'tools']
+    if (adminOnly.includes(tab) && !isAdmin) {
+      setTab(initialTab)
+    } else if (mentorOrAbove.includes(tab) && !isMentor) {
+      setTab('profile')
+    } else if ((tab === 'project-settings' || tab === 'parts' || tab === 'approvals' || tab === 'documents' || tab === 'export-queue' || tab === 'locks' || tab === 'health' || tab === 'tools') && !hasProject) {
+      setTab(isAdmin ? 'team-settings' : isMentor ? 'projects' : 'profile')
+    }
+  }, [tab, isAdmin, isMentor, hasProject, initialTab])
+
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [generating, setGenerating] = useState<null | 'bom' | 'manufacturing' | 'summary' | 'bom-by-subsystem'>(null)

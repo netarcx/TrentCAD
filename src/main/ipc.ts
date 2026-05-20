@@ -376,6 +376,14 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('reset-all-app-state', async () => {
     await resetAllAppState()
+    // Relaunch after the IPC reply has had a moment to reach the
+    // renderer. A full process restart guarantees Chromium re-opens
+    // its leveldb stores clean — a window.location.reload() would
+    // keep the same process alive and re-flush stale state.
+    setTimeout(() => {
+      app.relaunch()
+      app.exit(0)
+    }, 200)
   })
 
   ipcMain.handle('sync-cots', async () => {

@@ -1,4 +1,4 @@
-import { app } from 'electron'
+import { app, session } from 'electron'
 import path from 'path'
 import fs from 'fs/promises'
 import type { ProjectConfig } from '@shared/types'
@@ -171,12 +171,48 @@ export async function setCoordinationRepoUrl(url: string | undefined): Promise<v
   await writeConfig(config)
 }
 
+/**
+ * Wipe everything that accumulates on disk so the next launch looks
+ * like a fresh install. Covers:
+ *   - our own JSON files (recent projects, coord URL, admin overrides)
+ *   - the cloned coordination repo
+ *   - Chromium-managed renderer state (localStorage, sessionStorage,
+ *     IndexedDB, cookies, service workers, caches) — this is what was
+ *     missing from the old reset: onboarding-seen flag, theme,
+ *     operator initials, screensaver toggle all live here
+ *   - electron-updater cache so update prompts replay from scratch
+ *
+ * Intentionally NOT cleared:
+ *   - Global git identity (~/.gitconfig) — user's real-world identity,
+ *     not something they expect a CAD app to forget
+ *   - `gh` CLI auth tokens — those are a system-wide login
+ *   - SolidWorks add-in registration — installed separately
+ *   - Chromium Preferences file (window position) — minor; file is
+ *     locked while the app runs anyway, so trying to delete it during
+ *     a live session is a Windows-flakiness risk
+ */
 export async function resetAllAppState(): Promise<void> {
+  // Chromium-managed storage via the official session API. Doing this
+  // through Electron's API rather than rm'ing leveldb files directly
+  // avoids the "file in use" failures we'd hit on Windows.
+  try {
+    await session.defaultSession.clearStorageData({
+      storages: ['cookies', 'localstorage', 'indexdb', 'shadercache', 'cachestorage', 'serviceworkers']
+    })
+    await session.defaultSession.clearCache()
+  } catch { /* best effort — fall through to disk wipe */ }
+
   const userData = app.getPath('userData')
-  // Wipe main config (recent projects, coordination URL, cached browse)
+  // Our own JSON files (recent projects, coordination URL, cached browse)
   await fs.rm(path.join(userData, CONFIG_FILE), { force: true })
-  // Wipe global admin overrides
+  // Legacy app-config from the trentcad-era name — clear in case the
+  // rename migration left it behind on some installs
+  await fs.rm(path.join(userData, LEGACY_CONFIG_FILE), { force: true })
+  // Global admin overrides (team name, GitHub org, prefix, welcome message)
   await fs.rm(path.join(userData, 'global-admin.json'), { force: true })
-  // Wipe cloned coordination repo
+  // Cloned coordination repo (members.json, team.json, projects.json + .git)
   await fs.rm(path.join(userData, 'coordination'), { recursive: true, force: true })
+  // electron-updater cache so update banners and pending downloads reset
+  await fs.rm(path.join(userData, 'pending'), { recursive: true, force: true })
+  await fs.rm(path.join(userData, 'electron-updater.cache'), { force: true })
 }

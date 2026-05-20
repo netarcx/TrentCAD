@@ -789,16 +789,26 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
               <div className="admin-section">
                 <h3>Reset</h3>
                 <p className="admin-hint">
-                  Wipe all local settings — recent projects, team connection,
-                  and admin overrides — and restart as if FrameCAD was just installed.
+                  Wipe everything stored on this computer — recent projects,
+                  team connection, saved preferences (theme, onboarding,
+                  operator initials, screensaver setting), update cache —
+                  and restart FrameCAD fresh. Your GitHub login and global
+                  git identity (~/.gitconfig) are left alone.
                 </p>
                 <button
                   className="toolbar-btn"
                   style={{ color: 'var(--red)', marginTop: 8 }}
                   onClick={async () => {
-                    if (!window.confirm('Reset FrameCAD to factory defaults? This clears all local settings and restarts the app.')) return
-                    await window.api.resetAllAppState()
-                    window.location.reload()
+                    if (!window.confirm('Reset FrameCAD to factory defaults?\n\nThis clears ALL local settings and immediately restarts the app. You will go through the welcome / onboarding flow again.')) return
+                    // Drop in-memory state first so any final renders
+                    // before the relaunch don't write stale values back
+                    // through the session API we're about to invoke.
+                    try { localStorage.clear() } catch { /* ignore */ }
+                    try { sessionStorage.clear() } catch { /* ignore */ }
+                    // The main process clears Chromium storage + JSON
+                    // files, then calls app.relaunch() + app.exit() —
+                    // this promise will be cut short by the exit.
+                    window.api.resetAllAppState().catch(() => { /* exit interrupts */ })
                   }}
                 >
                   Reset to factory defaults

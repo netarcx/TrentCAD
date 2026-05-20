@@ -552,6 +552,11 @@ async function migrateLegacyMetaDir(dirPath: string): Promise<void> {
 }
 
 export async function openProject(dirPath: string): Promise<void> {
+  try {
+    await fs.access(dirPath)
+  } catch {
+    throw new Error(`Project folder not found: ${dirPath}`)
+  }
   await addSafeDirectory(dirPath)
   await addSafeDirectory(path.dirname(dirPath))
   await migrateLegacyMetaDir(dirPath)

@@ -532,16 +532,18 @@ export async function getProjectTotals(): Promise<ProjectTotals> {
  */
 export function annotateMeta(
   entries: Array<{ path: string; isDirectory: boolean; children?: unknown[]; releaseState?: ReleaseState; commentCount?: number }>,
-  meta: PartsMetaFile
+  meta: PartsMetaFile,
+  gitPrefix = ''
 ): void {
   for (const entry of entries) {
     if (!entry.isDirectory) {
-      const m = meta[entry.path]
+      const key = gitPrefix ? `${gitPrefix}/${entry.path}` : entry.path
+      const m = meta[key]
       if (m?.release?.state) entry.releaseState = m.release.state
       if (m?.comments?.length) entry.commentCount = m.comments.length
     }
     if (entry.children) {
-      annotateMeta(entry.children as typeof entries, meta)
+      annotateMeta(entry.children as typeof entries, meta, gitPrefix)
     }
   }
 }

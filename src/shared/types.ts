@@ -196,6 +196,31 @@ export interface AdminConfig {
   hideMass?: boolean
   /** As above for cost. */
   hideCost?: boolean
+  /**
+   * Subfolder inside the repo that holds the active project's content.
+   * When set, FrameCAD presents this folder AS the project root — the
+   * file tree only shows files inside it, new parts get created there
+   * by default, and `parts.json` continues to live at the GIT root and
+   * holds entries keyed by repo-relative paths.
+   *
+   * Use case: monorepo-style team repos where the robot lives at e.g.
+   * `2026 Rebuilt/` and siblings like `COTS/` or `2025 Archive/` are
+   * unrelated to the active project. Forward slashes, no leading or
+   * trailing slash (e.g. `"2026 Rebuilt"`, not `"/2026 Rebuilt/"`).
+   * Empty or undefined = repo root is the project root (original
+   * behaviour, every existing project).
+   */
+  projectSubpath?: string
+  /**
+   * Optional sibling subfolder inside the SAME repo that holds COTS
+   * parts. When set, the file tree hides this folder from project
+   * views (it's not part of the active project) while still letting
+   * the BOM and Where-Used see those parts. Mutually exclusive with
+   * the `cotsRepoUrl` / `cotsBranch` "COTS lives in a separate repo"
+   * flow: if both are set, the separate-repo flow wins. Same format
+   * rules as `projectSubpath`.
+   */
+  cotsSubpath?: string
 }
 
 /**

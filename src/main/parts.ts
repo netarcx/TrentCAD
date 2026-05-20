@@ -577,14 +577,28 @@ export async function createSubsystem(
   return { folderPath }
 }
 
-export function annotatePartNumbers(entries: FileEntry[], manifest: PartsManifest): void {
+/**
+ * Walk the file tree and annotate each file entry with its part
+ * number + description from the manifest.
+ *
+ * `gitPrefix` is prepended to each entry.path before looking it up
+ * in `manifest.entries` — that's how subpath-relative tree paths
+ * (e.g. `Drivetrain/swerve.sldprt`) map back to the git-relative
+ * keys the manifest stores (e.g. `2026 Rebuilt/Drivetrain/swerve.sldprt`).
+ * Pass an empty string (the default) when no subpath is configured.
+ */
+export function annotatePartNumbers(entries: FileEntry[], manifest: PartsManifest, gitPrefix = ''): void {
   for (const entry of entries) {
-    if (!entry.isDirectory && manifest.entries[entry.path]) {
-      entry.partNumber = manifest.entries[entry.path].partNumber
-      entry.partDescription = manifest.entries[entry.path].description
+    if (!entry.isDirectory) {
+      const key = gitPrefix ? `${gitPrefix}/${entry.path}` : entry.path
+      const hit = manifest.entries[key]
+      if (hit) {
+        entry.partNumber = hit.partNumber
+        entry.partDescription = hit.description
+      }
     }
     if (entry.children) {
-      annotatePartNumbers(entry.children, manifest)
+      annotatePartNumbers(entry.children, manifest, gitPrefix)
     }
   }
 }

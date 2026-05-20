@@ -1342,6 +1342,15 @@ export async function getStatus(): Promise<FileEntry[]> {
   const g = getGit()
   const dirPath = getProjectPath()
   const status = await g.status()
+  const { getProjectSubpath, getCotsSubpath, toProjectRel } = await import('./paths')
+  const subpath = getProjectSubpath()
+  const cotsSubpath = getCotsSubpath()
+  // When a project subpath is set, scan ONLY inside it; the tree
+  // surfaces files relative to that subfolder so the UI can render
+  // it AS the project root. With no subpath, scan from the repo root
+  // as before — but still hide cotsSubpath siblings from the project
+  // view when one's configured.
+  const scanRoot = subpath ? path.join(dirPath, subpath) : dirPath
 
   // Prefer `git lfs locks --verify` because it tells us authoritatively
   // which locks are *ours* based on the authenticated GitHub identity.
@@ -1351,12 +1360,31 @@ export async function getStatus(): Promise<FileEntry[]> {
   // local git config (e.g. "trentfox1") — making Check In impossible
   // from the UI because the button only enables for `locked-by-you`.
   const verified = await verifyLocks()
-  const oursSet = new Set(verified.ours.map(l => l.path))
   const allLocks = verified.ours.length + verified.theirs.length > 0
     ? [...verified.ours, ...verified.theirs]
     : await getLocks()
 
-  const lockMap = new Map(allLocks.map(l => [l.path, l]))
+  // Translate every lock / status path to the SAME frame the tree uses
+  // (subpath-relative when a project subpath is set). Anything outside
+  // the subpath returns null and is dropped — those locks belong to a
+  // sibling project / COTS folder and shouldn't taint our view.
+  const oursSet = new Set<string>()
+  for (const l of verified.ours) {
+    const r = toProjectRel(l.path)
+    if (r !== null) oursSet.add(r)
+  }
+  const lockMap = new Map<string, LockInfo>()
+  for (const l of allLocks) {
+    const r = toProjectRel(l.path)
+    if (r !== null) lockMap.set(r, l)
+  }
+  // Status files keyed by subpath-relative path so the find() below
+  // resolves cleanly against `relPath`.
+  const statusByRel = new Map<string, typeof status.files[number]>()
+  for (const f of status.files) {
+    const r = toProjectRel(f.path)
+    if (r !== null) statusByRel.set(r, f)
+  }
 
   // Used only as a last-resort fallback when --verify returns nothing
   // (offline, anonymous LFS server, etc.) and we have to guess.
@@ -1375,6 +1403,11 @@ export async function getStatus(): Promise<FileEntry[]> {
       // Hide system / dotfiles and the parts manifest from the browser so
       // students don't see (or accidentally edit) the metadata layer
       if (item.startsWith('.') || item === 'parts.json') continue
+      // When no project subpath is set but a COTS subpath is, hide
+      // that top-level folder so it doesn't bleed into the project's
+      // file tree. (When a project subpath IS set, COTS as a sibling
+      // is already outside scanRoot.)
+      if (!subpath && cotsSubpath && dir === dirPath && item === cotsSubpath) continue
 
       const fullPath = path.join(dir, item)
       const relPath = path.relative(relativeTo, fullPath).replace(/\\/g, '/')
@@ -1387,7 +1420,7 @@ export async function getStatus(): Promise<FileEntry[]> {
       let lockedBy: string | undefined
 
       if (!isDirectory) {
-        const statusFile = status.files.find(f => f.path === relPath)
+        const statusFile = statusByRel.get(relPath)
         if (statusFile) {
           if (statusFile.index === '?' || statusFile.working_dir === '?') {
             state = 'untracked'
@@ -1428,16 +1461,19 @@ export async function getStatus(): Promise<FileEntry[]> {
     return entries
   }
 
-  const result = await buildTree(dirPath, dirPath)
+  // Pass scanRoot as both args so file paths come back relative to the
+  // (apparent) project root — that's what the renderer treats as the
+  // canonical path identifier.
+  const result = await buildTree(scanRoot, scanRoot)
   try {
     const manifest = await loadManifest()
-    annotatePartNumbers(result, manifest)
+    annotatePartNumbers(result, manifest, subpath)
   } catch {
     // parts.json may not exist yet for joined/legacy projects
   }
   try {
     const meta = await loadAllMeta()
-    annotateMeta(result, meta)
+    annotateMeta(result, meta, subpath)
   } catch {
     // parts-meta.json may not exist
   }

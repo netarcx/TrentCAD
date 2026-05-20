@@ -3667,6 +3667,12 @@ body.slam-shake {
 }
 
 .admin-sidebar-item {
+  /* Force each tab onto its own row — `button` defaults to inline-block,
+     which let short labels pair up sideways inside the group wrapper.
+     `display: block` + `width: 100%` makes the sidebar read as a clean
+     vertical list regardless of label length. */
+  display: block;
+  width: 100%;
   padding: 10px 20px;
   background: transparent;
   border: none;

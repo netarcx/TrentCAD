@@ -5,6 +5,7 @@ import * as gitOps from './git'
 import * as lockOps from './locking'
 import * as partsOps from './parts'
 import * as adminOps from './admin'
+import * as pathsOps from './paths'
 import * as depsOps from './deps'
 import * as authOps from './auth'
 import { reportIssue } from './issue'
@@ -139,8 +140,13 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     currentProject = { name, path: dirPath, remote }
     await addRecentProject(currentProject)
     setRestProject(currentProject)
-    // Apply admin config: pull the shared COTS library in the background
+    // Apply admin config: load the project / COTS subpaths into the
+    // path-translation cache so the file tree, locks, and watcher all
+    // honour them immediately. Then pull the shared COTS library in
+    // the background if one's configured.
     adminOps.loadAdminConfig().then(cfg => {
+      pathsOps.setProjectSubpath(cfg.projectSubpath ?? '')
+      pathsOps.setCotsSubpath(cfg.cotsSubpath ?? '')
       if (cfg.cotsRepoUrl) gitOps.syncCotsRepo(cfg.cotsRepoUrl, cfg.cotsBranch).catch(() => {})
     }).catch(() => {})
     const win = getMainWindow()
@@ -185,15 +191,18 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('check-out', async (_e, filePath: string) => {
-    await lockOps.checkOut(filePath)
+    // Translate the (apparent project-root)-relative path the renderer
+    // sends back to the git-relative form `git lfs lock` expects. No-op
+    // when no subpath is configured.
+    await lockOps.checkOut(pathsOps.toGitRel(filePath))
   })
 
   ipcMain.handle('check-in', async (_e, filePath: string) => {
-    await lockOps.checkIn(filePath)
+    await lockOps.checkIn(pathsOps.toGitRel(filePath))
   })
 
   ipcMain.handle('force-check-in', async (_e, filePath: string) => {
-    await lockOps.forceCheckIn(filePath)
+    await lockOps.forceCheckIn(pathsOps.toGitRel(filePath))
     broadcastStatus(getMainWindow)
   })
 
@@ -237,19 +246,30 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('create-new-part', async (_e, folder: string, description?: string) => {
-    const result = await partsOps.createNewPart(folder, description)
+    // Folder arg comes from the renderer as a subpath-relative path
+    // (or empty for "project root"). Translate to git-rel for the
+    // parts engine, then translate the returned filePath back so the
+    // UI doesn't see the subpath prefix.
+    const gitFolder = pathsOps.toGitRel(folder || '')
+    const result = await partsOps.createNewPart(gitFolder, description)
     queuePendingCreate('part', result.filePath, result.partNumber)
-    return result
+    const displayPath = pathsOps.toProjectRel(result.filePath) ?? result.filePath
+    return { ...result, filePath: displayPath }
   })
 
   ipcMain.handle('create-new-assembly', async (_e, parentFolder: string, name: string, description?: string) => {
-    const result = await partsOps.createNewAssembly(parentFolder, name, description)
+    const gitFolder = pathsOps.toGitRel(parentFolder || '')
+    const result = await partsOps.createNewAssembly(gitFolder, name, description)
     queuePendingCreate('assembly', result.filePath, result.partNumber)
-    return result
+    const displayPath = pathsOps.toProjectRel(result.filePath) ?? result.filePath
+    return { ...result, filePath: displayPath }
   })
 
   ipcMain.handle('create-subsystem', async (_e, parentFolder: string, name: string) => {
-    return partsOps.createSubsystem(parentFolder, name)
+    const gitFolder = pathsOps.toGitRel(parentFolder || '')
+    const result = await partsOps.createSubsystem(gitFolder, name)
+    const displayPath = pathsOps.toProjectRel(result.folderPath) ?? result.folderPath
+    return { ...result, folderPath: displayPath }
   })
 
   ipcMain.handle('get-recent-projects', async () => {
@@ -277,6 +297,9 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     clearRestProject()
     stopWatching()
     clearThumbnailCache()
+    // Drop the cached subpath so opening a different project next
+    // doesn't accidentally inherit this one's filter.
+    pathsOps.clearSubpathCache()
   })
 
   ipcMain.handle('get-app-version', () => app.getVersion())
@@ -352,6 +375,12 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     if (config?.mainRepoUrl) {
       try { await gitOps.setMainRemoteUrl(config.mainRepoUrl) } catch { /* leave to admin */ }
     }
+    // Live-update the path cache so a change to projectSubpath /
+    // cotsSubpath takes effect on the very next getStatus broadcast
+    // (no restart required).
+    pathsOps.setProjectSubpath(config?.projectSubpath ?? '')
+    pathsOps.setCotsSubpath(config?.cotsSubpath ?? '')
+    broadcastStatus(getMainWindow)
   })
 
   ipcMain.handle('get-global-admin', async () => {
@@ -403,40 +432,50 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     return gitOps.createProgressTag(name, message)
   })
 
+  // Every handler that takes a `filePath` first translates the path
+  // the renderer supplied (subpath-relative) into the git-relative
+  // form the manifest, meta, and git CLI use. When no subpath is
+  // configured these are no-ops.
   ipcMain.handle('get-part-meta', async (_e, filePath: string) => {
-    return metaOps.getPartMeta(filePath)
+    return metaOps.getPartMeta(pathsOps.toGitRel(filePath))
   })
 
   ipcMain.handle('get-where-used', async (_e, filePath: string) => {
-    return partsOps.findWhereUsed(filePath)
+    // Returned paths are git-relative (manifest keys). Translate each
+    // back to subpath-relative so the renderer can use them as paths
+    // into the file tree it's already showing.
+    const refs = await partsOps.findWhereUsed(pathsOps.toGitRel(filePath))
+    return refs
+      .map(p => pathsOps.toProjectRel(p))
+      .filter((p): p is string => p !== null)
   })
 
   ipcMain.handle('get-thumbnail', async (_e, filePath: string, size: number) => {
-    return getThumbnail(filePath, size)
+    return getThumbnail(pathsOps.toGitRel(filePath), size)
   })
 
   ipcMain.handle('set-release-state', async (_e, filePath: string, state: string, note?: string) => {
-    await metaOps.setReleaseState(filePath, state as Parameters<typeof metaOps.setReleaseState>[1], note)
+    await metaOps.setReleaseState(pathsOps.toGitRel(filePath), state as Parameters<typeof metaOps.setReleaseState>[1], note)
     broadcastStatus(getMainWindow)
   })
 
   ipcMain.handle('add-comment', async (_e, filePath: string, text: string) => {
-    await metaOps.addComment(filePath, text)
+    await metaOps.addComment(pathsOps.toGitRel(filePath), text)
     broadcastStatus(getMainWindow)
   })
 
   ipcMain.handle('set-manufacturing-notes', async (_e, filePath: string, notes: string) => {
-    await metaOps.setManufacturingNotes(filePath, notes)
+    await metaOps.setManufacturingNotes(pathsOps.toGitRel(filePath), notes)
     broadcastStatus(getMainWindow)
   })
 
   ipcMain.handle('set-part-mass', async (_e, filePath: string, mass: number | null) => {
-    await metaOps.setPartMass(filePath, mass)
+    await metaOps.setPartMass(pathsOps.toGitRel(filePath), mass)
     broadcastStatus(getMainWindow)
   })
 
   ipcMain.handle('set-part-cost', async (_e, filePath: string, cost: number | null) => {
-    await metaOps.setPartCost(filePath, cost)
+    await metaOps.setPartCost(pathsOps.toGitRel(filePath), cost)
     broadcastStatus(getMainWindow)
   })
 
@@ -445,12 +484,12 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('set-mfg-method', async (_e, filePath: string, method: string | null) => {
-    await metaOps.setManufacturingMethod(filePath, method as Parameters<typeof metaOps.setManufacturingMethod>[1])
+    await metaOps.setManufacturingMethod(pathsOps.toGitRel(filePath), method as Parameters<typeof metaOps.setManufacturingMethod>[1])
     broadcastStatus(getMainWindow)
   })
 
   ipcMain.handle('set-mfg-material', async (_e, filePath: string, material: string) => {
-    await metaOps.setManufacturingMaterial(filePath, material)
+    await metaOps.setManufacturingMaterial(pathsOps.toGitRel(filePath), material)
     broadcastStatus(getMainWindow)
   })
 
@@ -485,12 +524,13 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     if (!exportQueue.isSwAlive()) {
       throw new Error('SolidWorks is not connected. Open SolidWorks with the FrameCAD add-in, then try again.')
     }
+    const gitPath = pathsOps.toGitRel(filePath)
     const queue = await metaOps.getManufacturingQueue()
-    const item = queue.find(q => q.path === filePath)
+    const item = queue.find(q => q.path === gitPath)
     if (!item) throw new Error(`Part not released or not found: ${filePath}`)
     if (!item.needsExport) return { taskId: null, alreadyExists: true }
     const projectPath = gitOps.getProjectPath()
-    const task = exportQueue.queuePendingExport(projectPath, filePath, item.needsExport)
+    const task = exportQueue.queuePendingExport(projectPath, gitPath, item.needsExport)
     return { taskId: task?.id ?? null, alreadyExists: false }
   })
 

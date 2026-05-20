@@ -123,6 +123,35 @@ export default function ProjectSettings() {
       </p>
 
       <div className="admin-section">
+        <h3>Project Layout</h3>
+        <label>Project subfolder</label>
+        <input
+          value={config.projectSubpath ?? ''}
+          onChange={e => set('projectSubpath', e.target.value)}
+          placeholder='e.g. "2026 Rebuilt"'
+        />
+        <p className="admin-hint">
+          When set, FrameCAD treats this subfolder of the repo as the
+          project root — the file tree only shows files inside it, and
+          new parts are created there by default. Leave blank if the
+          repo root is your project. Use forward slashes; no leading or
+          trailing slash. <strong>Empty = repo root (the default).</strong>
+        </p>
+        <label>COTS subfolder (optional)</label>
+        <input
+          value={config.cotsSubpath ?? ''}
+          onChange={e => set('cotsSubpath', e.target.value)}
+          placeholder='e.g. "COTS"'
+        />
+        <p className="admin-hint">
+          A sibling subfolder in this repo holding commercial off-the-shelf
+          parts. Setting this hides it from the project file tree without
+          requiring a separate COTS repo. Use the "COTS Library" section
+          below instead if your COTS lives in a different repo.
+        </p>
+      </div>
+
+      <div className="admin-section">
         <h3>Part Numbering</h3>
         <label>Default part-number prefix</label>
         <input

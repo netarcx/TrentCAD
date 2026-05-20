@@ -29,7 +29,7 @@ export interface PartReleaseInfo {
 export type ManufacturingMethod = 'print' | 'cnc' | 'manual' | 'other'
 
 export interface DeepLinkPayload {
-  action: 'join'
+  action: 'join' | 'team'
   url: string
 }
 
@@ -217,6 +217,53 @@ export interface GlobalAdminState {
   hasLocalOverride: boolean
 }
 
+// ── Coordination Repo ──
+
+export type MemberRole = 'admin' | 'mentor' | 'student'
+export type MemberStatus = 'active' | 'inactive'
+
+export interface TeamConfig {
+  teamName: string
+  welcomeMessage?: string
+  gitHubOrg: string
+  projectPrefix: string
+}
+
+export interface TeamMember {
+  githubUsername: string
+  displayName: string
+  role: MemberRole
+  status: MemberStatus
+  joinedAt: string
+}
+
+export interface ProjectEntry {
+  name: string
+  repoUrl: string
+  description?: string
+  createdAt: string
+  archived?: boolean
+}
+
+export interface JoinRequest {
+  issueNumber: number
+  githubUsername: string
+  displayName: string
+  requestedAt: string
+}
+
+export interface CoordinationState {
+  configured: boolean
+  repoUrl?: string
+  team?: TeamConfig
+  members?: TeamMember[]
+  projects?: ProjectEntry[]
+  isMember?: boolean
+  currentUserRole?: MemberRole
+  pendingRequests?: JoinRequest[]
+  lastSyncAt?: string
+}
+
 export interface GitHubRepoSummary {
   name: string
   description?: string
@@ -347,6 +394,24 @@ export interface IpcApi {
   onUpdateDownloaded(callback: () => void): () => void
   onPublishProgress(callback: (progress: PublishProgress) => void): () => void
   onJoinProgress(callback: (progress: PublishProgress) => void): () => void
+
+  // Coordination repo
+  getCoordinationState(): Promise<CoordinationState>
+  previewCoordinationRepo(repoUrl: string): Promise<CoordinationState>
+  setupCoordinationRepo(repoUrl: string): Promise<CoordinationState>
+  createCoordinationRepo(org: string, repoName: string): Promise<{ success: boolean; url?: string; error?: string }>
+  syncCoordinationRepo(): Promise<CoordinationState>
+  disconnectCoordinationRepo(): Promise<void>
+  requestToJoinTeam(displayName: string): Promise<{ success: boolean; issueNumber?: number; error?: string }>
+  getPendingJoinRequests(): Promise<JoinRequest[]>
+  approveJoinRequest(githubUsername: string, displayName: string, role: MemberRole, issueNumber: number): Promise<{ orgInviteFailed?: boolean }>
+  denyJoinRequest(issueNumber: number): Promise<void>
+  addTeamMember(member: Omit<TeamMember, 'joinedAt'>): Promise<void>
+  removeTeamMember(githubUsername: string): Promise<void>
+  updateTeamMember(githubUsername: string, updates: Partial<Pick<TeamMember, 'role' | 'status' | 'displayName'>>): Promise<void>
+  saveTeamConfig(config: TeamConfig): Promise<void>
+  addProjectToRegistry(project: Omit<ProjectEntry, 'createdAt'>): Promise<void>
+  removeProjectFromRegistry(repoUrl: string): Promise<void>
 }
 
 declare global {

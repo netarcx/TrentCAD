@@ -14,17 +14,17 @@ let mainWindow: BrowserWindow | null = null
 // once it has mounted.
 let pendingDeepLink: string | null = null
 
-function parseFrameCADUrl(rawUrl: string): { action: 'join'; url: string } | null {
+function parseFrameCADUrl(rawUrl: string): { action: 'join' | 'team'; url: string } | null {
   try {
     const u = new URL(rawUrl)
     if (u.protocol !== 'framecad:') return null
     // Both `framecad://join?url=...` (host=join) and `framecad:join?url=...`
     // (pathname=join) are valid depending on the platform's URL parser.
     const action = u.hostname || u.pathname.replace(/^\/+/, '').split('/')[0]
-    if (action === 'join') {
+    if (action === 'join' || action === 'team') {
       const target = u.searchParams.get('url')
       if (!target) return null
-      return { action: 'join', url: target }
+      return { action, url: target }
     }
     return null
   } catch {

@@ -20,7 +20,7 @@ import ActivityView from './components/ActivityView'
 import PartsManager from './components/PartsManager'
 import ApprovalsPanel from './components/ApprovalsPanel'
 import logoUrl from './assets/logo.png'
-import type { AdminConfig, DependencyStatus, FileEntry, GlobalAdminConfig, ProjectTotals, PublishProgress, UpdateInfo } from '@shared/types'
+import type { AdminConfig, CoordinationState, DependencyStatus, FileEntry, GlobalAdminConfig, ProjectTotals, PublishProgress, UpdateInfo } from '@shared/types'
 
 function countByState(files: FileEntry[], state: string): number {
   let count = 0
@@ -89,11 +89,26 @@ export default function App() {
   const [adminConfig, setAdminConfig] = useState<AdminConfig>({})
   const [globalAdmin, setGlobalAdmin] = useState<GlobalAdminConfig>({})
 
+  const [localGlobalAdmin, setLocalGlobalAdmin] = useState<GlobalAdminConfig>({})
   const refreshGlobalAdmin = useCallback(() => {
     window.api.getGlobalAdmin()
-      .then(state => setGlobalAdmin(state.effective))
+      .then(state => setLocalGlobalAdmin(state.effective))
       .catch(() => {})
   }, [])
+
+  // Coordination repo team.json takes priority over local/build-time defaults
+  useEffect(() => {
+    if (coordState.configured && coordState.team) {
+      setGlobalAdmin({
+        teamName: coordState.team.teamName ?? localGlobalAdmin.teamName,
+        welcomeMessage: coordState.team.welcomeMessage ?? localGlobalAdmin.welcomeMessage,
+        gitHubOrg: coordState.team.gitHubOrg ?? localGlobalAdmin.gitHubOrg,
+        projectPrefix: coordState.team.projectPrefix ?? localGlobalAdmin.projectPrefix
+      })
+    } else {
+      setGlobalAdmin(localGlobalAdmin)
+    }
+  }, [coordState, localGlobalAdmin])
 
   // Welcome-screen admin (kept for when no project is open)
   const [showAdmin, setShowAdmin] = useState(false)
@@ -146,21 +161,41 @@ export default function App() {
   // subsequent deep-link event (warm app).
   const [deepLinkJoinUrl, setDeepLinkJoinUrl] = useState<string | null>(null)
   const [deepLinkSeq, setDeepLinkSeq] = useState(0)
+  const [deepLinkTeamUrl, setDeepLinkTeamUrl] = useState<string | null>(null)
+  const [deepLinkTeamSeq, setDeepLinkTeamSeq] = useState(0)
   useEffect(() => {
     window.api.consumePendingDeepLink().then(payload => {
       if (payload?.action === 'join' && payload.url) {
         setDeepLinkJoinUrl(payload.url)
         setDeepLinkSeq(s => s + 1)
+      } else if (payload?.action === 'team' && payload.url) {
+        setDeepLinkTeamUrl(payload.url)
+        setDeepLinkTeamSeq(s => s + 1)
       }
     }).catch(() => {})
     const cleanup = window.api.onDeepLink(payload => {
       if (payload?.action === 'join' && payload.url) {
         setDeepLinkJoinUrl(payload.url)
         setDeepLinkSeq(s => s + 1)
+      } else if (payload?.action === 'team' && payload.url) {
+        setDeepLinkTeamUrl(payload.url)
+        setDeepLinkTeamSeq(s => s + 1)
       }
     })
     return cleanup
   }, [])
+
+  // Hidden Ctrl+Shift+T hotkey triggers "Create Team" flow
+  const [createTeamSeq, setCreateTeamSeq] = useState(0)
+
+  // Coordination repo state — loaded on mount, refreshed after team actions
+  const [coordState, setCoordState] = useState<CoordinationState>({ configured: false })
+  const refreshCoordState = useCallback(() => {
+    window.api.getCoordinationState()
+      .then(setCoordState)
+      .catch(() => {})
+  }, [])
+  useEffect(() => { refreshCoordState() }, [refreshCoordState])
 
   const [ghLoggedIn, setGhLoggedIn] = useState(false)
   const [reportState, setReportState] = useState<'idle' | 'confirm' | 'sending' | 'sent' | 'failed'>('idle')
@@ -377,6 +412,12 @@ export default function App() {
         }
         openAdminOverlay()
       }
+      // Ctrl+Shift+T: hidden "Create Team" coordination repo flow
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 't') {
+        e.preventDefault()
+        if (!project) setCreateTeamSeq(s => s + 1)
+        return
+      }
       // Ctrl+Shift+D: toggle the OpenDyslexic UI font
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'd') {
         e.preventDefault()
@@ -385,7 +426,7 @@ export default function App() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [showAdmin, openAdminOverlay])
+  }, [showAdmin, openAdminOverlay, project])
 
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     const stored = localStorage.getItem('framecad-theme')
@@ -700,6 +741,11 @@ export default function App() {
           onOpenProject={openProject}
           prefilledJoinUrl={deepLinkJoinUrl}
           prefilledJoinSeq={deepLinkSeq}
+          prefilledTeamUrl={deepLinkTeamUrl}
+          prefilledTeamSeq={deepLinkTeamSeq}
+          coordState={coordState}
+          onCoordStateChange={refreshCoordState}
+          createTeamSeq={createTeamSeq}
           onEnterManufacturingView={async () => {
             try {
               const recents = await window.api.getRecentProjects()
@@ -741,6 +787,7 @@ export default function App() {
             onClose={() => {
               setShowAdmin(false)
               refreshGlobalAdmin()
+              refreshCoordState()
             }}
           />
         )}
@@ -967,6 +1014,7 @@ export default function App() {
           onClose={() => {
             setShowAdmin(false)
             refreshGlobalAdmin()
+            refreshCoordState()
             // Pick up any per-project AdminConfig changes (e.g. COTS
             // toggle, mainRepoUrl) that the user just edited.
             refreshAdminConfig()

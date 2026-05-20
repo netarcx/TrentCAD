@@ -215,6 +215,55 @@ const api: IpcApi = {
   renormalizeAll: () =>
     ipcRenderer.invoke('renormalize-all'),
 
+  // Coordination repo
+  getCoordinationState: () =>
+    ipcRenderer.invoke('get-coordination-state'),
+
+  previewCoordinationRepo: (repoUrl) =>
+    ipcRenderer.invoke('preview-coordination-repo', repoUrl),
+
+  setupCoordinationRepo: (repoUrl) =>
+    ipcRenderer.invoke('setup-coordination-repo', repoUrl),
+
+  createCoordinationRepo: (org, repoName) =>
+    ipcRenderer.invoke('create-coordination-repo', org, repoName),
+
+  syncCoordinationRepo: () =>
+    ipcRenderer.invoke('sync-coordination-repo'),
+
+  disconnectCoordinationRepo: () =>
+    ipcRenderer.invoke('disconnect-coordination-repo'),
+
+  requestToJoinTeam: (displayName) =>
+    ipcRenderer.invoke('request-to-join-team', displayName),
+
+  getPendingJoinRequests: () =>
+    ipcRenderer.invoke('get-pending-join-requests'),
+
+  approveJoinRequest: (githubUsername, displayName, role, issueNumber) =>
+    ipcRenderer.invoke('approve-join-request', githubUsername, displayName, role, issueNumber),
+
+  denyJoinRequest: (issueNumber) =>
+    ipcRenderer.invoke('deny-join-request', issueNumber),
+
+  addTeamMember: (member) =>
+    ipcRenderer.invoke('add-team-member', member),
+
+  removeTeamMember: (githubUsername) =>
+    ipcRenderer.invoke('remove-team-member', githubUsername),
+
+  updateTeamMember: (githubUsername, updates) =>
+    ipcRenderer.invoke('update-team-member', githubUsername, updates),
+
+  saveTeamConfig: (config) =>
+    ipcRenderer.invoke('save-team-config', config),
+
+  addProjectToRegistry: (project) =>
+    ipcRenderer.invoke('add-project-to-registry', project),
+
+  removeProjectFromRegistry: (repoUrl) =>
+    ipcRenderer.invoke('remove-project-from-registry', repoUrl),
+
   onFileChange: (callback) => {
     const handler = (_event: Electron.IpcRendererEvent, files: unknown) =>
       callback(files as Parameters<typeof callback>[0])

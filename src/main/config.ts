@@ -68,6 +68,7 @@ interface AppConfig {
     gitHubOrg?: string
     projectPrefix?: string
   }
+  coordinationRepoUrl?: string
 }
 
 function getConfigPath(): string {
@@ -157,4 +158,15 @@ export async function setCachedBrowseConfig(
 export async function getCachedBrowseConfig(): Promise<{ gitHubOrg?: string; projectPrefix?: string }> {
   const config = await readConfig()
   return config.cachedBrowseConfig || {}
+}
+
+export async function getCoordinationRepoUrl(): Promise<string | undefined> {
+  const config = await readConfig()
+  return config.coordinationRepoUrl
+}
+
+export async function setCoordinationRepoUrl(url: string | undefined): Promise<void> {
+  const config = await readConfig()
+  config.coordinationRepoUrl = url || undefined
+  await writeConfig(config)
 }

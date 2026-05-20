@@ -21,6 +21,7 @@ import {
   migrateFromCachedBrowseConfig
 } from './global-admin'
 import { addRecentProject, getRecentProjects, getCachedBrowseConfig, setProjectPinned, removeRecentProject } from './config'
+import * as coordOps from './coordination'
 import { setRestProject, clearRestProject, stopRestServer, queuePendingCreate, setRestMainWindow } from './rest'
 import { getThumbnail, clearThumbnailCache } from './thumbnails'
 import type { ProjectConfig } from '@shared/types'
@@ -575,6 +576,25 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
       return ''
     }
   })
+
+  // ── Coordination repo ──
+  ipcMain.handle('get-coordination-state', () => coordOps.getCoordinationState())
+  ipcMain.handle('preview-coordination-repo', (_e, url: string) => coordOps.previewCoordinationRepo(url))
+  ipcMain.handle('setup-coordination-repo', (_e, url: string) => coordOps.setupCoordinationRepo(url))
+  ipcMain.handle('create-coordination-repo', (_e, org: string, name: string) => coordOps.createCoordinationRepo(org, name))
+  ipcMain.handle('sync-coordination-repo', () => coordOps.syncCoordinationRepo())
+  ipcMain.handle('disconnect-coordination-repo', () => coordOps.disconnectCoordinationRepo())
+  ipcMain.handle('request-to-join-team', (_e, displayName: string) => coordOps.requestToJoinTeam(displayName))
+  ipcMain.handle('get-pending-join-requests', () => coordOps.getPendingJoinRequests())
+  ipcMain.handle('approve-join-request', (_e, username: string, displayName: string, role: string, issueNum: number) =>
+    coordOps.approveJoinRequest(username, displayName, role as import('@shared/types').MemberRole, issueNum))
+  ipcMain.handle('deny-join-request', (_e, issueNum: number) => coordOps.denyJoinRequest(issueNum))
+  ipcMain.handle('add-team-member', (_e, member) => coordOps.addTeamMember(member))
+  ipcMain.handle('remove-team-member', (_e, username: string) => coordOps.removeTeamMember(username))
+  ipcMain.handle('update-team-member', (_e, username: string, updates) => coordOps.updateTeamMember(username, updates))
+  ipcMain.handle('save-team-config', (_e, config) => coordOps.saveTeamConfig(config))
+  ipcMain.handle('add-project-to-registry', (_e, project) => coordOps.addProjectToRegistry(project))
+  ipcMain.handle('remove-project-from-registry', (_e, url: string) => coordOps.removeProjectFromRegistry(url))
 }
 
 export { stopWatching, stopRestServer }

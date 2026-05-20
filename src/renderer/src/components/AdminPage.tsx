@@ -7,8 +7,9 @@ import ErrorMsg from './ErrorMsg'
 import ProfileSetup from './ProfileSetup'
 import PartsManager from './PartsManager'
 import ApprovalsPanel from './ApprovalsPanel'
+import MembersPanel from './settings/MembersPanel'
 
-type AdminTab = 'settings' | 'parts' | 'approvals' | 'documents' | 'locks' | 'health' | 'tools' | 'export-queue' | 'profile' | 'about'
+type AdminTab = 'settings' | 'members' | 'parts' | 'approvals' | 'documents' | 'locks' | 'health' | 'tools' | 'export-queue' | 'profile' | 'about'
 
 interface JoinedPart {
   path: string
@@ -618,6 +619,7 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
 
   const tabs: { id: AdminTab; label: string; projectOnly?: boolean }[] = [
     { id: 'settings', label: 'Settings' },
+    { id: 'members', label: 'Members' },
     { id: 'parts', label: 'Parts Manager', projectOnly: true },
     { id: 'approvals', label: 'Approvals', projectOnly: true },
     { id: 'documents', label: 'Documents', projectOnly: true },
@@ -700,6 +702,10 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
             renormRunning={renormRunning}
             onRenormalize={handleRenormalize}
           />
+        )}
+
+        {tab === 'members' && (
+          <MembersPanel />
         )}
 
         {tab === 'settings' && (

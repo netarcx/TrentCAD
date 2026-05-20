@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { FilePlus2, Search, Download, FolderOpen, Factory, Pin, PinOff, X, ShieldCheck } from 'lucide-react'
+import { FilePlus2, Search, Download, FolderOpen, Factory, Pin, PinOff, X, ShieldCheck, Users, UserPlus } from 'lucide-react'
 import logoUrl from '../assets/logo.png'
 import BrowseProjects from './BrowseProjects'
+import TeamProjects from './TeamProjects'
+import TeamSetup from './TeamSetup'
 import { prepareSlamSnapshot, triggerWaterSlam } from '../lib/water-slam'
-import type { GitHubAuthStatus, GlobalAdminConfig, ProjectConfig } from '@shared/types'
+import type { CoordinationState, GitHubAuthStatus, GlobalAdminConfig, ProjectConfig } from '@shared/types'
 
 interface Props {
   onCreateProject: (name: string, path: string, remote: string, isCotsProject?: boolean) => Promise<void>
@@ -30,9 +32,18 @@ interface Props {
    *  URL can re-trigger the prefill (e.g. user backs out then clicks
    *  the link again). */
   prefilledJoinSeq?: number
+  /** Team coordination repo deep link URL */
+  prefilledTeamUrl?: string | null
+  prefilledTeamSeq?: number
+  /** Coordination repo state from App-level */
+  coordState?: CoordinationState
+  /** Called after team setup completes to refresh coordination state */
+  onCoordStateChange?: () => void
+  /** Bumped by Ctrl+Shift+T to trigger hidden "Create Team" flow */
+  createTeamSeq?: number
 }
 
-type Mode = 'select' | 'create' | 'join' | 'open'
+type Mode = 'select' | 'create' | 'join' | 'open' | 'team-join' | 'team-create'
 
 // Module-scoped so the once-per-session welcome-logo intro animation
 // only plays the first time the welcome screen mounts in this process.
@@ -77,7 +88,7 @@ function installClickWaves(): void {
   )
 }
 
-export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenProject, onEnterManufacturingView, onOpenAdmin, isLoading, globalAdmin, prefilledJoinUrl, prefilledJoinSeq }: Props) {
+export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenProject, onEnterManufacturingView, onOpenAdmin, isLoading, globalAdmin, prefilledJoinUrl, prefilledJoinSeq, prefilledTeamUrl, prefilledTeamSeq, coordState, onCoordStateChange, createTeamSeq }: Props) {
   const [mode, setMode] = useState<Mode>('select')
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
@@ -93,6 +104,17 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefilledJoinSeq, prefilledJoinUrl])
+  useEffect(() => {
+    if (prefilledTeamUrl) {
+      setMode('team-join')
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefilledTeamSeq, prefilledTeamUrl])
+  useEffect(() => {
+    if (createTeamSeq) setMode('team-create')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [createTeamSeq])
+  const [showTeamProjects, setShowTeamProjects] = useState(false)
   const [isCotsProject, setIsCotsProject] = useState(false)
   const [recentProjects, setRecentProjects] = useState<ProjectConfig[]>([])
   const [authStatus, setAuthStatus] = useState<GitHubAuthStatus | null>(null)
@@ -697,6 +719,20 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
     }, 280)
   }
 
+  if (mode === 'team-join' || mode === 'team-create') {
+    return (
+      <TeamSetup
+        flow={mode === 'team-join' ? 'join' : 'create'}
+        prefilledUrl={mode === 'team-join' ? prefilledTeamUrl : undefined}
+        onBack={() => setMode('select')}
+        onComplete={() => {
+          onCoordStateChange?.()
+          setMode('select')
+        }}
+      />
+    )
+  }
+
   if (mode === 'select') {
     return (
       <div className="setup-screen">
@@ -766,32 +802,59 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
             ))}
           </div>
         )}
+        {(!coordState?.configured || (coordState.configured && !coordState.isMember)) && (
+          <div className="setup-cards setup-cards-team">
+            <button className="setup-card" onClick={() => setMode('team-join')}>
+              <span className="card-icon"><UserPlus size={32} strokeWidth={1.5} /></span>
+              <span className="card-title">Join Team</span>
+              <span className="card-desc">{coordState?.configured
+                ? <>Request to join<br />{coordState.team?.teamName || 'this team'}</>
+                : <>Connect to your<br />team's coordination repo</>}</span>
+            </button>
+          </div>
+        )}
+
         <div className="setup-cards">
           <button className="setup-card" onClick={() => setMode('create')}>
             <span className="card-icon"><FilePlus2 size={32} strokeWidth={1.5} /></span>
             <span className="card-title">Create Project</span>
             <span className="card-desc">Start a new CAD project<br />with version control</span>
           </button>
-          <button
-            className="setup-card"
-            onClick={() => canBrowse ? setShowBrowse(true) : setMode('join')}
-            disabled={!canBrowse && !authStatus?.loggedIn}
-            title={canBrowse
-              ? 'Browse team projects from GitHub'
-              : authStatus?.loggedIn
-                ? 'Admin hasn\'t configured a GitHub organisation — paste a URL instead'
-                : 'Sign in to GitHub to browse team projects'}
-          >
-            <span className="card-icon">
-              {canBrowse
-                ? <Search size={32} strokeWidth={1.5} />
-                : <Download size={32} strokeWidth={1.5} />}
-            </span>
-            <span className="card-title">{canBrowse ? 'Browse Projects' : 'Join Project'}</span>
-            <span className="card-desc">{canBrowse
-              ? <>List repos from<br />the {orgConfigured} org</>
-              : <>Download a team project<br />from GitHub</>}</span>
-          </button>
+          {coordState?.configured && coordState.isMember ? (
+            <button
+              className="setup-card"
+              onClick={() => setShowTeamProjects(true)}
+              disabled={!coordState.projects?.length}
+              title={coordState.projects?.length
+                ? 'Browse projects from your team hub'
+                : 'No projects registered in the team hub yet'}
+            >
+              <span className="card-icon"><Users size={32} strokeWidth={1.5} /></span>
+              <span className="card-title">Team Projects</span>
+              <span className="card-desc">Browse projects from<br />the team hub</span>
+            </button>
+          ) : (
+            <button
+              className="setup-card"
+              onClick={() => canBrowse ? setShowBrowse(true) : setMode('join')}
+              disabled={!canBrowse && !authStatus?.loggedIn}
+              title={canBrowse
+                ? 'Browse team projects from GitHub'
+                : authStatus?.loggedIn
+                  ? 'Admin hasn\'t configured a GitHub organisation — paste a URL instead'
+                  : 'Sign in to GitHub to browse team projects'}
+            >
+              <span className="card-icon">
+                {canBrowse
+                  ? <Search size={32} strokeWidth={1.5} />
+                  : <Download size={32} strokeWidth={1.5} />}
+              </span>
+              <span className="card-title">{canBrowse ? 'Browse Projects' : 'Join Project'}</span>
+              <span className="card-desc">{canBrowse
+                ? <>List repos from<br />the {orgConfigured} org</>
+                : <>Download a team project<br />from GitHub</>}</span>
+            </button>
+          )}
           <button className="setup-card" onClick={() => setMode('open')}>
             <span className="card-icon"><FolderOpen size={32} strokeWidth={1.5} /></span>
             <span className="card-title">Open Project</span>
@@ -811,6 +874,18 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
           </button>
         </div>
 
+        {showTeamProjects && coordState?.projects && (
+          <TeamProjects
+            projects={coordState.projects}
+            onPick={(repoUrl, suggestedName) => {
+              setShowTeamProjects(false)
+              setUrl(repoUrl)
+              setName(suggestedName)
+              setMode('join')
+            }}
+            onClose={() => setShowTeamProjects(false)}
+          />
+        )}
         {showBrowse && orgConfigured && (
           <BrowseProjects
             org={orgConfigured}

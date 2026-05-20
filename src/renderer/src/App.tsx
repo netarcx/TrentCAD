@@ -89,6 +89,15 @@ export default function App() {
   const [adminConfig, setAdminConfig] = useState<AdminConfig>({})
   const [globalAdmin, setGlobalAdmin] = useState<GlobalAdminConfig>({})
 
+  // Coordination repo state — loaded on mount, refreshed after team actions
+  const [coordState, setCoordState] = useState<CoordinationState>({ configured: false })
+  const refreshCoordState = useCallback(() => {
+    window.api.getCoordinationState()
+      .then(setCoordState)
+      .catch(() => {})
+  }, [])
+  useEffect(() => { refreshCoordState() }, [refreshCoordState])
+
   const [localGlobalAdmin, setLocalGlobalAdmin] = useState<GlobalAdminConfig>({})
   const refreshGlobalAdmin = useCallback(() => {
     window.api.getGlobalAdmin()
@@ -187,15 +196,6 @@ export default function App() {
 
   // Hidden Ctrl+Shift+T hotkey triggers "Create Team" flow
   const [createTeamSeq, setCreateTeamSeq] = useState(0)
-
-  // Coordination repo state — loaded on mount, refreshed after team actions
-  const [coordState, setCoordState] = useState<CoordinationState>({ configured: false })
-  const refreshCoordState = useCallback(() => {
-    window.api.getCoordinationState()
-      .then(setCoordState)
-      .catch(() => {})
-  }, [])
-  useEffect(() => { refreshCoordState() }, [refreshCoordState])
 
   const [ghLoggedIn, setGhLoggedIn] = useState(false)
   const [reportState, setReportState] = useState<'idle' | 'confirm' | 'sending' | 'sent' | 'failed'>('idle')

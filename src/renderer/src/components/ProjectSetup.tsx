@@ -384,9 +384,12 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
     rafIdRef.current = requestAnimationFrame(tick)
   }, [])
 
-  // Idle detection (mousemove) + focus/blur. Active only on welcome.
+  // Idle detection (mousemove) + focus/blur. Active only on welcome
+  // and only when the user has opted in via Settings > About.
   useEffect(() => {
     if (mode !== 'select') return
+    const enabled = localStorage.getItem('screensaver-enabled') === 'true'
+    if (!enabled) return
     const resetIdle = (): void => {
       if (idleTimerRef.current !== null) window.clearTimeout(idleTimerRef.current)
       idleTimerRef.current = window.setTimeout(startScreensaver, SCREENSAVER_IDLE_MS)
@@ -410,9 +413,6 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
         idleTimerRef.current = null
       }
       stopScreensaver()
-      // stopScreensaver schedules a 550ms glide-back timer that mutates
-      // DOM at the end. On unmount the DOM is going away — cancel the
-      // timer so the callback doesn't fire on a detached tree.
       if (stopScreensaverTimerRef.current !== null) {
         window.clearTimeout(stopScreensaverTimerRef.current)
         stopScreensaverTimerRef.current = null

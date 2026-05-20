@@ -733,6 +733,27 @@ export default function AdminPage({ hasProject, isAdmin, onClose, appVersion, gi
               </p>
             </div>
             <div className="admin-section">
+              <h3>Preferences</h3>
+              <label className="admin-checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={localStorage.getItem('screensaver-enabled') === 'true'}
+                  onChange={e => {
+                    localStorage.setItem('screensaver-enabled', String(e.target.checked))
+                    setStatus(e.target.checked
+                      ? 'Screensaver enabled — the logo will bounce after 45 seconds of inactivity on the welcome screen.'
+                      : 'Screensaver disabled.')
+                  }}
+                />
+                <span>Bouncing logo screensaver on welcome screen</span>
+              </label>
+              <p className="admin-hint">
+                When enabled, the logo bounces around the screen after 45 seconds
+                of inactivity or when the window loses focus. You can always
+                toggle it manually with Ctrl+7.
+              </p>
+            </div>
+            <div className="admin-section">
               <h3>Reset</h3>
               <p className="admin-hint">
                 Wipe all local settings — recent projects, team connection,

@@ -34,12 +34,26 @@ function relativeTime(iso?: string): string {
   return d.toLocaleDateString()
 }
 
+// Persisted across sessions so a single operator working through a
+// long queue doesn't keep re-typing — but kept prominently visible so
+// the next person at the kiosk can spot and change it before pressing
+// Done. localStorage key is intentionally distinct from any git config
+// (these are shop-floor initials, not the GitHub identity).
+const OPERATOR_KEY = 'framecad-mfg-operator-initials'
+
+function normalizeInitials(raw: string): string {
+  return raw.trim().replace(/[^A-Za-z0-9.]/g, '').slice(0, 6).toUpperCase()
+}
+
 export default function ManufacturingQueue({ onClose, embedded = false }: Props) {
   const [items, setItems] = useState<ManufacturingQueueItem[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<ManufacturingMethod>('print')
   const [markingDone, setMarkingDone] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [operator, setOperator] = useState<string>(() =>
+    normalizeInitials(localStorage.getItem(OPERATOR_KEY) || '')
+  )
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -86,10 +100,19 @@ export default function ManufacturingQueue({ onClose, embedded = false }: Props)
   const visible = items.filter(i => i.method === tab)
 
   const handleMarkManufactured = async (path: string) => {
+    const initials = normalizeInitials(operator)
+    if (!initials) {
+      setError('Enter your initials at the top of the queue before marking parts done.')
+      return
+    }
+    // Persist the latest value — if they changed it inline right
+    // before pressing Done, we want next session to remember the
+    // updated value, not the stale one from page load.
+    localStorage.setItem(OPERATOR_KEY, initials)
     setMarkingDone(path)
     setError(null)
     try {
-      await window.api.setReleaseState(path, 'manufactured')
+      await window.api.setReleaseState(path, 'manufactured', `Finished by ${initials}`)
       await refresh()
     } catch (err) {
       setError((err as Error).message)
@@ -98,12 +121,35 @@ export default function ManufacturingQueue({ onClose, embedded = false }: Props)
     }
   }
 
+  const operatorReady = normalizeInitials(operator).length > 0
+
   const body = (
     <>
         <h2>Manufacturing Queue</h2>
         <p className="admin-hint">
           Every part with release state <strong>Released</strong> appears here, grouped by manufacturing method. Click <em>Done</em> when the part has been made and state will move to <strong>Manufactured</strong>.
         </p>
+
+        <div className="mfg-operator-bar">
+          <label htmlFor="mfg-operator-input">Operator initials</label>
+          <input
+            id="mfg-operator-input"
+            type="text"
+            value={operator}
+            onChange={e => setOperator(normalizeInitials(e.target.value))}
+            onBlur={() => {
+              const v = normalizeInitials(operator)
+              setOperator(v)
+              if (v) localStorage.setItem(OPERATOR_KEY, v)
+            }}
+            placeholder="e.g. JD"
+            maxLength={6}
+            autoComplete="off"
+          />
+          <span className="mfg-operator-hint">
+            Required to mark parts done — the next person can edit this before pressing Done.
+          </span>
+        </div>
 
         {totalNeedsExport > 0 && (
           <div className="mfg-queue-export-banner">
@@ -158,7 +204,8 @@ export default function ManufacturingQueue({ onClose, embedded = false }: Props)
                 <button
                   className="toolbar-btn primary"
                   onClick={() => handleMarkManufactured(item.path)}
-                  disabled={markingDone === item.path}
+                  disabled={markingDone === item.path || !operatorReady}
+                  title={!operatorReady ? 'Enter your initials at the top first' : undefined}
                 >
                   {markingDone === item.path ? '...' : 'Done'}
                 </button>

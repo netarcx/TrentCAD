@@ -327,6 +327,9 @@ export default function DetailsPanel({ file, onCheckOut, onCheckIn, onClose, onN
                 </span>
               )}
             </div>
+            {meta.release?.note && (
+              <div className="release-meta" style={{ marginBottom: 6 }}>{meta.release.note}</div>
+            )}
             <div className="release-buttons">
               {RELEASE_STATES.map(s => {
                 // Students can only flip between draft and in-review.

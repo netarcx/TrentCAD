@@ -84,13 +84,26 @@ function joinManifestAndMeta(
   manifest: PartsManifest,
   meta: Record<string, PartMeta>
 ): JoinedRow[] {
+  // Lazy-required so this module doesn't pull in paths.ts at top of file
+  // and risk a circular import.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { toProjectRel } = require('./paths') as typeof import('./paths')
+
   const out: JoinedRow[] = []
   for (const [relPath, entry] of Object.entries(manifest.entries)) {
+    // Manifest entries are keyed by git-relative paths. For BOM / mfg /
+    // summary output, scope to the active project: drop entries that
+    // live OUTSIDE the configured projectSubpath (returns null), and
+    // rewrite the row's relPath to the subpath-relative form so the
+    // CSV/PDF columns don't carry the "2026 Rebuilt/" prefix on every
+    // single line. With no subpath, every entry passes through unchanged.
+    const displayRel = toProjectRel(relPath)
+    if (displayRel === null) continue
     out.push({
-      relPath,
+      relPath: displayRel,
       entry,
       meta: meta[relPath] || {},
-      topLevel: topLevelSegment(relPath) || '(root)'
+      topLevel: topLevelSegment(displayRel) || '(root)'
     })
   }
   // Group by subsystem then by part number for predictable ordering

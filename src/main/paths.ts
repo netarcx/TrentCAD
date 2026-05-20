@@ -118,3 +118,24 @@ export function clearSubpathCache(): void {
   currentSubpath = ''
   currentCotsSubpath = ''
 }
+
+/**
+ * The on-disk path the SolidWorks add-in (and other localhost API
+ * clients) should treat as the project root. When a subpath is set,
+ * this is `gitRoot/<subpath>` (OS-native separator via path.join);
+ * otherwise just `gitRoot`.
+ *
+ * The add-in uses this for ToRelativePath / ToAbsolutePath, so giving
+ * it the subpath-prefixed root means its existing path-handling logic
+ * keeps working without code changes — it'll naturally send subpath-
+ * relative paths to the REST API, which then translate at our boundary.
+ *
+ * Takes `gitRoot` rather than reading from git.ts to avoid a circular
+ * import — callers (rest.ts, ipc.ts) already hold the git root.
+ */
+export function getEffectiveProjectRoot(gitRoot: string): string {
+  if (!currentSubpath) return gitRoot
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const path = require('path') as typeof import('path')
+  return path.join(gitRoot, currentSubpath)
+}

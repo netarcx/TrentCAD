@@ -119,8 +119,13 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     // If the joined project has admin-configured COTS, download it as part
     // of the join so the COTS library is ready before the user enters the
     // project. Network errors are tolerated — the project still opens.
+    // Also load the project / COTS subpaths so the file tree, IPC, and
+    // REST API all start out scoped correctly without waiting for the
+    // next open-project round-trip.
     try {
       const cfg = await adminOps.loadAdminConfig()
+      pathsOps.setProjectSubpath(cfg.projectSubpath ?? '')
+      pathsOps.setCotsSubpath(cfg.cotsSubpath ?? '')
       if (cfg.cotsRepoUrl) {
         await gitOps.syncCotsRepo(cfg.cotsRepoUrl, cfg.cotsBranch)
       }
@@ -345,7 +350,17 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   ipcMain.handle('scan-large-files', async () => {
     try {
       const files = await scanLargeFiles()
-      return { success: true, files }
+      // Scan is intentionally repo-wide (you want to catch big blobs
+      // anywhere, including sibling subprojects). For display, strip
+      // the project subpath from any file that falls inside it so the
+      // Storage page paths match the file tree the user sees. Files
+      // outside the subpath keep their git-relative path so the user
+      // can still see e.g. "COTS/Vendor1/giant.sldprt".
+      const displayFiles = files.map(f => {
+        const display = pathsOps.toProjectRel(f.path)
+        return display === null ? f : { ...f, path: display }
+      })
+      return { success: true, files: displayFiles }
     } catch (err) {
       return { success: false, files: [], error: (err as Error).message }
     }
@@ -494,13 +509,30 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('bulk-update-meta', async (_e, updates: Record<string, metaOps.BulkMetaPatch>) => {
-    const n = await metaOps.bulkUpdateMeta(updates)
+    // Renderer keys these by subpath-relative paths (from the file
+    // tree it sees). Internal storage is keyed by git-relative paths,
+    // so translate every key before passing through. When no subpath
+    // is set, toGitRel is the identity.
+    const translated: Record<string, metaOps.BulkMetaPatch> = {}
+    for (const [k, v] of Object.entries(updates)) {
+      translated[pathsOps.toGitRel(k)] = v
+    }
+    const n = await metaOps.bulkUpdateMeta(translated)
     broadcastStatus(getMainWindow)
     return n
   })
 
   ipcMain.handle('get-manufacturing-queue', async () => {
-    return metaOps.getManufacturingQueue()
+    // Items carry git-relative paths internally; translate each to
+    // subpath-relative for the renderer, and drop entries outside the
+    // active project subpath (e.g. parts in a sibling project folder).
+    const queue = await metaOps.getManufacturingQueue()
+    return queue
+      .map(item => {
+        const display = pathsOps.toProjectRel(item.path)
+        return display === null ? null : { ...item, path: display }
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null)
   })
 
   // Status surfaced to the admin Export Queue tab so the UI can tell
@@ -508,7 +540,15 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   // and polling for any of this to do work).
   ipcMain.handle('get-export-status', async () => {
     const queue = await metaOps.getManufacturingQueue()
-    const needsExport = queue.filter(q => !!q.needsExport)
+    // Filter + translate so the needs-export list matches the file
+    // tree the user sees.
+    const needsExport = queue
+      .filter(q => !!q.needsExport)
+      .map(item => {
+        const display = pathsOps.toProjectRel(item.path)
+        return display === null ? null : { ...item, path: display }
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null)
     return {
       swAlive: exportQueue.isSwAlive(),
       lastSwSeenAt: exportQueue.getLastSwSeenAt(),
@@ -557,7 +597,17 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   // parts-meta.json file keyed by relative path; the renderer joins
   // against the parts manifest client-side.
   ipcMain.handle('get-all-parts-meta', async () => {
-    return metaOps.loadAllMeta()
+    // Keys are git-relative in storage; the Parts Manager indexes its
+    // rows by what it sees in the file tree (subpath-relative). Drop
+    // entries outside the project subpath and re-key the rest.
+    const all = await metaOps.loadAllMeta()
+    const out: Record<string, typeof all[string]> = {}
+    for (const [gitPath, meta] of Object.entries(all)) {
+      const display = pathsOps.toProjectRel(gitPath)
+      if (display === null) continue
+      out[display] = meta
+    }
+    return out
   })
 
   // Scans the parts manifest for integrity problems mentors should

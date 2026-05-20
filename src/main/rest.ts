@@ -5,6 +5,7 @@ import type { FileEntry, ProjectConfig, PublishResult, SyncResult } from '@share
 import * as gitOps from './git'
 import * as lockOps from './locking'
 import * as partsOps from './parts'
+import { toGitRel, toProjectRel, getEffectiveProjectRoot, getProjectSubpath } from './paths'
 import {
   clearPendingExports,
   completePendingExport,
@@ -35,15 +36,24 @@ let pendingIdCounter = 1
 
 export function queuePendingCreate(
   type: 'part' | 'assembly',
+  /** Git-relative path (manifest key). Callers in ipc.ts get this
+   *  directly from partsOps. We compute the absolute path from this
+   *  before translating to a subpath-relative form for the add-in. */
   relativePath: string,
   partNumber?: string
 ): void {
   if (!currentProject) return
+  // Absolute path = gitRoot/<gitRelPath>. Stays correct regardless
+  // of subpath because the input is the canonical git-rel form.
+  const absolutePath = path.join(currentProject.path, relativePath)
+  // Display path that the SW add-in shows to the user — subpath-rel
+  // so it matches what FrameCAD's UI uses, no leading "2026 Rebuilt/" prefix.
+  const displayRel = toProjectRel(relativePath) ?? relativePath
   pendingCreates.push({
     id: `pc-${Date.now()}-${pendingIdCounter++}`,
     type,
-    relativePath,
-    absolutePath: path.join(currentProject.path, relativePath),
+    relativePath: displayRel,
+    absolutePath,
     partNumber
   })
 }
@@ -173,7 +183,24 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   try {
     switch (route) {
       case 'GET /api/health': {
-        json(res, 200, { running: true, project: currentProject })
+        // Project.path is the EFFECTIVE project root — gitRoot when no
+        // subpath is set, gitRoot/<subpath> when one is. This lets the
+        // SolidWorks add-in's ToRelativePath/ToAbsolutePath logic keep
+        // treating Project.path as "the project root" and naturally
+        // produce subpath-relative paths in its REST calls; the REST
+        // boundary then translates back to git-relative.
+        let projectForClient: ProjectConfig | null = currentProject
+        if (currentProject) {
+          projectForClient = {
+            ...currentProject,
+            path: getEffectiveProjectRoot(currentProject.path),
+          }
+        }
+        json(res, 200, {
+          running: true,
+          project: projectForClient,
+          projectSubpath: getProjectSubpath() || undefined,
+        })
         return
       }
 
@@ -191,16 +218,17 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           json(res, 400, { error: 'Missing or invalid path parameter' })
           return
         }
+        // getStatus returns a tree of subpath-relative paths, so the
+        // lookup here uses the subpath-relative path as-is. The
+        // newer-on-remote check uses git-rev, which wants the
+        // git-relative form — translate at that boundary only.
         const files = await gitOps.getStatus()
         const entry = findEntry(files, filePath)
         if (!entry) {
           json(res, 404, { error: 'File not found' })
           return
         }
-        // Augment with "newer-on-remote" freshness flag so the SW
-        // add-in can show a "Newer version available — Download?"
-        // banner when the user opens a stale local copy
-        const newerOnRemote = await gitOps.isFileNewerOnRemote(filePath).catch(() => false)
+        const newerOnRemote = await gitOps.isFileNewerOnRemote(toGitRel(filePath)).catch(() => false)
         json(res, 200, { ...entry, newerOnRemote })
         return
       }
@@ -241,7 +269,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           return
         }
         try {
-          await serialWrite(() => lockOps.checkOut(safePath))
+          await serialWrite(() => lockOps.checkOut(toGitRel(safePath)))
           json(res, 200, { success: true })
         } catch (err) {
           json(res, 500, { success: false, error: (err as Error).message })
@@ -257,7 +285,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           return
         }
         try {
-          await serialWrite(() => lockOps.checkIn(safePath))
+          await serialWrite(() => lockOps.checkIn(toGitRel(safePath)))
           json(res, 200, { success: true })
         } catch (err) {
           json(res, 500, { success: false, error: (err as Error).message })
@@ -299,8 +327,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           json(res, 400, { error: 'Invalid folder path' })
           return
         }
-        const result = await serialWrite(() => partsOps.createNewPart(folder, body?.description))
-        json(res, 200, { success: true, ...result })
+        const result = await serialWrite(() => partsOps.createNewPart(toGitRel(folder), body?.description))
+        // Translate the returned file path back to subpath-relative for the
+        // add-in (so its ToAbsolutePath() against the subpath-prefixed
+        // Project.path lands on the actual file on disk).
+        const displayPath = toProjectRel(result.filePath) ?? result.filePath
+        json(res, 200, { success: true, ...result, filePath: displayPath })
         return
       }
 
@@ -315,7 +347,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         try {
           // Lazy import so rest.ts doesn't pull in meta on load
           const meta = await import('./meta')
-          await serialWrite(() => meta.setPartMass(safePath, body.mass!))
+          await serialWrite(() => meta.setPartMass(toGitRel(safePath), body.mass!))
           broadcastStatus()
           json(res, 200, { success: true })
         } catch (err) {
@@ -347,7 +379,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         if (!filePath) { json(res, 400, { error: 'Missing or invalid path query param' }); return }
         try {
           const meta = await import('./meta')
-          const result = await meta.getPartMeta(filePath)
+          const result = await meta.getPartMeta(toGitRel(filePath))
           json(res, 200, result)
         } catch (err) {
           json(res, 500, { error: (err as Error).message })
@@ -371,7 +403,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         try {
           const meta = await import('./meta')
           await serialWrite(() => meta.setReleaseState(
-            safePath,
+            toGitRel(safePath),
             body.state as 'draft' | 'in-review' | 'released' | 'manufactured',
             body.note
           ))
@@ -390,11 +422,15 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         try {
           const parts = await import('./parts')
           const manifest = await parts.loadManifest()
-          const entry = manifest.entries[filePath]
+          // Manifest keys are git-relative; translate the incoming
+          // subpath-relative path to look up the entry.
+          const gitPath = toGitRel(filePath)
+          const entry = manifest.entries[gitPath]
           // Drawings link to a part via `linkedTo` and share its number.
           // For mass/material, pull from the LINKED part's metadata if
           // it exists; fall back to the drawing's own meta otherwise.
-          const linkedPath = entry?.linkedTo || filePath
+          // `linkedTo` is stored as git-relative, so no translation needed.
+          const linkedPath = entry?.linkedTo || gitPath
           const meta = await import('./meta')
           const linkedMeta = await meta.getPartMeta(linkedPath).catch(() => ({}))
           // Designer = the user who's about to publish. git config
@@ -428,7 +464,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         }
         try {
           const meta = await import('./meta')
-          await serialWrite(() => meta.setManufacturingMaterial(safePath, body.material!))
+          await serialWrite(() => meta.setManufacturingMaterial(toGitRel(safePath), body.material!))
           broadcastStatus()
           json(res, 200, { success: true })
         } catch (err) {
@@ -454,7 +490,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         try {
           const meta = await import('./meta')
           await serialWrite(() => meta.setManufacturingMethod(
-            safePath,
+            toGitRel(safePath),
             method as 'print' | 'cnc' | 'manual' | 'other' | null
           ))
           broadcastStatus()
@@ -475,7 +511,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         }
         try {
           const meta = await import('./meta')
-          await serialWrite(() => meta.addComment(safePath, body.text!.trim()))
+          await serialWrite(() => meta.addComment(toGitRel(safePath), body.text!.trim()))
           broadcastStatus()
           json(res, 200, { success: true })
         } catch (err) {
@@ -490,7 +526,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         const safePath = sanitizeProjectRelPath(body?.path ?? null)
         if (!safePath) { json(res, 400, { error: 'Missing or invalid path' }); return }
         try {
-          await serialWrite(() => gitOps.getGit().raw(['add', '--', safePath]))
+          await serialWrite(() => gitOps.getGit().raw(['add', '--', toGitRel(safePath)]))
           json(res, 200, { success: true })
         } catch (err) {
           json(res, 500, { success: false, error: (err as Error).message })
@@ -572,10 +608,14 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           json(res, 400, { error: 'Missing name for subsystem' })
           return
         }
+        // parentFolder is subpath-relative from the add-in's perspective;
+        // partsOps wants git-relative. Translate in, translate the
+        // returned folderPath back out.
         const result = await serialWrite(() =>
-          partsOps.createSubsystem(body.parentFolder ?? '', body.name!)
+          partsOps.createSubsystem(toGitRel(body.parentFolder ?? ''), body.name!)
         )
-        json(res, 200, { success: true, ...result })
+        const displayFolder = toProjectRel(result.folderPath) ?? result.folderPath
+        json(res, 200, { success: true, ...result, folderPath: displayFolder })
         return
       }
 
@@ -590,9 +630,10 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           return
         }
         const result = await serialWrite(() =>
-          partsOps.createNewAssembly(body.parentFolder ?? '', body.name!, body.description)
+          partsOps.createNewAssembly(toGitRel(body.parentFolder ?? ''), body.name!, body.description)
         )
-        json(res, 200, { success: true, ...result })
+        const displayPath = toProjectRel(result.filePath) ?? result.filePath
+        json(res, 200, { success: true, ...result, filePath: displayPath })
         return
       }
 

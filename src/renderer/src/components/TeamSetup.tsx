@@ -150,9 +150,26 @@ export default function TeamSetup({ flow, onBack, onComplete, prefilledUrl }: Pr
         <div className="setup-form" style={{ gap: '1rem' }}>
           {alreadyMember ? (
             <>
-              <p style={{ color: 'var(--color-success, #22c55e)' }}>You're already a member of this team.</p>
+              <p style={{ color: 'var(--green)' }}>You're already a member of this team.</p>
               <div className="actions">
-                <button className="toolbar-btn primary" onClick={onComplete}>Continue</button>
+                <button
+                  className="toolbar-btn primary"
+                  disabled={working}
+                  onClick={async () => {
+                    setWorking(true)
+                    setError(null)
+                    try {
+                      await window.api.setupCoordinationRepo(repoUrl.trim())
+                      onComplete()
+                    } catch (err) {
+                      setError((err as Error).message)
+                    } finally {
+                      setWorking(false)
+                    }
+                  }}
+                >
+                  {working ? 'Connecting...' : 'Continue'}
+                </button>
               </div>
             </>
           ) : (

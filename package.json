@@ -1,6 +1,6 @@
 {
   "name": "framecad",
-  "version": "2.1.13",
+  "version": "2.1.14",
   "description": "CAD collaboration tool for FRC robotics teams",
   "author": {
     "name": "Trent Fox",
@@ -8,7 +8,7 @@
   },
   "main": "./out/main/index.js",
   "scripts": {
-    "dev": "ELECTRON_DISABLE_SANDBOX=1 electron-vite dev",
+    "dev": "cross-env ELECTRON_DISABLE_SANDBOX=1 electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package": "electron-vite build && electron-builder --config electron-builder.yml",
@@ -30,6 +30,7 @@
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
     "@vitejs/plugin-react": "^4.7.0",
+    "cross-env": "^7.0.3",
     "electron": "^35.1.2",
     "electron-builder": "^25.1.8",
     "electron-vite": "^3.1.0",

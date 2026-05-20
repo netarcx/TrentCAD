@@ -348,6 +348,7 @@ export interface IpcApi {
   getGlobalAdmin(): Promise<GlobalAdminState>
   saveGlobalAdmin(config: GlobalAdminConfig): Promise<void>
   resetGlobalAdmin(): Promise<void>
+  resetAllAppState(): Promise<void>
   saveAdminConfig(config: AdminConfig): Promise<void>
   syncCots(): Promise<{ success: boolean; cloned?: boolean; error?: string }>
   createProgressTag(name: string, message?: string): Promise<{ success: boolean; error?: string }>

@@ -140,6 +140,9 @@ const api: IpcApi = {
   resetGlobalAdmin: () =>
     ipcRenderer.invoke('reset-global-admin'),
 
+  resetAllAppState: () =>
+    ipcRenderer.invoke('reset-all-app-state'),
+
   saveAdminConfig: (config) =>
     ipcRenderer.invoke('save-admin-config', config),
 

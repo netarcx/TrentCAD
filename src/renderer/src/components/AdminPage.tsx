@@ -724,13 +724,33 @@ export default function AdminPage({ hasProject, isAdmin, onClose, appVersion, gi
         )}
 
         {tab === 'about' && (
-          <div className="admin-section">
-            <h3>About FrameCAD</h3>
-            <p>Version {appVersion || 'unknown'}</p>
-            <p className="admin-hint">
-              Press Ctrl+Shift+R to check for updates manually.
-            </p>
-          </div>
+          <>
+            <div className="admin-section">
+              <h3>About FrameCAD</h3>
+              <p>Version {appVersion || 'unknown'}</p>
+              <p className="admin-hint">
+                Press Ctrl+Shift+R to check for updates manually.
+              </p>
+            </div>
+            <div className="admin-section">
+              <h3>Reset</h3>
+              <p className="admin-hint">
+                Wipe all local settings — recent projects, team connection,
+                and admin overrides — and restart as if FrameCAD was just installed.
+              </p>
+              <button
+                className="toolbar-btn"
+                style={{ color: 'var(--color-danger, #ef4444)', marginTop: '0.5rem' }}
+                onClick={async () => {
+                  if (!window.confirm('Reset FrameCAD to factory defaults? This clears all local settings and restarts the app.')) return
+                  await window.api.resetAllAppState()
+                  window.location.reload()
+                }}
+              >
+                Reset to factory defaults
+              </button>
+            </div>
+          </>
         )}
 
         {error && <ErrorMsg text={error} />}

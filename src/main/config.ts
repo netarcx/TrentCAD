@@ -170,3 +170,13 @@ export async function setCoordinationRepoUrl(url: string | undefined): Promise<v
   config.coordinationRepoUrl = url || undefined
   await writeConfig(config)
 }
+
+export async function resetAllAppState(): Promise<void> {
+  const userData = app.getPath('userData')
+  // Wipe main config (recent projects, coordination URL, cached browse)
+  await fs.rm(path.join(userData, CONFIG_FILE), { force: true })
+  // Wipe global admin overrides
+  await fs.rm(path.join(userData, 'global-admin.json'), { force: true })
+  // Wipe cloned coordination repo
+  await fs.rm(path.join(userData, 'coordination'), { recursive: true, force: true })
+}

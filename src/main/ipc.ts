@@ -19,7 +19,7 @@ import {
   resetGlobalAdmin,
   migrateFromCachedBrowseConfig
 } from './global-admin'
-import { addRecentProject, getRecentProjects, getCachedBrowseConfig, setProjectPinned, removeRecentProject } from './config'
+import { addRecentProject, getRecentProjects, getCachedBrowseConfig, setProjectPinned, removeRecentProject, resetAllAppState } from './config'
 import * as coordOps from './coordination'
 import { setRestProject, clearRestProject, stopRestServer, queuePendingCreate, setRestMainWindow } from './rest'
 import { getThumbnail, clearThumbnailCache } from './thumbnails'
@@ -372,6 +372,10 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('reset-global-admin', async () => {
     await resetGlobalAdmin()
+  })
+
+  ipcMain.handle('reset-all-app-state', async () => {
+    await resetAllAppState()
   })
 
   ipcMain.handle('sync-cots', async () => {

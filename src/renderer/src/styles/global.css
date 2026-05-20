@@ -3677,6 +3677,21 @@ body.slam-shake {
   border-left-color: var(--accent);
 }
 
+.admin-sidebar-header {
+  padding: 8px 20px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-secondary);
+  opacity: 0.6;
+  margin-top: 12px;
+}
+
+.admin-sidebar-header:first-child {
+  margin-top: 0;
+}
+
 .admin-content {
   flex: 1;
   padding: 24px 32px;

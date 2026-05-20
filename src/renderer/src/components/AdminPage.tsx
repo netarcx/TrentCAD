@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import type {
-  AdminConfig, BulkMetaPatch, GlobalAdminConfig, GlobalAdminState, LockInfo,
+  BulkMetaPatch, LockInfo,
   ManufacturingQueueItem, PartsManifest, PartMeta, ReleaseState, ManufacturingMethod
 } from '@shared/types'
 import ErrorMsg from './ErrorMsg'
@@ -8,8 +8,11 @@ import ProfileSetup from './ProfileSetup'
 import PartsManager from './PartsManager'
 import ApprovalsPanel from './ApprovalsPanel'
 import MembersPanel from './settings/MembersPanel'
+import ProjectsPanel from './settings/ProjectsPanel'
+import TeamSettings from './settings/TeamSettings'
+import ProjectSettings from './settings/ProjectSettings'
 
-type AdminTab = 'settings' | 'members' | 'parts' | 'approvals' | 'documents' | 'locks' | 'health' | 'tools' | 'export-queue' | 'profile' | 'about'
+type AdminTab = 'team-settings' | 'members' | 'projects' | 'project-settings' | 'parts' | 'approvals' | 'documents' | 'locks' | 'health' | 'tools' | 'export-queue' | 'profile' | 'about'
 
 interface JoinedPart {
   path: string
@@ -34,31 +37,14 @@ interface Props {
   onProfileUpdate: () => void
 }
 
+interface SidebarGroup {
+  label: string
+  items: { id: AdminTab; label: string }[]
+}
+
 export default function AdminPage({ hasProject, onClose, appVersion, gitName, gitEmail, onProfileUpdate }: Props) {
-  const [tab, setTab] = useState<AdminTab>('settings')
+  const [tab, setTab] = useState<AdminTab>('team-settings')
 
-  // Per-project (only used in project mode)
-  const [config, setConfig] = useState<AdminConfig>({})
-  // Install-wide
-  const [globalState, setGlobalState] = useState<GlobalAdminState | null>(null)
-  const [globalForm, setGlobalForm] = useState<GlobalAdminConfig>({})
-
-  const [loaded, setLoaded] = useState(false)
-  const [saving, setSaving] = useState(false)
-  // Per-project legacyMode flag, mirrored from parts.json. When true,
-  // new files take their filename as the part number instead of the
-  // YY-team-XX-YYY scheme. Toggling here saves + commits parts.json.
-  const [legacyMode, setLegacyMode] = useState(false)
-  const [legacyToggling, setLegacyToggling] = useState(false)
-  const [syncingCots, setSyncingCots] = useState(false)
-  const [taggingNow, setTaggingNow] = useState(false)
-  const [tagName, setTagName] = useState(() => {
-    const d = new Date()
-    const yyyy = d.getFullYear()
-    const mm = String(d.getMonth() + 1).padStart(2, '0')
-    const dd = String(d.getDate()).padStart(2, '0')
-    return `progress-${yyyy}-${mm}-${dd}`
-  })
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [generating, setGenerating] = useState<null | 'bom' | 'manufacturing' | 'summary' | 'bom-by-subsystem'>(null)
@@ -78,17 +64,12 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
   const [partsFilter, setPartsFilter] = useState('')
   const [partsSubsystem, setPartsSubsystem] = useState<string>('all')
   const [partsState, setPartsState] = useState<ReleaseState | 'all'>('all')
-  // Edit queue: optimistic per-cell edits accumulate here and flush
-  // through bulkUpdateMeta on a 1.2s idle debounce so rapid edits collapse
-  // to one commit and the UI never blocks the user.
   const pendingRef = useRef<Map<string, BulkMetaPatch>>(new Map())
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [pendingCount, setPendingCount] = useState(0)
   const [flushing, setFlushing] = useState(false)
 
-  // Locks (admin tab) — list of every active LFS lock with a force
-  // release control. Used by mentors to recover files a teammate
-  // forgot to check back in.
+  // Locks
   const [locks, setLocks] = useState<LockInfo[] | null>(null)
   const [locksLoading, setLocksLoading] = useState(false)
   const [lockReleasing, setLockReleasing] = useState<string | null>(null)
@@ -103,139 +84,7 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
   const [integrityRunning, setIntegrityRunning] = useState(false)
   const [renormRunning, setRenormRunning] = useState(false)
 
-  useEffect(() => {
-    let done = 0
-    const finish = () => { done++; if (done === (hasProject ? 2 : 1)) setLoaded(true) }
-
-    window.api.getGlobalAdmin()
-      .then(state => {
-        setGlobalState(state)
-        setGlobalForm(state.effective)
-      })
-      .catch(() => {})
-      .finally(finish)
-
-    if (hasProject) {
-      window.api.getAdminConfig()
-        .then(c => setConfig(c || {}))
-        .catch(() => setConfig({}))
-        .finally(finish)
-      // Pre-populate the main repo URL from the live git remote
-      window.api.getMainRemoteUrl().then(url => {
-        if (url) setConfig(prev => ({ ...prev, mainRepoUrl: prev.mainRepoUrl || url }))
-      }).catch(() => {})
-      // Mirror parts.json's legacyMode flag into the toggle so the
-      // checkbox reflects current project state on open.
-      window.api.getPartsManifest()
-        .then(m => setLegacyMode(!!m?.legacyMode))
-        .catch(() => {})
-    }
-  }, [hasProject])
-
-  const handleToggleLegacy = async (next: boolean) => {
-    setLegacyToggling(true)
-    setError(null)
-    setStatus(null)
-    try {
-      await window.api.setLegacyMode(next)
-      setLegacyMode(next)
-      setStatus(next
-        ? 'Legacy mode on — new files will use their filename as the part number. Existing part numbers were not changed.'
-        : 'Legacy mode off — new files will use the auto-numbered scheme. Existing part numbers were not changed.')
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setLegacyToggling(false)
-    }
-  }
-
-  const set = <K extends keyof AdminConfig>(key: K, value: AdminConfig[K]) => {
-    setConfig(prev => ({ ...prev, [key]: value }))
-  }
-
-  const setGlobal = <K extends keyof GlobalAdminConfig>(key: K, value: GlobalAdminConfig[K]) => {
-    setGlobalForm(prev => ({ ...prev, [key]: value }))
-  }
-
-  const handleSaveGlobal = async () => {
-    setSaving(true)
-    setError(null)
-    setStatus(null)
-    try {
-      await window.api.saveGlobalAdmin(globalForm)
-      const fresh = await window.api.getGlobalAdmin()
-      setGlobalState(fresh)
-      setGlobalForm(fresh.effective)
-      setStatus('Saved locally. This computer keeps these values across updates.')
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const handleResetGlobal = async () => {
-    setError(null)
-    setStatus(null)
-    try {
-      await window.api.resetGlobalAdmin()
-      const fresh = await window.api.getGlobalAdmin()
-      setGlobalState(fresh)
-      setGlobalForm(fresh.effective)
-      setStatus('Reset to team defaults shipped with this install.')
-    } catch (err) {
-      setError((err as Error).message)
-    }
-  }
-
-  const handleSaveProject = async () => {
-    setSaving(true)
-    setError(null)
-    setStatus(null)
-    try {
-      const cleaned: AdminConfig = {}
-      ;(Object.keys(config) as (keyof AdminConfig)[]).forEach(key => {
-        const v = config[key]
-        if (typeof v === 'string' && v.trim() === '') return
-        ;(cleaned as Record<string, unknown>)[key] = v
-      })
-      await window.api.saveAdminConfig(cleaned)
-      setStatus('Saved and pushed to git. Teammates will see this on next sync.')
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const handleCopyRepoUrl = async () => {
-    setError(null)
-    setStatus(null)
-    const url = (config.mainRepoUrl || '').trim()
-    if (!url) { setError('No Git URL to copy'); return }
-    try {
-      await navigator.clipboard.writeText(url)
-      setStatus('Git URL copied to clipboard')
-    } catch (err) {
-      setError('Could not copy: ' + (err as Error).message)
-    }
-  }
-
-  const handleCreateTag = async () => {
-    setTaggingNow(true)
-    setError(null)
-    setStatus(null)
-    try {
-      const result = await window.api.createProgressTag(tagName)
-      if (result.success) setStatus(`Tag "${tagName}" created and pushed`)
-      else setError(result.error || 'Failed to create tag')
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setTaggingNow(false)
-    }
-  }
-
+  // Documents
   const handleGenerate = async (type: 'bom' | 'manufacturing' | 'summary' | 'bom-by-subsystem') => {
     setGenerating(type)
     setError(null)
@@ -275,6 +124,7 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
     if (!r.success) setError(r.error || 'Could not open PDF')
   }
 
+  // Health
   const handleScanLarge = async () => {
     setScanning(true)
     setError(null)
@@ -299,24 +149,7 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
     return `${(bytes / 1024 / 1024).toFixed(1)} MB`
   }
 
-  const handleSyncCots = async () => {
-    setSyncingCots(true)
-    setError(null)
-    setStatus(null)
-    try {
-      const result = await window.api.syncCots()
-      if (result.success) setStatus(result.cloned ? 'COTS repo cloned into COTS/' : 'COTS folder updated.')
-      else setError(result.error || 'COTS sync failed')
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setSyncingCots(false)
-    }
-  }
-
-  // Parts Manager: bulk-loads the manifest + all per-part meta and
-  // joins them into one row per file so the table can render and edit
-  // without N IPC calls.
+  // Parts Manager
   const loadAllParts = useCallback(async () => {
     if (!hasProject) return
     setPartsLoading(true)
@@ -346,19 +179,12 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
     }
   }, [hasProject])
 
-  // Auto-load when switching into Parts or Approvals tabs so the user
-  // doesn't have to click a refresh button to see anything
   useEffect(() => {
     if ((tab === 'parts' || tab === 'approvals') && hasProject && allParts.length === 0 && !partsLoading) {
       loadAllParts()
     }
   }, [tab, hasProject, allParts.length, partsLoading, loadAllParts])
 
-  // Refresh the parts cache whenever the main process broadcasts a
-  // file-change. Meta writes go through broadcastStatus() in ipc.ts so
-  // approvals/parts table picks up DetailsPanel / SW add-in edits
-  // without the mentor having to click Refresh. Only fires for the
-  // tabs that actually render the cached data.
   useEffect(() => {
     if (!hasProject) return
     if (tab !== 'parts' && tab !== 'approvals') return
@@ -493,6 +319,7 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
     }
   }
 
+  // Locks
   const loadLocks = useCallback(async () => {
     setLocksLoading(true)
     setError(null)
@@ -528,8 +355,6 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
     }
   }
 
-  // Auto-load locks the first time the user switches into the Locks
-  // tab so they don't have to click Refresh.
   useEffect(() => {
     if (tab === 'locks' && hasProject && locks === null && !locksLoading) {
       loadLocks()
@@ -551,7 +376,7 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
     }
   }
 
-  // Derived: parts filtered by search/subsystem/state
+  // Derived parts data
   const filteredParts = useMemo(() => {
     const q = partsFilter.trim().toLowerCase()
     return allParts.filter(p => {
@@ -578,7 +403,7 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
     allParts.filter(p => (p.meta.release?.state ?? 'draft') === 'in-review'),
   [allParts])
 
-  // ESC to close the full-screen page
+  // ESC to close
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -587,20 +412,13 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  // Hidden 9-click sequence in the bottom-right corner. Once triggered,
-  // the welcome screen permanently shows an Admin Panel button. Reset
-  // the counter if the user pauses for more than 3s between clicks so
-  // accidental drags don't half-fill it.
-  // NB: must be declared before any conditional return (e.g. !loaded)
-  // or React will complain that hook order changed between renders.
+  // Hidden 9-click easter egg for admin shortcut
   const [cornerClicks, setCornerClicks] = useState(0)
   const [shortcutToast, setShortcutToast] = useState<string | null>(null)
   useEffect(() => {
     if (cornerClicks === 0) return
     if (cornerClicks >= 9) {
       localStorage.setItem('framecad-admin-shortcut-unlocked', '1')
-      // Notify any listening welcome-screen instance in the same window
-      // (storage events only fire across windows, not within one).
       window.dispatchEvent(new CustomEvent('admin-shortcut-unlocked'))
       setShortcutToast('Admin shortcut unlocked — look for the button on the welcome screen.')
       setCornerClicks(0)
@@ -611,26 +429,47 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
     return () => clearTimeout(t)
   }, [cornerClicks])
 
-  if (!loaded) return null
-
-  const overrideStatusLine = globalState && globalState.hasLocalOverride
-    ? 'Showing your local overrides. These survive app updates until you Reset.'
-    : 'Showing team defaults shipped with this install.'
-
-  const tabs: { id: AdminTab; label: string; projectOnly?: boolean }[] = [
-    { id: 'settings', label: 'Settings' },
-    { id: 'members', label: 'Members' },
-    { id: 'parts', label: 'Parts Manager', projectOnly: true },
-    { id: 'approvals', label: 'Approvals', projectOnly: true },
-    { id: 'documents', label: 'Documents', projectOnly: true },
-    { id: 'locks', label: 'Locks', projectOnly: true },
-    { id: 'health', label: 'Repository Health', projectOnly: true },
-    { id: 'tools', label: 'Tools', projectOnly: true },
-    { id: 'export-queue', label: 'Export Queue', projectOnly: true },
-    { id: 'profile', label: 'Profile' },
-    { id: 'about', label: 'About' }
-  ]
-  const visibleTabs = tabs.filter(t => !t.projectOnly || hasProject)
+  // Sidebar groups
+  const sidebarGroups: SidebarGroup[] = useMemo(() => {
+    const groups: SidebarGroup[] = [
+      {
+        label: 'Team',
+        items: [
+          { id: 'team-settings', label: 'Team Settings' },
+          { id: 'members', label: 'Members' },
+          { id: 'projects', label: 'Projects' },
+        ]
+      }
+    ]
+    if (hasProject) {
+      groups.push({
+        label: 'Project',
+        items: [
+          { id: 'project-settings', label: 'Settings' },
+          { id: 'parts', label: 'Parts Manager' },
+          { id: 'approvals', label: 'Approvals' },
+          { id: 'documents', label: 'Documents' },
+          { id: 'export-queue', label: 'Export Queue' },
+        ]
+      })
+      groups.push({
+        label: 'Maintenance',
+        items: [
+          { id: 'locks', label: 'Locks' },
+          { id: 'health', label: 'Health' },
+          { id: 'tools', label: 'Tools' },
+        ]
+      })
+    }
+    groups.push({
+      label: '',
+      items: [
+        { id: 'profile', label: 'Profile' },
+        { id: 'about', label: 'About' },
+      ]
+    })
+    return groups
+  }, [hasProject])
 
   return (
     <div className="admin-fullscreen">
@@ -648,17 +487,27 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
       />
       <div className="admin-layout">
         <nav className="admin-sidebar">
-          {visibleTabs.map(t => (
-            <button
-              key={t.id}
-              className={`admin-sidebar-item${tab === t.id ? ' active' : ''}`}
-              onClick={() => setTab(t.id)}
-            >
-              {t.label}
-            </button>
+          {sidebarGroups.map((group, gi) => (
+            <div key={gi}>
+              {group.label && <div className="admin-sidebar-header">{group.label}</div>}
+              {group.items.map(t => (
+                <button
+                  key={t.id}
+                  className={`admin-sidebar-item${tab === t.id ? ' active' : ''}`}
+                  onClick={() => setTab(t.id)}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
         <div className="admin-content">
+
+        {tab === 'team-settings' && <TeamSettings />}
+        {tab === 'members' && <MembersPanel />}
+        {tab === 'projects' && <ProjectsPanel />}
+        {tab === 'project-settings' && hasProject && <ProjectSettings />}
 
         {tab === 'parts' && hasProject && (
           <PartsManager
@@ -692,250 +541,6 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
             onReject={(p) => handleSetReleaseState(p, 'draft')}
             onRefresh={loadAllParts}
           />
-        )}
-
-        {tab === 'tools' && hasProject && (
-          <ToolsTab
-            integrity={integrity}
-            integrityRunning={integrityRunning}
-            onIntegrityCheck={handleIntegrityCheck}
-            renormRunning={renormRunning}
-            onRenormalize={handleRenormalize}
-          />
-        )}
-
-        {tab === 'members' && (
-          <MembersPanel />
-        )}
-
-        {tab === 'settings' && (
-          <>
-            <p className="admin-warning">
-              Team and GitHub Browse settings are saved on this computer only.
-              {' '}{overrideStatusLine}
-            </p>
-
-            <div className="admin-section">
-              <h3>Team</h3>
-              <label>Team name</label>
-              <input
-                value={globalForm.teamName ?? ''}
-                onChange={e => setGlobal('teamName', e.target.value)}
-                placeholder={globalState?.defaults.teamName || 'FRC Team 2129'}
-              />
-              <label>Welcome message</label>
-              <textarea
-                value={globalForm.welcomeMessage ?? ''}
-                onChange={e => setGlobal('welcomeMessage', e.target.value)}
-                placeholder={globalState?.defaults.welcomeMessage || 'Optional message shown to teammates'}
-                rows={2}
-              />
-            </div>
-
-            <div className="admin-section">
-              <h3>GitHub Browse</h3>
-              <p className="admin-hint">
-                When set, students see a "Browse Projects" button on the welcome
-                screen listing repos in this organisation that match the prefix.
-                New projects use the prefix automatically.
-              </p>
-              <label>GitHub organisation</label>
-              <input
-                value={globalForm.gitHubOrg ?? ''}
-                onChange={e => setGlobal('gitHubOrg', e.target.value)}
-                placeholder={globalState?.defaults.gitHubOrg || 'netarcx'}
-              />
-              <label>Project name prefix</label>
-              <input
-                value={globalForm.projectPrefix ?? ''}
-                onChange={e => setGlobal('projectPrefix', e.target.value)}
-                placeholder={globalState?.defaults.projectPrefix || 'framecad-'}
-              />
-            </div>
-
-            <div className="admin-section-actions">
-              <button
-                className="toolbar-btn"
-                onClick={handleResetGlobal}
-                disabled={saving || !globalState?.hasLocalOverride}
-                title={globalState?.hasLocalOverride
-                  ? 'Discard local overrides and use the team defaults shipped with this install'
-                  : 'No local overrides to reset'}
-              >
-                Reset to team defaults
-              </button>
-              <button className="toolbar-btn primary" onClick={handleSaveGlobal} disabled={saving}>
-                {saving ? 'Saving…' : 'Save (local)'}
-              </button>
-            </div>
-
-            {hasProject && (
-              <>
-                <hr className="admin-divider" />
-
-                <p className="admin-warning">
-                  The settings below are committed and pushed to <em>this project's</em>
-                  {' '}git repo on Save. Every teammate picks them up on their next Download.
-                </p>
-
-                <div className="admin-section">
-                  <h3>Part Numbering</h3>
-                  <label>Default part-number prefix</label>
-                  <input
-                    value={config.defaultPartPrefix ?? ''}
-                    onChange={e => set('defaultPartPrefix', e.target.value)}
-                    placeholder="e.g. 26-2129"
-                  />
-                  <p className="admin-hint">
-                    Stays with this project. Used by the auto-numbering when creating
-                    new parts and assemblies.
-                  </p>
-                  <label className="admin-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={legacyMode}
-                      onChange={e => handleToggleLegacy(e.target.checked)}
-                      disabled={legacyToggling}
-                    />
-                    <span>Legacy mode (use filenames as part numbers)</span>
-                  </label>
-                  <label className="admin-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={!!config.hideMass}
-                      onChange={e => set('hideMass', e.target.checked || undefined)}
-                    />
-                    <span>Hide robot weight / mass display</span>
-                  </label>
-                  <label className="admin-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={!!config.hideCost}
-                      onChange={e => set('hideCost', e.target.checked || undefined)}
-                    />
-                    <span>Hide robot cost display</span>
-                  </label>
-                  <p className="admin-hint">
-                    Hides the mass / cost rollups in the status bar and
-                    omits them from generated documents. The underlying
-                    per-part values stay in <code>parts-meta.json</code>;
-                    just turn the toggle back off to reveal them again.
-                  </p>
-                  <p className="admin-hint">
-                    Turn this on for an existing project that pre-dates
-                    FrameCAD's numbering scheme. New files keep their
-                    original filename (e.g. <code>Frame.sldprt</code>) as
-                    the displayed part number instead of getting a
-                    generated <code>26-2129-001</code>. <strong>Toggling
-                    doesn't rewrite existing part numbers</strong> — SolidWorks
-                    assembly references would break if it did, so once a
-                    file has a number it keeps that number for life. Only
-                    files added after the flip pick up the other behavior.
-                    FrameCAD auto-enables this when opening a non-FrameCAD
-                    project for the first time.
-                  </p>
-                </div>
-
-                <div className="admin-section">
-                  <h3>Main Repository</h3>
-                  <label>Git remote URL</label>
-                  <div className="inline-input-row">
-                    <input
-                      value={config.mainRepoUrl ?? ''}
-                      onChange={e => set('mainRepoUrl', e.target.value)}
-                      placeholder="https://github.com/org/main-project.git"
-                    />
-                    <button className="toolbar-btn" onClick={handleCopyRepoUrl}>Copy</button>
-                  </div>
-                  <p className="admin-hint">
-                    Saving rewrites this project's `origin` remote to match.
-                  </p>
-                </div>
-
-                <div className="admin-section">
-                  <h3>Self-Hosted LFS Storage <span className="admin-hint-inline">(advanced)</span></h3>
-                  <p className="admin-hint">
-                    By default, large CAD files are stored in GitHub's LFS.
-                    Set a URL here to redirect LFS storage to your own server
-                    (rudolfs, giftless, Gitea, GitLab, etc.) — git push/pull
-                    still go to GitHub, only the LFS object bytes change
-                    hosts. Leave blank to use GitHub LFS. Auth (if your server
-                    needs it) is handled by `.netrc` or git credential helpers,
-                    not by FrameCAD.
-                  </p>
-                  <label>LFS server URL</label>
-                  <input
-                    value={config.lfsUrl ?? ''}
-                    onChange={e => set('lfsUrl', e.target.value)}
-                    placeholder="https://lfs.your-server.com/team/robot.git/info/lfs"
-                  />
-                  <p className="admin-hint">
-                    Saving writes a <code>.lfsconfig</code> at the project root
-                    and pushes it, so teammates auto-pick the redirect on their
-                    next sync.
-                  </p>
-                </div>
-
-                <div className="admin-section">
-                  <h3>COTS Library</h3>
-                  <p className="admin-hint">
-                    Commercial Off-The-Shelf parts live in a separate Git repo and
-                    are cloned into a <code>COTS/</code> subfolder. The folder is
-                    gitignored so the two histories stay separate.
-                  </p>
-                  <label>COTS repo URL</label>
-                  <input
-                    value={config.cotsRepoUrl ?? ''}
-                    onChange={e => set('cotsRepoUrl', e.target.value)}
-                    placeholder="https://github.com/org/cots-library.git"
-                  />
-                  <label>COTS branch (optional)</label>
-                  <input
-                    value={config.cotsBranch ?? ''}
-                    onChange={e => set('cotsBranch', e.target.value)}
-                    placeholder="main"
-                  />
-                  <button
-                    className="toolbar-btn"
-                    onClick={handleSyncCots}
-                    disabled={!config.cotsRepoUrl || syncingCots}
-                  >
-                    {syncingCots ? 'Downloading...' : 'Download COTS now'}
-                  </button>
-                </div>
-
-                <div className="admin-section">
-                  <h3>Weekly Progress Tag</h3>
-                  <p className="admin-hint">
-                    Annotated Git tag at the current commit, pushed. Use to mark
-                    weekly snapshots so the team can browse the CAD state at any
-                    past milestone.
-                  </p>
-                  <label>Tag name</label>
-                  <div className="inline-input-row">
-                    <input
-                      value={tagName}
-                      onChange={e => setTagName(e.target.value)}
-                      placeholder="progress-2026-05-10"
-                    />
-                    <button
-                      className="toolbar-btn primary"
-                      onClick={handleCreateTag}
-                      disabled={!tagName.trim() || taggingNow}
-                    >
-                      {taggingNow ? 'Tagging...' : 'Tag now'}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="admin-section-actions">
-                  <button className="toolbar-btn primary" onClick={handleSaveProject} disabled={saving}>
-                    {saving ? 'Saving...' : 'Save project settings & Upload'}
-                  </button>
-                </div>
-              </>
-            )}
-          </>
         )}
 
         {tab === 'documents' && hasProject && (
@@ -1106,6 +711,16 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
           </div>
         )}
 
+        {tab === 'tools' && hasProject && (
+          <ToolsTab
+            integrity={integrity}
+            integrityRunning={integrityRunning}
+            onIntegrityCheck={handleIntegrityCheck}
+            renormRunning={renormRunning}
+            onRenormalize={handleRenormalize}
+          />
+        )}
+
         {tab === 'export-queue' && hasProject && (
           <ExportQueueTab />
         )}
@@ -1141,8 +756,7 @@ export default function AdminPage({ hasProject, onClose, appVersion, gitName, gi
 }
 
 // ---------------------------------------------------------------------
-// Sub-components for the new tabs. Kept in the same file to avoid
-// component-file sprawl; they read state passed down from AdminPage.
+// Sub-components kept in the same file to avoid sprawl
 // ---------------------------------------------------------------------
 
 interface ToolsTabProps {
@@ -1252,9 +866,7 @@ function ToolsTab(props: ToolsTabProps) {
 }
 
 // ---------------------------------------------------------------------
-// Export Queue tab — released parts that still need a paired .step/.stl
-// pushed by the SolidWorks add-in. Batch-trigger lives here so a backlog
-// can be cleared in one click once SW is open.
+// Export Queue tab
 // ---------------------------------------------------------------------
 
 function relTime(iso?: string): string {
@@ -1292,15 +904,11 @@ function ExportQueueTab() {
 
   useEffect(() => { refresh() }, [refresh])
 
-  // Re-poll every 4s while the tab is mounted so swAlive and the
-  // pending-task count reflect the SolidWorks add-in's actual state
-  // (it heartbeats every 5s via /api/health).
   useEffect(() => {
     const id = setInterval(refresh, 4000)
     return () => clearInterval(id)
   }, [refresh])
 
-  // Pick up new "needs export" entries as parts get released elsewhere.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null
     const cleanup = window.api.onFileChange(() => {

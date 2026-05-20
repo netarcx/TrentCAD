@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import type { GlobalAdminConfig, GlobalAdminState } from '@shared/types'
+import { useState, useEffect, useCallback } from 'react'
+import type { GlobalAdminConfig, GlobalAdminState, CoordinationState } from '@shared/types'
 import ErrorMsg from '../ErrorMsg'
 
 export default function TeamSettings() {
@@ -9,6 +9,9 @@ export default function TeamSettings() {
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
 
+  const [coordState, setCoordState] = useState<CoordinationState>({ configured: false })
+  const [coordLoading, setCoordLoading] = useState(true)
+
   useEffect(() => {
     window.api.getGlobalAdmin()
       .then(state => {
@@ -17,6 +20,20 @@ export default function TeamSettings() {
       })
       .catch(() => {})
   }, [])
+
+  const refreshCoord = useCallback(async () => {
+    setCoordLoading(true)
+    try {
+      const state = await window.api.syncCoordinationRepo()
+      setCoordState(state)
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setCoordLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { refreshCoord() }, [refreshCoord])
 
   const set = <K extends keyof GlobalAdminConfig>(key: K, value: GlobalAdminConfig[K]) => {
     setForm(prev => ({ ...prev, [key]: value }))
@@ -53,6 +70,17 @@ export default function TeamSettings() {
     }
   }
 
+  const handleDisconnect = async () => {
+    if (!window.confirm('Disconnect from the coordination repo? You can reconnect later from the welcome screen.')) return
+    setError(null)
+    try {
+      await window.api.disconnectCoordinationRepo()
+      await refreshCoord()
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
   if (!globalState) return null
 
   const overrideStatusLine = globalState.hasLocalOverride
@@ -61,6 +89,28 @@ export default function TeamSettings() {
 
   return (
     <>
+      {coordState.configured && (
+        <div className="admin-section">
+          <h3>Coordination Repo</h3>
+          <p className="admin-hint" style={{ wordBreak: 'break-all' }}>
+            {coordState.repoUrl}
+          </p>
+          {coordState.lastSyncAt && (
+            <p className="admin-hint" style={{ fontSize: '0.75rem', opacity: 0.6 }}>
+              Last synced: {new Date(coordState.lastSyncAt).toLocaleString()}
+            </p>
+          )}
+          <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+            <button className="toolbar-btn" onClick={refreshCoord} disabled={coordLoading}>
+              {coordLoading ? 'Syncing...' : 'Sync Now'}
+            </button>
+            <button className="toolbar-btn" onClick={handleDisconnect} style={{ color: 'var(--color-danger, #ef4444)' }}>
+              Disconnect
+            </button>
+          </div>
+        </div>
+      )}
+
       <p className="admin-warning">
         Team and GitHub Browse settings are saved on this computer only.
         {' '}{overrideStatusLine}

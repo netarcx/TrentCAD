@@ -14,6 +14,8 @@ export default function ProjectSettings() {
     const dd = String(d.getDate()).padStart(2, '0')
     return `progress-${yyyy}-${mm}-${dd}`
   })
+  const [legacyMode, setLegacyMode] = useState(false)
+  const [legacyToggling, setLegacyToggling] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
 
@@ -24,6 +26,9 @@ export default function ProjectSettings() {
     window.api.getMainRemoteUrl().then(url => {
       if (url) setConfig(prev => ({ ...prev, mainRepoUrl: prev.mainRepoUrl || url }))
     }).catch(() => {})
+    window.api.getPartsManifest()
+      .then(m => setLegacyMode(!!m?.legacyMode))
+      .catch(() => {})
   }, [])
 
   const set = <K extends keyof AdminConfig>(key: K, value: AdminConfig[K]) => {
@@ -93,11 +98,28 @@ export default function ProjectSettings() {
     }
   }
 
+  const handleToggleLegacy = async (next: boolean) => {
+    setLegacyToggling(true)
+    setError(null)
+    setStatus(null)
+    try {
+      await window.api.setLegacyMode(next)
+      setLegacyMode(next)
+      setStatus(next
+        ? 'Legacy mode on — new files will use their filename as the part number. Existing part numbers were not changed.'
+        : 'Legacy mode off — new files will use the auto-numbered scheme. Existing part numbers were not changed.')
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setLegacyToggling(false)
+    }
+  }
+
   return (
     <>
       <p className="admin-warning">
-        The settings below are committed and pushed to <em>this project's</em>
-        {' '}git repo on Save. Every teammate picks them up on their next Download.
+        These settings are committed and pushed to <em>this project's</em>
+        {' '}git repo on Save. Every teammate picks them up on their next sync.
       </p>
 
       <div className="admin-section">
@@ -111,6 +133,37 @@ export default function ProjectSettings() {
         <p className="admin-hint">
           Stays with this project. Used by the auto-numbering when creating
           new parts and assemblies.
+        </p>
+        <label className="admin-checkbox-row">
+          <input
+            type="checkbox"
+            checked={legacyMode}
+            onChange={e => handleToggleLegacy(e.target.checked)}
+            disabled={legacyToggling}
+          />
+          <span>Legacy mode (use filenames as part numbers)</span>
+        </label>
+        <label className="admin-checkbox-row">
+          <input
+            type="checkbox"
+            checked={!!config.hideMass}
+            onChange={e => set('hideMass', e.target.checked || undefined)}
+          />
+          <span>Hide robot weight / mass display</span>
+        </label>
+        <label className="admin-checkbox-row">
+          <input
+            type="checkbox"
+            checked={!!config.hideCost}
+            onChange={e => set('hideCost', e.target.checked || undefined)}
+          />
+          <span>Hide robot cost display</span>
+        </label>
+        <p className="admin-hint">
+          Hides the mass / cost rollups in the status bar and
+          omits them from generated documents. The underlying
+          per-part values stay in <code>parts-meta.json</code>;
+          just turn the toggle back off to reveal them again.
         </p>
       </div>
 
@@ -135,7 +188,7 @@ export default function ProjectSettings() {
         <p className="admin-hint">
           By default, large CAD files are stored in GitHub's LFS.
           Set a URL here to redirect LFS storage to your own server
-          (rudolfs, giftless, Gitea, GitLab, etc.) — git push/pull
+          (rudolfs, giftless, Gitea, GitLab, etc.) &mdash; git push/pull
           still go to GitHub, only the LFS object bytes change
           hosts. Leave blank to use GitHub LFS. Auth (if your server
           needs it) is handled by `.netrc` or git credential helpers,

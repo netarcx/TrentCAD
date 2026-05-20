@@ -7,17 +7,10 @@ export default function MembersPanel() {
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
 
-  // Manual add form
   const [showAddForm, setShowAddForm] = useState(false)
   const [addUsername, setAddUsername] = useState('')
   const [addDisplayName, setAddDisplayName] = useState('')
   const [addRole, setAddRole] = useState<MemberRole>('student')
-
-  // Add project form
-  const [showAddProject, setShowAddProject] = useState(false)
-  const [projectName, setProjectName] = useState('')
-  const [projectUrl, setProjectUrl] = useState('')
-  const [projectDesc, setProjectDesc] = useState('')
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -116,54 +109,11 @@ export default function MembersPanel() {
     }
   }
 
-  const handleAddProject = async () => {
-    if (!projectName.trim() || !projectUrl.trim()) return
-    setError(null)
-    setStatus('Adding project...')
-    try {
-      await window.api.addProjectToRegistry({
-        name: projectName.trim(),
-        repoUrl: projectUrl.trim(),
-        description: projectDesc.trim() || undefined
-      })
-      setProjectName('')
-      setProjectUrl('')
-      setProjectDesc('')
-      setShowAddProject(false)
-      setStatus(null)
-      await refresh()
-    } catch (err) {
-      setError((err as Error).message)
-      setStatus(null)
-    }
-  }
-
-  const handleRemoveProject = async (repoUrl: string) => {
-    setError(null)
-    try {
-      await window.api.removeProjectFromRegistry(repoUrl)
-      await refresh()
-    } catch (err) {
-      setError((err as Error).message)
-    }
-  }
-
-  const handleDisconnect = async () => {
-    if (!window.confirm('Disconnect from the coordination repo? You can reconnect later from the welcome screen.')) return
-    setError(null)
-    try {
-      await window.api.disconnectCoordinationRepo()
-      await refresh()
-    } catch (err) {
-      setError((err as Error).message)
-    }
-  }
-
   if (loading) {
     return (
       <div className="admin-section">
         <h3>Team Members</h3>
-        <p className="admin-hint">Loading coordination state...</p>
+        <p className="admin-hint">Loading...</p>
       </div>
     )
   }
@@ -173,7 +123,7 @@ export default function MembersPanel() {
       <div className="admin-section">
         <h3>Team Members</h3>
         <p className="admin-hint">
-          No coordination repo connected. Create or join a team from the welcome screen
+          No coordination repo connected. Set one up in Team Settings
           to manage team members.
         </p>
       </div>
@@ -182,32 +132,11 @@ export default function MembersPanel() {
 
   const members = coordState.members ?? []
   const pending = coordState.pendingRequests ?? []
-  const projects = coordState.projects ?? []
 
   return (
     <>
       {error && <div className="form-error" style={{ margin: '0 0 1rem' }}>{error}</div>}
       {status && <p className="admin-hint">{status}</p>}
-
-      <div className="admin-section">
-        <h3>Coordination Repo</h3>
-        <p className="admin-hint" style={{ wordBreak: 'break-all' }}>
-          {coordState.repoUrl}
-        </p>
-        {coordState.lastSyncAt && (
-          <p className="admin-hint" style={{ fontSize: '0.75rem', opacity: 0.6 }}>
-            Last synced: {new Date(coordState.lastSyncAt).toLocaleString()}
-          </p>
-        )}
-        <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
-          <button className="toolbar-btn" onClick={refresh} disabled={loading}>
-            {loading ? 'Syncing...' : 'Sync Now'}
-          </button>
-          <button className="toolbar-btn" onClick={handleDisconnect} style={{ color: 'var(--color-danger, #ef4444)' }}>
-            Disconnect
-          </button>
-        </div>
-      </div>
 
       {isAdmin && pending.length > 0 && (
         <div className="admin-section">
@@ -328,74 +257,6 @@ export default function MembersPanel() {
             ) : (
               <button className="toolbar-btn" onClick={() => setShowAddForm(true)} style={{ marginTop: '0.5rem' }}>
                 + Add Member
-              </button>
-            )}
-          </>
-        )}
-      </div>
-
-      <div className="admin-section">
-        <h3>Project Registry ({projects.length})</h3>
-        {projects.length === 0 ? (
-          <p className="admin-hint">No projects registered. Add projects so team members can find them easily.</p>
-        ) : (
-          <div className="admin-table-wrap">
-            <table className="admin-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>URL</th>
-                  <th>Description</th>
-                  {isAdmin && <th>Actions</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {projects.map(p => (
-                  <tr key={p.repoUrl}>
-                    <td>{p.name}</td>
-                    <td style={{ wordBreak: 'break-all', fontSize: '0.75rem' }}>
-                      {p.repoUrl.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '')}
-                    </td>
-                    <td>{p.description || '—'}</td>
-                    {isAdmin && (
-                      <td>
-                        <button
-                          className="toolbar-btn"
-                          onClick={() => handleRemoveProject(p.repoUrl)}
-                          style={{ color: 'var(--color-danger, #ef4444)', fontSize: '0.75rem' }}
-                        >
-                          Remove
-                        </button>
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        {isAdmin && (
-          <>
-            {showAddProject ? (
-              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
-                <div className="form-group" style={{ flex: 1, minWidth: '120px' }}>
-                  <label>Project Name</label>
-                  <input value={projectName} onChange={e => setProjectName(e.target.value)} placeholder="2026 Robot" />
-                </div>
-                <div className="form-group" style={{ flex: 2, minWidth: '200px' }}>
-                  <label>Repo URL</label>
-                  <input value={projectUrl} onChange={e => setProjectUrl(e.target.value)} placeholder="https://github.com/org/repo.git" />
-                </div>
-                <div className="form-group" style={{ flex: 1, minWidth: '120px' }}>
-                  <label>Description</label>
-                  <input value={projectDesc} onChange={e => setProjectDesc(e.target.value)} placeholder="Optional" />
-                </div>
-                <button className="toolbar-btn primary" onClick={handleAddProject} disabled={!projectName.trim() || !projectUrl.trim()}>Add</button>
-                <button className="toolbar-btn" onClick={() => setShowAddProject(false)}>Cancel</button>
-              </div>
-            ) : (
-              <button className="toolbar-btn" onClick={() => setShowAddProject(true)} style={{ marginTop: '0.5rem' }}>
-                + Add Project
               </button>
             )}
           </>

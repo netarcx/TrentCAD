@@ -375,7 +375,14 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('reset-all-app-state', async () => {
-    await resetAllAppState()
+    // Catch errors so the relaunch fires even if a particular wipe step
+    // fails (file locked on Windows, network blip on session API).
+    // A partial reset + relaunch is still better than a silent no-op.
+    try {
+      await resetAllAppState()
+    } catch (err) {
+      console.error('reset-all-app-state error (will still relaunch):', err)
+    }
     // Relaunch after the IPC reply has had a moment to reach the
     // renderer. A full process restart guarantees Chromium re-opens
     // its leveldb stores clean — a window.location.reload() would

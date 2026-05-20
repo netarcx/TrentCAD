@@ -201,7 +201,7 @@ export interface AdminConfig {
 /**
  * Settings that apply to the FrameCAD install as a whole, not to any
  * single project. Defaults are baked in at build time from GH Actions
- * secrets; users override locally via the welcome-screen admin page
+ * secrets; users override locally via the Settings page
  * and their overrides persist across app updates.
  */
 export interface GlobalAdminConfig {

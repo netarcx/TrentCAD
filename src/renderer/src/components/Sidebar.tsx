@@ -6,16 +6,21 @@ interface Props {
   active: SidebarSection
   onSelect: (section: SidebarSection) => void
   badges?: { files?: number; parts?: number }
+  /** Parts Manager (bulk edit, approvals queue) is mentor+ only. Hide
+   *  the entry for students so they can't reach the bulk dropdown that
+   *  bypasses the DetailsPanel release-state gate. */
+  isMentor: boolean
 }
 
-const items: { id: SidebarSection; label: string; Icon: LucideIcon }[] = [
+const allItems: { id: SidebarSection; label: string; Icon: LucideIcon; mentorOnly?: boolean }[] = [
   { id: 'files', label: 'Files', Icon: FolderOpen },
-  { id: 'parts', label: 'Parts', Icon: Wrench },
+  { id: 'parts', label: 'Parts', Icon: Wrench, mentorOnly: true },
   { id: 'activity', label: 'Activity', Icon: Activity },
   { id: 'shop', label: 'Shop', Icon: Factory }
 ]
 
-export default function Sidebar({ active, onSelect, badges }: Props) {
+export default function Sidebar({ active, onSelect, badges, isMentor }: Props) {
+  const items = allItems.filter(i => isMentor || !i.mentorOnly)
   return (
     <nav className="app-sidebar">
       {items.map(({ id, label, Icon }) => (

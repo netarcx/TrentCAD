@@ -135,10 +135,8 @@ export async function triggerWaterSlam(
   let appRef: { destroy: (opts?: unknown) => void } | null = null
   let canvasEl: HTMLCanvasElement | null = null
 
-  console.log('[water-slam] triggered at', impactX, impactY)
   try {
     const [pixi, htmlToImage] = await warmWaterSlam()
-    console.log('[water-slam] deps loaded')
     const { Application, Sprite, Texture, DisplacementFilter } = pixi
 
     const w = window.innerWidth
@@ -175,8 +173,6 @@ export async function triggerWaterSlam(
       cacheBust: false,
       pixelRatio: Math.min(window.devicePixelRatio || 1, 2)
     })
-    console.log('[water-slam] snapshot ready', snapshot.width, 'x', snapshot.height, 'pre-captured=', !!preCapturedSnapshot)
-
     const app = new Application()
     await app.init({
       width: w,
@@ -270,7 +266,6 @@ export async function triggerWaterSlam(
       filters.push(new DisplacementFilter({ sprite: ds, scale: 0 }))
     }
     bgSprite.filters = filters
-    console.log('[water-slam] pixi ready, animation starting; amplitude=', maxAmplitude, 'duration=', duration, 'sources=', sources.length)
 
     const startTime = performance.now()
 

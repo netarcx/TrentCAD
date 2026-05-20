@@ -195,4 +195,4 @@ FrameCAD checks for updates every time you launch it. When a new version is avai
 | Go back to project picker | ← Project name in header |
 | Switch dark/light | Light/Dark in top-right |
 
-That's it. If anything's broken, ask the CAD lead — they have an admin page (Ctrl+Shift+A inside a project) for fixing team-wide settings.
+That's it. If anything's broken, ask the CAD lead — they have a Settings page (Ctrl+Shift+A, or the gear icon in the sidebar) for fixing team-wide stuff.

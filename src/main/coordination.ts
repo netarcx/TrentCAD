@@ -282,13 +282,20 @@ export async function getCoordinationState(): Promise<CoordinationState> {
   const repoUrl = await getCoordinationRepoUrl()
   if (!repoUrl) return { configured: false }
 
+  // Try to sync — but even when sync fails (offline, GitHub rate-limited,
+  // remote deleted), fall through to readFullState so the local clone's
+  // members.json still drives the role. Without this fall-through, an
+  // admin launching offline silently degrades to student because no
+  // role data ever gets read.
   try {
     await ensureCloned(repoUrl)
+  } catch { /* offline or transient — try to read whatever's on disk */ }
+
+  try {
+    return await readFullState(repoUrl)
   } catch {
     return { configured: true, repoUrl }
   }
-
-  return readFullState(repoUrl)
 }
 
 export async function previewCoordinationRepo(repoUrl: string): Promise<CoordinationState> {
@@ -386,7 +393,17 @@ export async function createCoordinationRepo(
     await g.add(['.'])
     await g.commit('Initialize FrameCAD coordination repo')
     const branch = (await g.branchLocal()).current || 'main'
-    try { await g.push('origin', branch, ['--set-upstream']) } catch { /* may already be set */ }
+    // Initial push must succeed — if it doesn't, the remote on GitHub
+    // is empty (just created by `gh repo create`) and any teammate who
+    // tries to join via this URL gets a bare repo with no config files.
+    // Propagate the failure so the user can retry instead of persisting
+    // a broken URL.
+    try {
+      await g.push('origin', branch, ['--set-upstream'])
+    } catch (err) {
+      const msg = (err as Error).message || 'push failed'
+      return { success: false, error: `Could not push initial coordination commit: ${msg}` }
+    }
 
     await setCoordinationRepoUrl(repoUrl)
     return { success: true, url: repoUrl }

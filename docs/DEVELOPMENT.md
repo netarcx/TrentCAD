@@ -53,7 +53,7 @@ Stored in `.framecad/parts-meta.json` (committed to Git) and edited from the Det
 
 ### Build-season documents
 
-Generated on-demand from the admin page into `Documents/` at the project root. Each document writes both a machine-readable source format (CSV / Markdown) and a styled PDF with page-numbered headers/footers.
+Generated on-demand from the Settings page into `Documents/` at the project root. Each document writes both a machine-readable source format (CSV / Markdown) and a styled PDF with page-numbered headers/footers.
 
 - `BOM.csv` / `BOM.pdf` — every part with number, file, type, subsystem, release status, method, material, mass, cost
 - `Manufacturing-Queue.csv` / `Manufacturing-Queue.pdf` — released + in-review parts grouped by Method → Material so a station walks one contiguous block
@@ -137,7 +137,7 @@ src/
     parts.ts                    # Part numbering engine + manifest management
     meta.ts                     # Per-part metadata (.framecad/parts-meta.json)
     admin.ts                    # Per-project admin config (.framecad/admin.json)
-    admin-pin.ts                # SHA-256 PIN gate for the admin page
+    coordination.ts             # Coordination repo (members.json, team.json, projects.json)
     global-admin.ts             # Install-wide admin settings + defaults from GH secrets
     rest.ts                     # Local REST API server
     documents.ts                # Build-season doc generation (CSV + MD + PDF)
@@ -159,8 +159,9 @@ src/
         Toolbar.tsx             # Action buttons + New Part/Assembly modals
         ActivityFeed.tsx        # Collapsible commit history
         DetailsPanel.tsx        # Selected file info sidebar with per-part metadata
-        AdminPage.tsx           # Admin panel (Ctrl+Shift+A)
-        AdminPinPrompt.tsx      # PIN gate modal
+        AdminPage.tsx           # Settings panel (Ctrl+Shift+A); role-gated tabs
+        TeamSetup.tsx           # Coordination repo onboarding (create / join team)
+        settings/               # Self-contained sub-panels (TeamSettings, MembersPanel, etc.)
         BrowseProjects.tsx      # Org-scoped repo browser
         ManufacturingQueue.tsx  # Tabbed shop view
         OnboardingTour.tsx      # First-launch tour
@@ -256,25 +257,17 @@ Then run RegAsm.exe as in Option 2.
 
 The add-in requires FrameCAD (the Electron app) to be running with a project open — it communicates via the REST API on port 42129. The connection indicator in the pane shows green when connected.
 
-## Admin page
+## Settings page
 
-Access via **Ctrl+Shift+A** from anywhere in the app. The admin page is mode-aware:
+Access via **Ctrl+Shift+A** from anywhere in the app, or click the Settings gear in the sidebar. What you see depends on your role in the coordination repo:
 
-- **No project open** (welcome screen): edit install-wide settings — team name, welcome message, GitHub org for Browse, project prefix. These are stored locally and survive updates; defaults come from GitHub Actions secrets baked into the installer.
-- **Project open**: per-project settings — default part-number prefix, main repository URL, COTS library URL/branch, self-hosted LFS URL, plus the build-season Document generators and the Repository Health large-file scanner.
+- **Student**: Profile + About + per-user preferences (screensaver toggle).
+- **Mentor**: above + Project workflow (Parts Manager, Approvals, Documents, Export Queue), Maintenance (Locks, Health, Tools), Project Registry.
+- **Admin**: above + Team Settings, Member roster, per-project Settings (part numbering, COTS, LFS, weekly tags), factory reset.
 
-### PIN gate
+Standalone mode (no coordination repo configured) grants full admin so solo users aren't locked out. Enforcement is UI-only — the real security boundary is GitHub org write access (push fails without it).
 
-Optional. When the `FRAMECAD_ADMIN_PIN_HASH` GitHub Actions secret is set (lowercase SHA-256 hex of the team admin PIN), Ctrl+Shift+A prompts for a PIN before opening. Hash is baked into the installer at build time and verified in the main process — never exposed to the renderer.
-
-To generate the hash:
-```bash
-node -e "console.log(require('crypto').createHash('sha256').update('YOUR-PIN').digest('hex'))"
-```
-
-Then add the result to the repo's GitHub Actions secrets as `FRAMECAD_ADMIN_PIN_HASH`. Empty / unset = no PIN gate (dev mode).
-
-### Other build-time secrets
+### Build-time secrets
 
 The CI workflow consumes these GitHub Actions secrets to bake defaults into the installer:
 

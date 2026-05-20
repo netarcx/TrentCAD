@@ -38,8 +38,7 @@ function countByState(files: FileEntry[], state: string): number {
   const legacyKeys = [
     'onboarding-seen',
     'theme',
-    'dyslexic-font',
-    'admin-shortcut-unlocked'
+    'dyslexic-font'
   ]
   for (const k of legacyKeys) {
     const oldKey = `trentcad-${k}`
@@ -362,6 +361,13 @@ export default function App() {
   const isAdmin = !coordState.configured || coordState.currentUserRole === 'admin'
   const isMentor = isAdmin || coordState.currentUserRole === 'mentor'
 
+  // If a coord-repo sync demotes the user (e.g. mentor → student) while
+  // they're sitting on the Parts section, snap them back to Files so
+  // they aren't staring at a hidden panel (Parts is mentor-gated).
+  useEffect(() => {
+    if (!isMentor && activeSection === 'parts') setActiveSection('files')
+  }, [isMentor, activeSection])
+
   const openAdminOverlay = useCallback(() => {
     if (!showAdmin) setShowAdmin(true)
   }, [showAdmin])
@@ -397,7 +403,7 @@ export default function App() {
         })()
         return
       }
-      // Ctrl+Shift+A: toggle the Admin overlay (works in welcome and project views)
+      // Ctrl+Shift+A: toggle the Settings overlay (works in welcome and project views)
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'a') {
         e.preventDefault()
         if (showAdmin) {
@@ -887,6 +893,7 @@ export default function App() {
           active={activeSection}
           onSelect={handleSidebarSelect}
           badges={sidebarBadges}
+          isMentor={isMentor}
         />
 
         <div className="app-content">
@@ -897,11 +904,11 @@ export default function App() {
               onSelect={setSelectedFile}
               onCheckOut={checkOut}
               onCheckIn={checkIn}
-              onBulkApply={parts.bulkApply}
+              onBulkApply={isMentor ? parts.bulkApply : undefined}
             />
           )}
 
-          {activeSection === 'parts' && (
+          {activeSection === 'parts' && isMentor && (
             <div className="parts-content">
               {parts.error && <ErrorMsg text={parts.error} style={{ margin: '8px 16px' }} />}
               <div className="parts-content-tabs">

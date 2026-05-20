@@ -35,9 +35,9 @@ string literals in the compiled bundle.
 | `FRAMECAD_DEFAULT_WELCOME_MESSAGE` | `Cut metal, not corners.` | Optional banner copy under the welcome subtitle. |
 | `FRAMECAD_DEFAULT_ISSUE_REPO` | `frc1234/FrameCAD` | Where the in-app **Report to GitHub** button files auto-reports. Falls back to `netarcx/FrameCAD` if unset, which floods upstream — set this. |
 
-The Admin panel lets every install override any of these per-machine,
+The Settings page lets every install override any of these per-machine,
 but the build-time defaults are what new installs see before anyone
-touches the Admin page.
+opens Settings.
 
 ## Required: redirect auto-update
 

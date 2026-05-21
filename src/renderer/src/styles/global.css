@@ -2960,6 +2960,33 @@ body.slam-shake {
   flex: 0 0 auto;
 }
 
+/* Status pill used by the project list (Local / Not cloned /
+   DELETED). Base styles set the shape (rounded chip + padding);
+   modifier classes set the color so the three states are visually
+   distinct without relying on inline `style` props. */
+.project-list-row-status .pill {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+.project-list-row-status .pill-local {
+  color: var(--green);
+  background: rgba(134, 239, 172, 0.15);
+}
+.project-list-row-status .pill-deleted {
+  color: var(--red);
+  background: var(--red-tint);
+}
+.project-list-row-status .pill-remote {
+  color: var(--text-muted);
+  background: rgba(115, 115, 115, 0.15);
+}
+
 /* Manufacturing View — quieter outline button under the list. Sized
    smaller than the cards-era so it reads as a secondary action, not
    competition with the project rows above. */

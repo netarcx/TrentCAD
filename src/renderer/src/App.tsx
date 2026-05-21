@@ -322,9 +322,21 @@ export default function App() {
   const [projectTotals, setProjectTotals] = useState<ProjectTotals | null>(null)
 
   useEffect(() => {
+    // Within a single phase, multiple sources emit progress events
+    // with different field subsets — simple-git progress (percent +
+    // stage), git-lfs stderr regex (percent + detail), and the
+    // GIT_LFS_PROGRESS tail (currentFile only). Plain `setPublishProgress(p)`
+    // would have the tail's currentFile-only event wipe out percent/
+    // files/detail. Shallow-merge within the same phase preserves
+    // each source's contribution; phase change still discards (the
+    // 'preparing' detail shouldn't bleed into 'uploading').
+    const merge = (p: PublishProgress) => (prev: PublishProgress | null): PublishProgress => {
+      if (!prev || prev.phase !== p.phase) return p
+      return { ...prev, ...p }
+    }
     const cleanupPublish = window.api.onPublishProgress((p) => {
       setProgressKind('publish')
-      setPublishProgress(p)
+      setPublishProgress(merge(p))
       if (p.phase === 'error' || p.phase === 'preparing') {
         setProgressHidden(false)
       }
@@ -337,7 +349,7 @@ export default function App() {
     })
     const cleanupJoin = window.api.onJoinProgress((p) => {
       setProgressKind('join')
-      setPublishProgress(p)
+      setPublishProgress(merge(p))
       if (p.phase === 'error' || p.phase === 'preparing') {
         setProgressHidden(false)
       }

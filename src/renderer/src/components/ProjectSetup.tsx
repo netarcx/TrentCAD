@@ -90,10 +90,9 @@ function installClickWaves(): void {
 
 export default function ProjectSetup({ onJoinProject, onOpenProject, onEnterManufacturingView, onOpenAdmin, isLoading, globalAdmin, prefilledJoinUrl, prefilledJoinSeq, teamSnapshot, onTeamRefresh }: Props) {
   const [mode, setMode] = useState<Mode>('select')
-  // Form state used by the join screen (still alive — triggered when
-  // the user clicks an uncloned project in the list). `name` is
-  // informational only at this point; `path` is the local save dir.
-  const [name, setName] = useState('')
+  // Form state used by the join screen (still alive — triggered
+  // when the user clicks an uncloned project in the list). `path`
+  // is the local save dir.
   const [path, setPath] = useState('')
   const [url, setUrl] = useState('')
   // React to deep-link arrivals: prefill the join URL field and snap to
@@ -710,11 +709,9 @@ export default function ProjectSetup({ onJoinProject, onOpenProject, onEnterManu
                       if (local) {
                         onOpenProject(local.path)
                       } else {
-                        // Mirror the legacy TeamProjects → join-form
-                        // handoff so the join screen comes up with the
-                        // URL + name baked in.
+                        // Drop into the join form with the URL filled
+                        // in; user picks the local save folder.
                         setUrl(p.repoUrl)
-                        setName(p.name)
                         setPath('')
                         setMode('join')
                       }
@@ -728,26 +725,11 @@ export default function ProjectSetup({ onJoinProject, onOpenProject, onEnterManu
                     </div>
                     <div className="project-list-row-status">
                       {isMissing ? (
-                        <span
-                          className="pill"
-                          style={{ color: 'var(--cad-red, #fb7185)', background: 'rgba(251, 113, 133, 0.15)' }}
-                        >
-                          DELETED
-                        </span>
+                        <span className="pill pill-deleted">DELETED</span>
                       ) : local ? (
-                        <span
-                          className="pill"
-                          style={{ color: 'var(--cad-green, #86efac)', background: 'rgba(134, 239, 172, 0.15)' }}
-                        >
-                          ✓ Local
-                        </span>
+                        <span className="pill pill-local">✓ Local</span>
                       ) : (
-                        <span
-                          className="pill"
-                          style={{ color: 'var(--text-muted, #737373)', background: 'rgba(115, 115, 115, 0.15)' }}
-                        >
-                          Not cloned
-                        </span>
+                        <span className="pill pill-remote">Not cloned</span>
                       )}
                     </div>
                   </button>

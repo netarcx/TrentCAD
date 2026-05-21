@@ -335,33 +335,52 @@ function tailLfsProgress(
 ): () => void {
   let offset = 0
   let stopped = false
+  // Re-entrancy guard: a slow drain (huge buffer) could otherwise have
+  // a second setInterval tick start before the first finished, racing
+  // on `offset`. We just no-op the overlapping drain — next tick gets
+  // whatever was missed.
+  let draining = false
 
   function drain(): void {
-    if (stopped) return
-    const stream = createReadStream(file, { start: offset, encoding: 'utf-8' })
+    if (stopped || draining) return
+    draining = true
     let buf = ''
+    const stream = createReadStream(file, { start: offset, encoding: 'utf-8' })
     stream.on('data', chunk => { buf += chunk })
-    stream.on('end', () => {
-      if (buf.length === 0) return
-      offset += Buffer.byteLength(buf, 'utf-8')
-      // Use only the last complete line — partial line at the end (if
-      // any) gets dropped, which is fine because git-lfs writes
-      // overlapping/redundant progress ticks; the next drain catches
-      // the next complete one.
-      const lines = buf.split('\n').filter(l => l.length > 0)
-      const last = lines[lines.length - 1]
-      if (!last) return
-      // Split on whitespace, max 6 chunks so the filename (which can
-      // contain spaces) stays intact as the trailing field.
-      const m = last.match(/^(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/)
-      if (!m) return
-      onLine({
-        path: m[6],
-        bytesTransferred: Number.parseInt(m[4], 10),
-        totalBytes: Number.parseInt(m[5], 10),
-      })
+    stream.on('error', () => {
+      // File might not exist yet (race against the writeFile that
+      // creates it) or the publish finally just rm'd it. Either is
+      // fine — release the guard and try again next tick.
+      draining = false
     })
-    stream.on('error', () => { /* file might not exist yet — fine */ })
+    stream.on('end', () => {
+      try {
+        if (buf.length === 0) return
+        // Advance the offset ONLY up to the last `\n` we saw. Anything
+        // after that is a partial line — git-lfs hasn't finished
+        // writing it yet — and we want to re-read it next drain.
+        const lastNewline = buf.lastIndexOf('\n')
+        if (lastNewline === -1) return // nothing complete yet
+        const complete = buf.slice(0, lastNewline + 1)
+        offset += Buffer.byteLength(complete, 'utf-8')
+
+        // Parse the LAST complete line. git-lfs writes overlapping
+        // progress ticks (multiple files in flight at once); the
+        // newest line wins in the user's "current file" mental model.
+        const lines = complete.split('\n').filter(l => l.length > 0)
+        const last = lines[lines.length - 1]
+        if (!last) return
+        const m = last.match(/^(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/)
+        if (!m) return
+        onLine({
+          path: m[6],
+          bytesTransferred: Number.parseInt(m[4], 10),
+          totalBytes: Number.parseInt(m[5], 10),
+        })
+      } finally {
+        draining = false
+      }
+    })
   }
 
   // 200 ms poll is fast enough that the UI feels live without

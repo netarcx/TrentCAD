@@ -103,7 +103,14 @@ services:
   # (which charges per GB / per bandwidth). Auth is JWT signed by the
   # framecad-server above; both sides share LFS_JWT_SECRET from .env.
   framecad-lfs:
-    image: datopian/giftless:latest
+    # Pin a specific version rather than `:latest` — the `:latest`
+    # tag on datopian/giftless hasn't been updated since July 2021
+    # and ships an ancient Python 3.7 image with a broken uwsgi.ini
+    # (bash-style `${PORT}` placeholders that uWSGI takes literally).
+    # `:0.6.2` (Dec 2024) is the newest published tag — modern Python,
+    # cleaner config. Bump this tag manually after testing newer
+    # releases; we deliberately don't follow `:latest`.
+    image: datopian/giftless:0.6.2
     container_name: framecad-lfs
     restart: unless-stopped
 
@@ -119,32 +126,56 @@ services:
       # bind mount, not a Docker-managed volume. `du -sh ./data/lfs-objects`
       # tells the operator how much GitHub-LFS quota they're saving.
       - ./data/lfs-objects:/lfs-storage
-      # Read-only mount of the config file. Edit it on the host, then
-      # `docker compose restart framecad-lfs` to pick up changes.
-      - ./giftless-config.yaml:/etc/giftless/giftless.yaml:ro
 
     environment:
       <<: *shared-env
-      GIFTLESS_CONFIG_FILE: /etc/giftless/giftless.yaml
+      # Inline giftless config as YAML in an env var. v0.6.2 reads
+      # GIFTLESS_CONFIG_STR and applies it on top of the defaults
+      # (see giftless/config.py::_compose_config). This avoids a
+      # separate config file mount + sed-substitution dance: compose
+      # interpolates ${LFS_JWT_SECRET} from .env at parse time, so the
+      # JWT secret reaches giftless without ever being written to disk.
+      #
+      # Schema notes for v0.6.2 (verified against the source):
+      # - Transfer adapter factory is `basic_streaming` (older docs
+      #   referenced `basic_external`, which doesn't exist in 0.6.x).
+      # - JWT auth options use `private_key` directly; there is no
+      #   `private_key_env` variant in 0.6.x — env interpolation is
+      #   the caller's responsibility, which we handle via compose.
+      GIFTLESS_CONFIG_STR: |
+        TRANSFER_ADAPTERS:
+          basic:
+            factory: giftless.transfer.basic_streaming:factory
+            options:
+              storage_class: giftless.storage.local_storage:LocalStorage
+              storage_options:
+                path: /lfs-storage
+        AUTH_PROVIDERS:
+          - factory: giftless.auth.jwt:factory
+            options:
+              algorithm: HS256
+              private_key: ${LFS_JWT_SECRET}
+              leeway: 10
       # Quiet by default; flip to "true" when chasing a 401.
       GIFTLESS_DEBUG: "false"
 
-    # The datopian/giftless image's default CMD loads a uwsgi.ini that
-    # uses bash-style `${PORT}` placeholders. uWSGI's own variable
-    # substitution syntax is `$(PORT)`, not `${PORT}`, so uwsgi takes
-    # the literal string `${PORT}` as the port number, binds to the
-    # garbage address `127.0.0.1:${PORT}`, and nothing can reach the
-    # container from outside. PORT/HOST env vars don't help because
-    # the bug is in the ini file, not the env.
+    # The v0.6.2 image's default CMD binds uwsgi to a UNIX socket at
+    # `127.0.0.1:5000` (the `-s` flag), which is meant to be consumed
+    # by a uwsgi-protocol-speaking reverse proxy like nginx — NOT
+    # something git-lfs clients can talk to directly. For a compose-
+    # only deployment we need uwsgi to speak plain HTTP, which means
+    # overriding the CMD to use `--http` instead of `-s`.
     #
-    # Bypass the broken ini by invoking uwsgi directly with explicit
-    # flags. Both `entrypoint:` and `command:` are overridden — the
-    # image's default ENTRYPOINT is `uwsgi`, which would otherwise
-    # prepend another `uwsgi` to our command and yield
-    # `uwsgi uwsgi --http ...` (uwsgi then tries to load a config
-    # file literally named "uwsgi" and fails with "unable to load
-    # configuration from uwsgi"). Setting entrypoint=uwsgi explicitly
-    # collapses to a single invocation.
+    # Both `entrypoint:` and `command:` are overridden together: the
+    # upstream entrypoint is `["tini", "uwsgi", "--"]` (tini as a
+    # signal-forwarding wrapper), and trying to override only the CMD
+    # leaves a stray `--` separator that uwsgi treats as end-of-options
+    # before our flags get parsed. Collapsing to a single `uwsgi`
+    # entrypoint sidesteps that. Loses tini's graceful-shutdown
+    # niceties but uwsgi's master handles SIGTERM correctly on its own.
+    #
+    # Module path verified against giftless v0.6.2:
+    # giftless/wsgi_entrypoint.py exports `app = init_app()`.
     entrypoint: ["uwsgi"]
     command:
       - --http

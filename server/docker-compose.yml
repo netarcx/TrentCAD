@@ -16,12 +16,20 @@
 
 services:
   framecad-server:
-    # Build locally from the Dockerfile in this directory. Once we
-    # publish to a registry, uncomment `image:` and remove `build:` to
-    # pull the prebuilt image instead.
-    build: .
-    # image: ghcr.io/netarcx/framecad-server:latest
+    # Pulls the multi-arch image built by GitHub Actions on every
+    # push to main (see .github/workflows/build-installer.yml's
+    # `server-image` job). To pin a specific release, replace
+    # `:latest` with e.g. `:3.0.0`.
+    image: ghcr.io/netarcx/framecad-server:latest
+    # For local dev or when you've patched the server source and want
+    # to test before pushing: comment the `image:` line above, then
+    # uncomment `build:` below and run `docker compose up -d --build`.
+    # build: .
     container_name: framecad-server
+    # Always check for a newer image when `docker compose up` runs,
+    # so a fresh `docker compose pull` (or `up --pull always`) actually
+    # picks up the build CI just produced.
+    pull_policy: always
     restart: unless-stopped
 
     # Expose the API + admin web UI on the host's port 42130. Change

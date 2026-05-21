@@ -11,9 +11,12 @@ From this directory (`server/`):
 docker compose up -d
 ```
 
-That builds the image locally, starts the container, exposes the API +
-admin web UI on port 42130, and bind-mounts `./data` for the database
-and setup-PIN file.
+That pulls the prebuilt multi-arch image from
+[`ghcr.io/netarcx/framecad-server:latest`](https://github.com/netarcx/FrameCAD/pkgs/container/framecad-server)
+(built by CI on every push to main, available for `linux/amd64` and
+`linux/arm64`), starts the container, exposes the API + admin web UI
+on port 42130, and bind-mounts `./data` for the database and
+setup-PIN file.
 
 Look up the first-launch admin PIN — it's printed in the logs and also
 saved to disk:
@@ -27,6 +30,17 @@ cat ./data/SETUP_PIN.txt
 Paste that PIN into FrameCAD desktop's "Enroll with Team" screen along
 with your server URL (e.g. `http://localhost:42130`) to claim admin.
 Open the admin web UI in any browser at the same URL.
+
+To pin a specific release, edit `docker-compose.yml` and change
+`:latest` to e.g. `:3.0.0`. List available tags at the GHCR package
+page linked above.
+
+To pull a newer image and restart:
+
+```bash
+docker compose pull
+docker compose up -d
+```
 
 To stop:
 
@@ -49,7 +63,17 @@ docker run -d \
   --name framecad-server \
   -p 42130:42130 \
   -v "$(pwd)/data:/data" \
-  $(docker build -q .)
+  ghcr.io/netarcx/framecad-server:latest
+```
+
+## Building the image locally
+
+When you've patched the server source and want to test before pushing,
+flip the `image:` / `build:` lines in `docker-compose.yml` (the
+comments there explain how) and:
+
+```bash
+docker compose up -d --build
 ```
 
 ## Local dev

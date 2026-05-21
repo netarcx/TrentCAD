@@ -236,6 +236,39 @@ export default function App() {
     }
   }, [])
 
+  // ── Emergency: release from team management ────────────────────────
+  // Hidden hotkey for the worst case where the team server is gone
+  // forever (decommissioned, school's IT wiped the box, etc.) and a
+  // kiosk-mode client is locked into a project it can't sync. The
+  // normal Sign Out path lives in the AdminPage settings overlay,
+  // which kiosk users can't reach. Ctrl+Shift+Alt+R fires here
+  // regardless of where they are in the UI.
+  //
+  // Deliberately obscure 4-key chord — a kid leaning on the keyboard
+  // can't hit it accidentally. teamSignOut() already tolerates a
+  // dead server (3-second DELETE timeout, errors swallowed) so this
+  // works even when nothing on the network responds.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent): void {
+      if (!(e.ctrlKey && e.shiftKey && e.altKey && e.key.toLowerCase() === 'r')) return
+      e.preventDefault()
+      const ok = window.confirm(
+        'Release this device from team management?\n\n' +
+        'Only do this if your team server is permanently gone. ' +
+        'The device will lose all team-server settings (project ' +
+        'list, capabilities, kiosk mode) and the welcome screen ' +
+        'will reappear so you can enroll with a different server.',
+      )
+      if (!ok) return
+      void window.api.teamSignOut().catch(() => {
+        // signOut catches its own network errors but defend
+        // against any future regression here too.
+      })
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   // ── Auto-open / kiosk mode ─────────────────────────────────────────
   // Two related behaviours sharing the same effect:
   //
@@ -639,6 +672,25 @@ export default function App() {
   const offlineBanner = offline && (
     <div className="offline-banner">
       You're offline — Download / Upload will fail until your connection is back. Local edits are safe.
+    </div>
+  )
+
+  // When the team server has CONFIRMED that this project's GitHub
+  // repo no longer exists (admin clicked "Check now" and got 404),
+  // show a persistent banner so the user knows their local clone
+  // is orphaned. Authoritative server signal — never derived from
+  // the client's own git errors, since those usually mean offline.
+  const openProjectEntry = project && teamSnapshot?.projects
+    ? teamSnapshot.projects.find(p => p.repoUrl
+        .replace(/\.git$/i, '').toLowerCase() === project.remote?.replace(/\.git$/i, '').toLowerCase())
+    : null
+  const repoDeletedBanner = openProjectEntry?.remoteStatus === 'missing' && (
+    <div className="error-banner" style={{ background: 'rgba(251, 113, 133, 0.18)' }}>
+      <span className="error-banner-message">
+        ⚠ Your admin has confirmed this project's GitHub repo no longer
+        exists. Your local files are still here — back up anything you need,
+        then close this project and delete the local folder.
+      </span>
     </div>
   )
 
@@ -1054,6 +1106,7 @@ export default function App() {
       )}
 
       {offlineBanner}
+      {repoDeletedBanner}
       {onboardingModal}
 
       {progressModal}

@@ -219,6 +219,41 @@ export async function writeLfsConfig(
 }
 
 /**
+ * Pattern-match a git error to detect "couldn't reach the remote"
+ * — which the client can't actually distinguish from "you're offline"
+ * vs "GitHub repo was deleted". Both look the same to git here. So
+ * we emit a deliberately ambiguous message: keep working locally,
+ * sync later. The authoritative "this repo is actually deleted"
+ * verdict comes from the team server's `/api/admin/projects/:id/
+ * check-remote` (the server has a stable connection and is the only
+ * thing that should declare a repo dead). The desktop reads that
+ * server-confirmed status off the team snapshot and surfaces a
+ * separate, stronger banner when the project entry says `missing`.
+ *
+ * Returns null when the error is something else (auth, conflict,
+ * etc.) so the caller surfaces the original git message.
+ */
+export function detectRemoteGoneError(raw: string): string | null {
+  const msg = raw.toLowerCase()
+  if (
+    msg.includes('repository not found') ||                  // GitHub HTTPS 404
+    msg.includes('remote: not found') ||                     // ssh-protocol variant
+    msg.includes("couldn't find remote ref") ||              // remote ref missing
+    msg.includes('could not resolve host') ||                // offline / DNS
+    msg.includes('failed to connect') ||                     // offline / firewall
+    msg.includes('http 404')                                 // raw libgit/curl
+  ) {
+    return (
+      "Couldn't reach the remote repository — either you're offline or " +
+      "the repo isn't available right now. Your local work is safe; sync " +
+      "again once you have a stable connection. If this keeps happening, " +
+      'check with your admin.'
+    )
+  }
+  return null
+}
+
+/**
  * Convenience: refresh LFS auth for the CURRENTLY-OPEN project by
  * reading origin's URL from the local git config. Used by publish/
  * sync where we don't otherwise need the remote string. Safe to
@@ -862,7 +897,13 @@ export async function sync(): Promise<SyncResult> {
     }
 
     if (pullErr) {
-      return { success: false, filesUpdated: 0, error: pullErr.message }
+      const remoteGone = detectRemoteGoneError(pullErr.message)
+      return {
+        success: false,
+        filesUpdated: 0,
+        error: remoteGone ?? pullErr.message,
+        remoteGone: remoteGone !== null,
+      }
     }
 
     const after = await g.log({ maxCount: 1 })
@@ -1246,8 +1287,13 @@ export async function publish(
     return { success: true, hash: phase2Hash ?? phase1Hash ?? undefined }
   } catch (err: unknown) {
     const errMsg = (err as Error).message
-    onProgress?.({ phase: 'error', error: errMsg })
-    return { success: false, error: errMsg }
+    const remoteGone = detectRemoteGoneError(errMsg)
+    onProgress?.({ phase: 'error', error: remoteGone ?? errMsg })
+    return {
+      success: false,
+      error: remoteGone ?? errMsg,
+      remoteGone: remoteGone !== null,
+    }
   }
 }
 

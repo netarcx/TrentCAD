@@ -259,11 +259,11 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     // allowlist on a non-admin role is a strict filter.
     const member = req.member!
     const rows = getDb().prepare(
-      `SELECT id, name, repoUrl, description, createdAt
+      `SELECT id, name, repoUrl, description, createdAt, remoteStatus
          FROM projects
         WHERE archived = 0
         ORDER BY createdAt DESC`
-    ).all() as Array<Omit<ProjectRow, 'archived'>>
+    ).all() as Array<Omit<ProjectRow, 'archived'> & { remoteStatus: string }>
 
     if (member.role === 'student' && member.allowedProjectIds.length > 0) {
       const allowed = new Set(member.allowedProjectIds)

@@ -10,7 +10,11 @@ interface Project {
   quotaBytes: number | null
   storageBytes: number
   storageScannedAt: number
+  remoteStatus: 'unknown' | 'ok' | 'missing'
+  remoteCheckedAt: number | null
 }
+
+type RemoteCheckResult = { status: 'ok' | 'missing' | 'error'; detail: string | null; checkedAt: number }
 
 /** 10 GiB — matches DEFAULT_PROJECT_QUOTA_BYTES on the server. Kept
  *  in sync by convention; if the server default changes, bump this
@@ -38,6 +42,10 @@ export default function Projects() {
   // being edited and what the staged value is). Only one row can be
   // editing at a time.
   const [editing, setEditing] = useState<{ id: number; value: string } | null>(null)
+  // Which project's remote-check is in flight (we disable the button
+  // and show "Checking…" so the admin doesn't think the click did
+  // nothing on a slow GitHub).
+  const [checkingId, setCheckingId] = useState<number | null>(null)
 
   async function load(): Promise<void> {
     try {
@@ -80,13 +88,40 @@ export default function Projects() {
   }
 
   async function remove(p: Project): Promise<void> {
-    if (!confirm(`Remove "${p.name}" from the project registry?`)) return
+    // Sterner warning when the remote is known-missing — the admin is
+    // probably here BECAUSE the repo was deleted, but still worth
+    // reminding them that local clones won't be auto-cleaned.
+    const msg = p.remoteStatus === 'missing'
+      ? `Remove "${p.name}" from the team registry?\n\nThis only removes the server-side record. Team members still have local clones in their FrameCAD folder — remind them to back up anything they want and delete the local folder themselves.`
+      : `Remove "${p.name}" from the project registry?`
+    if (!confirm(msg)) return
     setError(null)
     try {
       await api('DELETE', `/api/admin/projects/${p.id}`)
       await load()
     } catch (err) {
       setError((err as ApiError).message)
+    }
+  }
+
+  async function checkRemote(p: Project): Promise<void> {
+    setCheckingId(p.id)
+    setError(null)
+    try {
+      const res = await api<RemoteCheckResult>(
+        'POST', `/api/admin/projects/${p.id}/check-remote`,
+      )
+      // Re-fetch the projects list so the row reflects the latest
+      // remoteStatus + remoteCheckedAt without having to merge
+      // partial state ourselves. Cheap query.
+      await load()
+      if (res.status === 'error') {
+        setError(`Couldn't reach GitHub to check "${p.name}": ${res.detail}`)
+      }
+    } catch (err) {
+      setError((err as ApiError).message)
+    } finally {
+      setCheckingId(null)
     }
   }
 
@@ -167,6 +202,7 @@ export default function Projects() {
               <tr>
                 <th>Name</th>
                 <th>Repo</th>
+                <th>Remote</th>
                 <th>Storage</th>
                 <th></th>
               </tr>
@@ -192,6 +228,44 @@ export default function Projects() {
                     </td>
                     <td className="mono" style={{ wordBreak: 'break-all' }}>
                       {p.repoUrl.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '')}
+                    </td>
+                    <td style={{ minWidth: 130 }}>
+                      {p.remoteStatus === 'missing' ? (
+                        <div>
+                          <span
+                            className="pill"
+                            style={{ color: 'var(--red)', background: 'var(--red-tint)' }}
+                            title="GitHub returned 404 — repo is deleted or private"
+                          >
+                            DELETED
+                          </span>
+                          <div className="hint" style={{ marginTop: 4, fontSize: 11 }}>
+                            Ask the team to back up + delete their local folders.
+                          </div>
+                        </div>
+                      ) : p.remoteStatus === 'ok' ? (
+                        <span
+                          className="pill"
+                          style={{ color: 'var(--green)', background: 'rgba(134, 239, 172, 0.15)' }}
+                          title={p.remoteCheckedAt
+                            ? `Last checked ${new Date(p.remoteCheckedAt).toLocaleString()}`
+                            : 'Reachable'}
+                        >
+                          OK
+                        </span>
+                      ) : (
+                        <span className="hint" style={{ fontSize: 11 }}>not checked</span>
+                      )}
+                      <div style={{ marginTop: 4 }}>
+                        <button
+                          className="link"
+                          style={{ fontSize: 11 }}
+                          onClick={() => checkRemote(p)}
+                          disabled={checkingId === p.id}
+                        >
+                          {checkingId === p.id ? 'Checking…' : 'Check now'}
+                        </button>
+                      </div>
                     </td>
                     <td style={{ minWidth: 220 }}>
                       {isEditing ? (

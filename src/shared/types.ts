@@ -111,12 +111,18 @@ export interface PublishResult {
   success: boolean
   hash?: string
   error?: string
+  /** True when the failure was specifically "remote repo doesn't
+   *  exist anymore" — the renderer shows a different help message
+   *  pointing the user at their admin / suggesting local cleanup
+   *  rather than the usual "retry?" copy. */
+  remoteGone?: boolean
 }
 
 export interface SyncResult {
   success: boolean
   filesUpdated: number
   error?: string
+  remoteGone?: boolean
 }
 
 export interface GitStatusFile {
@@ -308,6 +314,13 @@ export interface ProjectEntry {
   repoUrl: string
   description?: string
   createdAt: number
+  /** Server-confirmed reachability of the GitHub repo. 'missing' is
+   *  the authoritative "this repo is gone — back up local files"
+   *  signal the desktop reacts to. Clients should NOT downgrade a
+   *  project based on their own failed git operations (those usually
+   *  mean offline, not deleted). Optional so a legacy server that
+   *  doesn't track remoteStatus still parses cleanly. */
+  remoteStatus?: 'unknown' | 'ok' | 'missing'
 }
 
 /** What the renderer reads to decide what to render. Mirrors what the

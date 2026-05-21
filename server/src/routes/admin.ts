@@ -301,7 +301,8 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     // the Projects page can render usage indicators and quota inputs.
     const rows = getDb().prepare(
       `SELECT id, name, repoUrl, description, archived, createdAt,
-              quotaBytes, storageBytes, storageScannedAt
+              quotaBytes, storageBytes, storageScannedAt,
+              remoteStatus, remoteCheckedAt
          FROM projects
         ORDER BY archived ASC, createdAt DESC`
     ).all()
@@ -411,6 +412,82 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     })
     return { success: true }
   })
+
+  // Check whether a project's GitHub repo still exists. HEAD against
+  // `https://github.com/<org>/<repo>` returns 200 when the repo is
+  // public and reachable, 404 when deleted or made private (we treat
+  // both the same — from the team's perspective, "can't reach it"
+  // means "needs cleanup"). Caches the result on the project row so
+  // subsequent admin-page renders don't re-hit GitHub.
+  //
+  // Doesn't try to authenticate — public 200 vs 404 is enough signal
+  // and avoids needing GitHub credentials on the server. If the repo
+  // is private and someone hits this endpoint, it'll show "missing"
+  // even though it exists; that's a known limitation and the admin
+  // can ignore it for private repos.
+  app.post<{ Params: { id: string } }>(
+    '/api/admin/projects/:id/check-remote',
+    async (req, reply) => {
+      const id = Number.parseInt(req.params.id, 10)
+      if (!Number.isFinite(id)) return reply.code(400).send({ error: 'Invalid project id' })
+      const row = getDb().prepare(
+        `SELECT id, repoUrl FROM projects WHERE id = ?`
+      ).get(id) as { id: number; repoUrl: string } | undefined
+      if (!row) return reply.code(404).send({ error: 'Project not found' })
+
+      // Normalise the URL to its github.com/owner/repo form. We strip
+      // the trailing .git, any trailing slash, and any auth prefix
+      // (https://user:token@github.com/...) so the HEAD request goes
+      // through the public, cache-friendly path.
+      const url = row.repoUrl
+        .trim()
+        .replace(/\.git$/i, '')
+        .replace(/\/+$/, '')
+        .replace(/https?:\/\/[^/]*@/, 'https://')
+
+      let status: 'ok' | 'missing' | 'error' = 'error'
+      let detail: string | null = null
+      try {
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), 5000)
+        try {
+          const res = await fetch(url, { method: 'HEAD', signal: controller.signal })
+          if (res.status === 200) status = 'ok'
+          else if (res.status === 404 || res.status === 401) status = 'missing'
+          else { status = 'error'; detail = `HTTP ${res.status}` }
+        } finally {
+          clearTimeout(timer)
+        }
+      } catch (err) {
+        status = 'error'
+        detail = (err as Error).message || 'network error'
+      }
+
+      // Only persist the 'ok' / 'missing' verdicts; 'error' (network
+      // hiccup, GitHub down, etc.) shouldn't overwrite a previously-
+      // confirmed 'ok' state. Refresh the timestamp regardless so the
+      // admin sees when we last looked.
+      if (status === 'ok' || status === 'missing') {
+        getDb().prepare(
+          `UPDATE projects SET remoteStatus = ?, remoteCheckedAt = ? WHERE id = ?`
+        ).run(status, Date.now(), id)
+      } else {
+        getDb().prepare(
+          `UPDATE projects SET remoteCheckedAt = ? WHERE id = ?`
+        ).run(Date.now(), id)
+      }
+
+      logAudit({
+        actorId: req.member!.id,
+        actorLabel: req.member!.displayName,
+        action: 'project.check-remote',
+        target: `project:${id}`,
+        detail: `status=${status}${detail ? ` (${detail})` : ''}`,
+      })
+
+      return { status, detail, checkedAt: Date.now() }
+    },
+  )
 
   // ── Setup state ────────────────────────────────────────────────────
 

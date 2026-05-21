@@ -211,6 +211,18 @@ const MIGRATIONS: string[] = [
   ALTER TABLE pins    ADD COLUMN kioskMode INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE members ADD COLUMN kioskMode INTEGER NOT NULL DEFAULT 0;
   `,
+  // v7: track whether each project's GitHub repo still exists.
+  // `remoteStatus` is one of 'unknown' (not yet checked), 'ok' (last
+  // check found a live repo), or 'missing' (last check returned 404 /
+  // 401, i.e. deleted or made private). `remoteCheckedAt` is the
+  // timestamp of the last check; null when never checked. Admin UI
+  // surfaces "missing" with a prominent warning + remove button so a
+  // stale project entry can be cleaned up without the team server
+  // ever needing to talk to GitHub on behalf of the desktop client.
+  `
+  ALTER TABLE projects ADD COLUMN remoteStatus     TEXT NOT NULL DEFAULT 'unknown';
+  ALTER TABLE projects ADD COLUMN remoteCheckedAt  INTEGER;
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

@@ -23,6 +23,16 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 
+# When npm installs a native dep (argon2, better-sqlite3) and the
+# prebuilt binary doesn't match the host ABI, it falls through to
+# node-gyp, which shells out to `make`. node-gyp defaults to `make
+# -j1` — sequential — even on a 24-core build host. Setting JOBS=max
+# tells it to use every core, so the native-compile pass goes from
+# ~30s sequential to a handful of seconds parallel. npm itself reads
+# `npm_config_jobs` for its own parallelism (mostly dep extraction).
+ENV JOBS=max \
+    npm_config_jobs=max
+
 # Native-build deps for argon2 / better-sqlite3. Cache the apk index
 # across builds so the (rare) rebuild of this layer doesn't re-fetch
 # from upstream. python3+make+g++ is the standard prebuild-install

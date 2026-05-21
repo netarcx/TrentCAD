@@ -1,5 +1,13 @@
 import { useEffect, useState } from 'react'
 import { api, ApiError } from '../api'
+import CapabilityControls from '../components/CapabilityControls'
+import {
+  EMPTY_CAPABILITY_VALUE,
+  capCount,
+  type CapabilityValue,
+  type MemberCapabilities,
+  type ProjectOption,
+} from '../caps'
 
 interface PinRow {
   code: string
@@ -8,6 +16,9 @@ interface PinRow {
   githubUsername: string | null
   expiresAt: number | null
   createdAt: number
+  capabilities: MemberCapabilities
+  allowedProjectIds: number[]
+  autoOpenProjectId: number | null
 }
 
 interface IssuedPin {
@@ -27,6 +38,7 @@ function relExpiry(ts: number | null): string {
 
 export default function Pins() {
   const [pins, setPins] = useState<PinRow[]>([])
+  const [projects, setProjects] = useState<ProjectOption[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -34,12 +46,17 @@ export default function Pins() {
   const [role, setRole] = useState<PinRow['role']>('student')
   const [displayName, setDisplayName] = useState('')
   const [githubUsername, setGithubUsername] = useState('')
+  const [caps, setCaps] = useState<CapabilityValue>(EMPTY_CAPABILITY_VALUE)
   const [justIssued, setJustIssued] = useState<IssuedPin | null>(null)
 
   async function load(): Promise<void> {
     try {
-      const res = await api<{ pins: PinRow[] }>('GET', '/api/admin/pins')
-      setPins(res.pins)
+      const [pinsRes, projectsRes] = await Promise.all([
+        api<{ pins: PinRow[] }>('GET', '/api/admin/pins'),
+        api<{ projects: ProjectOption[] }>('GET', '/api/projects'),
+      ])
+      setPins(pinsRes.pins)
+      setProjects(projectsRes.projects)
     } catch (err) {
       setError((err as ApiError).message)
     }
@@ -54,10 +71,14 @@ export default function Pins() {
         role,
         displayName: displayName.trim() || undefined,
         githubUsername: githubUsername.trim() || undefined,
+        capabilities: caps.capabilities,
+        allowedProjectIds: caps.allowedProjectIds,
+        autoOpenProjectId: caps.autoOpenProjectId,
       })
       setJustIssued(res)
       setDisplayName('')
       setGithubUsername('')
+      setCaps(EMPTY_CAPABILITY_VALUE)
       await load()
     } catch (err) {
       setError((err as ApiError).message)
@@ -108,10 +129,26 @@ export default function Pins() {
             <input value={githubUsername} onChange={e => setGithubUsername(e.target.value)} placeholder="janesmith" />
           </div>
         </div>
+
+        <div style={{ marginTop: 18 }}>
+          <CapabilityControls
+            value={caps}
+            onChange={setCaps}
+            projects={projects}
+            disabled={busy}
+          />
+        </div>
+
         <div style={{ marginTop: 14 }}>
           <button className="primary" disabled={busy} onClick={issue}>
             {busy ? 'Issuing…' : 'Generate PIN'}
           </button>
+          {capCount(caps.capabilities) === 0 && (
+            <span className="hint" style={{ marginLeft: 10 }}>
+              ⚠ No home-screen buttons enabled — the enrollee will see only the
+              Settings button. (Click an option above to grant access.)
+            </span>
+          )}
         </div>
 
         {justIssued && (
@@ -139,6 +176,7 @@ export default function Pins() {
                 <th>Code</th>
                 <th>Role</th>
                 <th>For</th>
+                <th>Caps</th>
                 <th>Expires</th>
                 <th></th>
               </tr>
@@ -151,6 +189,14 @@ export default function Pins() {
                   <td>
                     {p.displayName || p.githubUsername || <span className="hint">anyone</span>}
                     {p.githubUsername && <span className="mono" style={{ marginLeft: 6, opacity: 0.7 }}>@{p.githubUsername}</span>}
+                  </td>
+                  <td className="mono" title={JSON.stringify(p.capabilities)}>
+                    {capCount(p.capabilities)}/4
+                    {p.allowedProjectIds.length > 0 && (
+                      <span className="hint" style={{ marginLeft: 6 }}>
+                        ({p.allowedProjectIds.length} proj)
+                      </span>
+                    )}
                   </td>
                   <td className="mono">{relExpiry(p.expiresAt)}</td>
                   <td className="row-actions">

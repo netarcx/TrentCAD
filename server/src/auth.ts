@@ -27,7 +27,14 @@
 import crypto from 'node:crypto'
 import argon2 from 'argon2'
 import type { FastifyReply, FastifyRequest } from 'fastify'
-import { getDb, type Role } from './db.js'
+import {
+  getDb,
+  EMPTY_CAPABILITIES,
+  parseCapabilities,
+  parseAllowedProjectIds,
+  type Role,
+  type MemberCapabilities,
+} from './db.js'
 
 // Reduced-confusion alphabet: A-Z + 2-9, no 0/1/I/O. 32 chars × 6 digits
 // = ~10^9 keyspace, plenty for a single team.
@@ -87,15 +94,23 @@ export interface IssuedPin {
   code: string
   role: Role
   expiresAt: number | null
+  capabilities: MemberCapabilities
+  allowedProjectIds: number[]
+  autoOpenProjectId: number | null
 }
 
 /**
  * Issue a new PIN. The caller supplies the role to bake in and any
- * optional pre-fill (display name / GitHub username), which become
- * defaults when the PIN gets consumed.
+ * optional pre-fill (display name / GitHub username + capabilities),
+ * which become defaults when the PIN gets consumed.
  *
  * `createdBy` is the issuing admin's member id, or null for the
  * bootstrap setup-PIN (no admin exists yet at that point).
+ *
+ * Capabilities default to `EMPTY_CAPABILITIES` — admin must opt-in to
+ * each home-screen card. The exception is the bootstrap setup-PIN
+ * (createdBy=null), which is hardcoded to all-on so the first admin
+ * isn't locked out of their own server.
  */
 export function issuePin(args: {
   role: Role
@@ -103,10 +118,25 @@ export function issuePin(args: {
   githubUsername?: string | null
   createdBy: number | null
   ttlMs?: number | null
+  capabilities?: MemberCapabilities
+  allowedProjectIds?: number[]
+  autoOpenProjectId?: number | null
 }): IssuedPin {
   const now = Date.now()
   const ttl = args.ttlMs === undefined ? DEFAULT_PIN_TTL_MS : args.ttlMs
   const expiresAt = ttl === null ? null : now + ttl
+
+  // Bootstrap setup-PIN: no admin exists yet, so this PIN is destined
+  // to mint the first admin device. Hardcode all caps on so they don't
+  // start with a useless install.
+  const isBootstrap = args.createdBy === null
+  const capabilities: MemberCapabilities = args.capabilities ?? (
+    isBootstrap
+      ? { createProject: true, browseTeamProjects: true, openProject: true, manufacturingView: true }
+      : { ...EMPTY_CAPABILITIES }
+  )
+  const allowedProjectIds = args.allowedProjectIds ?? []
+  const autoOpenProjectId = args.autoOpenProjectId ?? null
 
   // Loop on the very rare PRIMARY-KEY collision. We're not relying on
   // luck — at 6 chars × 32-letter alphabet that's ~10^9 keyspace, and
@@ -115,8 +145,9 @@ export function issuePin(args: {
     const code = generatePin()
     try {
       getDb().prepare(
-        `INSERT INTO pins (code, role, displayName, githubUsername, expiresAt, createdBy, createdAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO pins (code, role, displayName, githubUsername, expiresAt, createdBy, createdAt,
+                           capabilities, allowedProjectIds, autoOpenProjectId)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         code,
         args.role,
@@ -125,8 +156,11 @@ export function issuePin(args: {
         expiresAt,
         args.createdBy,
         now,
+        JSON.stringify(capabilities),
+        JSON.stringify(allowedProjectIds),
+        autoOpenProjectId,
       )
-      return { code, role: args.role, expiresAt }
+      return { code, role: args.role, expiresAt, capabilities, allowedProjectIds, autoOpenProjectId }
     } catch (err) {
       // SQLITE_CONSTRAINT_PRIMARYKEY — try a different code.
       if ((err as { code?: string }).code === 'SQLITE_CONSTRAINT_PRIMARYKEY') continue
@@ -145,6 +179,24 @@ export interface PinRecord {
   consumedAt: number | null
   createdBy: number | null
   createdAt: number
+  /** JSON-encoded MemberCapabilities. Use parseCapabilities() to read. */
+  capabilities: string | null
+  /** JSON-encoded number[]. Use parseAllowedProjectIds() to read. */
+  allowedProjectIds: string | null
+  autoOpenProjectId: number | null
+}
+
+/** Convenience: hydrate a raw PinRecord into structured caps + allowlist. */
+export function pinCapabilities(pin: PinRecord): {
+  capabilities: MemberCapabilities
+  allowedProjectIds: number[]
+  autoOpenProjectId: number | null
+} {
+  return {
+    capabilities: parseCapabilities(pin.capabilities),
+    allowedProjectIds: parseAllowedProjectIds(pin.allowedProjectIds),
+    autoOpenProjectId: pin.autoOpenProjectId,
+  }
 }
 
 /** Look up a PIN. Does NOT consume it. Returns null if unknown. */
@@ -191,6 +243,9 @@ export interface AuthedMember {
   githubUsername: string | null
   role: Role
   status: 'active' | 'inactive'
+  capabilities: MemberCapabilities
+  allowedProjectIds: number[]
+  autoOpenProjectId: number | null
 }
 
 export interface AuthedDevice {
@@ -223,7 +278,8 @@ async function findDeviceByToken(token: string): Promise<{
 } | null> {
   const rows = getDb().prepare(
     `SELECT d.id AS dId, d.memberId, d.label, d.tokenHash,
-            m.id AS mId, m.displayName, m.githubUsername, m.role, m.status
+            m.id AS mId, m.displayName, m.githubUsername, m.role, m.status,
+            m.capabilities, m.allowedProjectIds, m.autoOpenProjectId
        FROM devices d
        JOIN members m ON m.id = d.memberId
       WHERE m.status = 'active'`
@@ -237,6 +293,9 @@ async function findDeviceByToken(token: string): Promise<{
     githubUsername: string | null
     role: Role
     status: 'active' | 'inactive'
+    capabilities: string | null
+    allowedProjectIds: string | null
+    autoOpenProjectId: number | null
   }>
 
   for (const row of rows) {
@@ -249,6 +308,9 @@ async function findDeviceByToken(token: string): Promise<{
           githubUsername: row.githubUsername,
           role: row.role,
           status: row.status,
+          capabilities: parseCapabilities(row.capabilities),
+          allowedProjectIds: parseAllowedProjectIds(row.allowedProjectIds),
+          autoOpenProjectId: row.autoOpenProjectId,
         },
       }
     }

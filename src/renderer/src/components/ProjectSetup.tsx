@@ -734,7 +734,14 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
             <p className="subtitle subtitle-team">for {globalAdmin.teamName}</p>
           )}
         </div>
-        {pinnedProjects.length > 0 && (
+        {/* Until the user is enrolled with a team, the welcome screen
+            is intentionally minimal — just the logo, the Enroll card,
+            and the Settings button in the corner. Everything else
+            (pinned/recent projects, GitHub auth, the create / browse /
+            open / mfg actions) is gated behind enrollment so a fresh
+            install can't be used in a state where the team can't see
+            who's making changes. */}
+        {teamSnapshot?.enrolled && pinnedProjects.length > 0 && (
           <div className="pinned-projects">
             {pinnedProjects.map(p => (
               <div key={p.path} className="pinned-project-card" title={p.path}>
@@ -773,65 +780,76 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
           </div>
         )}
 
-        <div className="setup-cards">
-          <button className="setup-card" onClick={() => setMode('create')}>
-            <span className="card-icon"><FilePlus2 size={32} strokeWidth={1.5} /></span>
-            <span className="card-title">Create Project</span>
-            <span className="card-desc">Start a new CAD project<br />with version control</span>
-          </button>
-          {teamSnapshot?.enrolled ? (
-            <button
-              className="setup-card"
-              onClick={() => setShowTeamProjects(true)}
-              disabled={!teamSnapshot.projects?.length}
-              title={teamSnapshot.projects?.length
-                ? 'Browse projects registered in your team server'
-                : 'No projects registered yet — ask your admin'}
-            >
-              <span className="card-icon"><Users size={32} strokeWidth={1.5} /></span>
-              <span className="card-title">Team Projects</span>
-              <span className="card-desc">Browse projects from<br />the team server</span>
-            </button>
-          ) : (
-            <button
-              className="setup-card"
-              onClick={() => canBrowse ? setShowBrowse(true) : setMode('join')}
-              disabled={!canBrowse && !authStatus?.loggedIn}
-              title={canBrowse
-                ? 'Browse team projects from GitHub'
-                : authStatus?.loggedIn
-                  ? 'Admin hasn\'t configured a GitHub organisation — paste a URL instead'
-                  : 'Sign in to GitHub to browse team projects'}
-            >
-              <span className="card-icon">
-                {canBrowse
-                  ? <Search size={32} strokeWidth={1.5} />
-                  : <Download size={32} strokeWidth={1.5} />}
-              </span>
-              <span className="card-title">{canBrowse ? 'Browse Projects' : 'Join Project'}</span>
-              <span className="card-desc">{canBrowse
-                ? <>List repos from<br />the {orgConfigured} org</>
-                : <>Download a team project<br />from GitHub</>}</span>
-            </button>
-          )}
-          <button className="setup-card" onClick={() => setMode('open')}>
-            <span className="card-icon"><FolderOpen size={32} strokeWidth={1.5} /></span>
-            <span className="card-title">Open Project</span>
-            <span className="card-desc">Open an existing<br />project folder</span>
-          </button>
-          <button
-            className="setup-card"
-            onClick={() => onEnterManufacturingView?.()}
-            disabled={!onEnterManufacturingView || recentProjects.length === 0}
-            title={recentProjects.length === 0
-              ? 'Open or create a project first — the manufacturing queue lives inside a project'
-              : 'Shop-floor view: just what needs to be made'}
-          >
-            <span className="card-icon"><Factory size={32} strokeWidth={1.5} /></span>
-            <span className="card-title">Manufacturing View</span>
-            <span className="card-desc">Shop-floor queue<br />grouped by method</span>
-          </button>
-        </div>
+        {/* Each home-screen card is gated on its own capability flag,
+            set by the admin at PIN-issue time and editable later from
+            the team-server web UI. The set of cards a student sees is
+            exactly what the admin curated — nothing more. */}
+        {teamSnapshot?.enrolled && (() => {
+          const caps = teamSnapshot.me?.capabilities
+          const visibleCards: React.ReactNode[] = []
+          if (caps?.createProject) {
+            visibleCards.push(
+              <button key="create" className="setup-card" onClick={() => setMode('create')}>
+                <span className="card-icon"><FilePlus2 size={32} strokeWidth={1.5} /></span>
+                <span className="card-title">Create Project</span>
+                <span className="card-desc">Start a new CAD project<br />with version control</span>
+              </button>,
+            )
+          }
+          if (caps?.browseTeamProjects) {
+            visibleCards.push(
+              <button
+                key="browse-team"
+                className="setup-card"
+                onClick={() => setShowTeamProjects(true)}
+                disabled={!teamSnapshot.projects?.length}
+                title={teamSnapshot.projects?.length
+                  ? 'Browse projects registered in your team server'
+                  : 'No projects registered yet — ask your admin'}
+              >
+                <span className="card-icon"><Users size={32} strokeWidth={1.5} /></span>
+                <span className="card-title">Team Projects</span>
+                <span className="card-desc">Browse projects from<br />the team server</span>
+              </button>,
+            )
+          }
+          if (caps?.openProject) {
+            visibleCards.push(
+              <button key="open" className="setup-card" onClick={() => setMode('open')}>
+                <span className="card-icon"><FolderOpen size={32} strokeWidth={1.5} /></span>
+                <span className="card-title">Open Project</span>
+                <span className="card-desc">Open an existing<br />project folder</span>
+              </button>,
+            )
+          }
+          if (caps?.manufacturingView) {
+            visibleCards.push(
+              <button
+                key="mfg"
+                className="setup-card"
+                onClick={() => onEnterManufacturingView?.()}
+                disabled={!onEnterManufacturingView || recentProjects.length === 0}
+                title={recentProjects.length === 0
+                  ? 'Open or create a project first — the manufacturing queue lives inside a project'
+                  : 'Shop-floor view: just what needs to be made'}
+              >
+                <span className="card-icon"><Factory size={32} strokeWidth={1.5} /></span>
+                <span className="card-title">Manufacturing View</span>
+                <span className="card-desc">Shop-floor queue<br />grouped by method</span>
+              </button>,
+            )
+          }
+          if (visibleCards.length === 0) {
+            return (
+              <div className="setup-cards-empty hint" style={{ textAlign: 'center', marginTop: 24, opacity: 0.8 }}>
+                You're enrolled, but your admin hasn't granted access to any
+                home-screen actions yet. Ask them to add capabilities for you
+                in the team server.
+              </div>
+            )
+          }
+          return <div className="setup-cards">{visibleCards}</div>
+        })()}
 
         {showTeamProjects && teamSnapshot?.projects && (
           <TeamProjects
@@ -858,7 +876,15 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
             onClose={() => setShowBrowse(false)}
           />
         )}
+        {/* GitHub auth row is only relevant when the user can create a
+            project (which needs a GitHub identity to publish to). If
+            their only caps are openProject / manufacturingView, hide
+            the row — they don't need to think about GitHub auth. The
+            recent-projects section below stays so they can re-enter
+            already-cloned projects. */}
+        {teamSnapshot?.enrolled && (
         <div className="setup-footer">
+        {teamSnapshot.me?.capabilities.createProject && (
         <div className="setup-toolbar">
           <div className="setup-auth">
             {authStatus?.loggedIn ? (
@@ -917,6 +943,7 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
           </div>
           {resetupMsg && <div className="setup-toolbar-msg">{resetupMsg}</div>}
         </div>
+        )}
 
         {recentProjects.length > 0 && (
           <div className="recent-projects">
@@ -937,6 +964,7 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
           </div>
         )}
         </div>
+        )}
       </div>
     )
   }

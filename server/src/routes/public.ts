@@ -8,7 +8,15 @@
  */
 
 import type { FastifyInstance } from 'fastify'
-import { getDb, logAudit, type Role, type MemberStatus } from '../db.js'
+import {
+  getDb,
+  logAudit,
+  parseCapabilities,
+  parseAllowedProjectIds,
+  type Role,
+  type MemberStatus,
+  type MemberCapabilities,
+} from '../db.js'
 import { consumePin, generateToken, hashToken } from '../auth.js'
 
 interface EnrollBody {
@@ -38,6 +46,9 @@ interface MemberRow {
   role: Role
   status: MemberStatus
   joinedAt: number
+  capabilities: string | null
+  allowedProjectIds: string | null
+  autoOpenProjectId: number | null
 }
 
 export async function registerPublicRoutes(app: FastifyInstance): Promise<void> {
@@ -81,11 +92,28 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
         `SELECT * FROM members WHERE LOWER(githubUsername) = LOWER(?)`
       ).get(githubUsername) as MemberRow | undefined
     }
+    // Capabilities + allowlist + auto-open come from the PIN row. The
+    // admin baked them in at PIN-issue time; we copy them onto the
+    // member row so they survive subsequent enrollments of additional
+    // devices for the same person (those don't re-consume a PIN).
+    const pinCaps = parseCapabilities(pinRow.capabilities)
+    const pinAllowlist = parseAllowedProjectIds(pinRow.allowedProjectIds)
+    const pinAutoOpen = pinRow.autoOpenProjectId
+
     if (!member) {
       const result = db.prepare(
-        `INSERT INTO members (displayName, githubUsername, role, status, joinedAt)
-         VALUES (?, ?, ?, 'active', ?)`
-      ).run(displayName, githubUsername, pinRow.role, now)
+        `INSERT INTO members (displayName, githubUsername, role, status, joinedAt,
+                              capabilities, allowedProjectIds, autoOpenProjectId)
+         VALUES (?, ?, ?, 'active', ?, ?, ?, ?)`
+      ).run(
+        displayName,
+        githubUsername,
+        pinRow.role,
+        now,
+        JSON.stringify(pinCaps),
+        JSON.stringify(pinAllowlist),
+        pinAutoOpen,
+      )
       member = db.prepare(
         `SELECT * FROM members WHERE id = ?`
       ).get(result.lastInsertRowid as number) as MemberRow
@@ -93,6 +121,9 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
       // Reusing an existing record. Bump the role to the PIN's role
       // ONLY if it's higher — i.e. an admin-issued mentor PIN upgrades a
       // student, but consuming a student PIN never demotes a mentor.
+      // Capabilities follow the same "upgrade-only" rule (an existing
+      // member never LOSES caps from a fresh enrollment); the explicit
+      // way to lock down an existing member is the admin web UI.
       const rank: Record<Role, number> = { student: 0, mentor: 1, admin: 2 }
       if (rank[pinRow.role] > rank[member.role]) {
         db.prepare(`UPDATE members SET role = ? WHERE id = ?`)
@@ -103,6 +134,30 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
         db.prepare(`UPDATE members SET status = 'active' WHERE id = ?`).run(member.id)
         member.status = 'active'
       }
+      // OR-merge capabilities so re-enrolling can only widen them.
+      const existingCaps = parseCapabilities(member.capabilities)
+      const mergedCaps: MemberCapabilities = {
+        createProject: existingCaps.createProject || pinCaps.createProject,
+        browseTeamProjects: existingCaps.browseTeamProjects || pinCaps.browseTeamProjects,
+        openProject: existingCaps.openProject || pinCaps.openProject,
+        manufacturingView: existingCaps.manufacturingView || pinCaps.manufacturingView,
+      }
+      // Merge project allowlists (union). If either was empty (= "all"),
+      // we'd want to keep that — but our convention is empty = none, so
+      // straight union is correct.
+      const existingAllowlist = parseAllowedProjectIds(member.allowedProjectIds)
+      const mergedAllowlist = Array.from(new Set([...existingAllowlist, ...pinAllowlist]))
+      // Auto-open: keep the existing one if set; only overwrite when the
+      // member had none and the PIN provides one.
+      const mergedAutoOpen = member.autoOpenProjectId ?? pinAutoOpen
+      db.prepare(
+        `UPDATE members
+            SET capabilities = ?, allowedProjectIds = ?, autoOpenProjectId = ?
+          WHERE id = ?`
+      ).run(JSON.stringify(mergedCaps), JSON.stringify(mergedAllowlist), mergedAutoOpen, member.id)
+      member.capabilities = JSON.stringify(mergedCaps)
+      member.allowedProjectIds = JSON.stringify(mergedAllowlist)
+      member.autoOpenProjectId = mergedAutoOpen
     }
 
     // Mint the device row + bearer token. Token is shown ONCE (in the
@@ -133,6 +188,9 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
         displayName: member.displayName,
         githubUsername: member.githubUsername,
         role: member.role,
+        capabilities: parseCapabilities(member.capabilities),
+        allowedProjectIds: parseAllowedProjectIds(member.allowedProjectIds),
+        autoOpenProjectId: member.autoOpenProjectId,
       },
       team: {
         name: team.name,

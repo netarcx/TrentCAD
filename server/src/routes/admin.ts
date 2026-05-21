@@ -11,10 +11,38 @@
  */
 
 import type { FastifyInstance } from 'fastify'
-import { getDb, logAudit, type Role } from '../db.js'
+import {
+  getDb,
+  logAudit,
+  parseCapabilities,
+  parseAllowedProjectIds,
+  type Role,
+  type MemberCapabilities,
+} from '../db.js'
 import { requireAdmin, issuePin, revokePin } from '../auth.js'
 
 const VALID_ROLES: Role[] = ['admin', 'mentor', 'student']
+
+/** Coerce arbitrary JSON into a strict MemberCapabilities. Unknown
+ *  keys drop, missing keys default to false. Returns null if the
+ *  input isn't an object at all (so the caller can leave the column
+ *  untouched). */
+function coerceCapabilities(input: unknown): MemberCapabilities | null {
+  if (!input || typeof input !== 'object') return null
+  const v = input as Partial<MemberCapabilities>
+  return {
+    createProject: !!v.createProject,
+    browseTeamProjects: !!v.browseTeamProjects,
+    openProject: !!v.openProject,
+    manufacturingView: !!v.manufacturingView,
+  }
+}
+
+/** Coerce arbitrary JSON into a number[]. null if not an array. */
+function coerceProjectIdList(input: unknown): number[] | null {
+  if (!Array.isArray(input)) return null
+  return input.filter((n): n is number => Number.isFinite(n))
+}
 
 export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', async (req, reply) => {
@@ -29,17 +57,30 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     displayName?: string
     githubUsername?: string
     ttlMs?: number | null
+    capabilities?: unknown
+    allowedProjectIds?: unknown
+    autoOpenProjectId?: number | null
   } }>('/api/admin/pins', async (req, reply) => {
     const role = req.body?.role as Role | undefined
     if (!role || !VALID_ROLES.includes(role)) {
       return reply.code(400).send({ error: `role must be one of ${VALID_ROLES.join(', ')}` })
     }
+    const capabilities = coerceCapabilities(req.body?.capabilities) ?? undefined
+    const allowedProjectIds = coerceProjectIdList(req.body?.allowedProjectIds) ?? undefined
+    const autoOpenProjectId =
+      req.body?.autoOpenProjectId === null
+        ? null
+        : (Number.isFinite(req.body?.autoOpenProjectId) ? req.body!.autoOpenProjectId! : undefined)
+
     const pin = issuePin({
       role,
       displayName: req.body?.displayName?.trim() || null,
       githubUsername: req.body?.githubUsername?.trim() || null,
       createdBy: req.member!.id,
       ttlMs: req.body?.ttlMs === null ? null : (req.body?.ttlMs ?? undefined),
+      capabilities,
+      allowedProjectIds,
+      autoOpenProjectId,
     })
     logAudit({
       actorId: req.member!.id,
@@ -54,13 +95,36 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/admin/pins', async () => {
     const now = Date.now()
     const rows = getDb().prepare(
-      `SELECT code, role, displayName, githubUsername, expiresAt, createdAt
+      `SELECT code, role, displayName, githubUsername, expiresAt, createdAt,
+              capabilities, allowedProjectIds, autoOpenProjectId
          FROM pins
         WHERE consumedAt IS NULL
           AND (expiresAt IS NULL OR expiresAt > ?)
         ORDER BY createdAt DESC`
-    ).all(now)
-    return { pins: rows }
+    ).all(now) as Array<{
+      code: string
+      role: Role
+      displayName: string | null
+      githubUsername: string | null
+      expiresAt: number | null
+      createdAt: number
+      capabilities: string | null
+      allowedProjectIds: string | null
+      autoOpenProjectId: number | null
+    }>
+    return {
+      pins: rows.map(r => ({
+        code: r.code,
+        role: r.role,
+        displayName: r.displayName,
+        githubUsername: r.githubUsername,
+        expiresAt: r.expiresAt,
+        createdAt: r.createdAt,
+        capabilities: parseCapabilities(r.capabilities),
+        allowedProjectIds: parseAllowedProjectIds(r.allowedProjectIds),
+        autoOpenProjectId: r.autoOpenProjectId,
+      })),
+    }
   })
 
   app.delete<{ Params: { code: string } }>('/api/admin/pins/:code', async (req, reply) => {
@@ -78,15 +142,58 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
   // ── Members ────────────────────────────────────────────────────────
 
+  app.get('/api/admin/members', async () => {
+    // Full roster with capabilities + allowlist + auto-open. The
+    // public /api/members deliberately omits these (students don't
+    // need to know which projects they CAN'T see); the admin UI
+    // needs them so it can render the edit form.
+    const rows = getDb().prepare(
+      `SELECT id, displayName, githubUsername, role, status, joinedAt,
+              capabilities, allowedProjectIds, autoOpenProjectId
+         FROM members
+        WHERE status = 'active'
+        ORDER BY role = 'admin' DESC, role = 'mentor' DESC, displayName COLLATE NOCASE ASC`
+    ).all() as Array<{
+      id: number
+      displayName: string
+      githubUsername: string | null
+      role: Role
+      status: 'active' | 'inactive'
+      joinedAt: number
+      capabilities: string | null
+      allowedProjectIds: string | null
+      autoOpenProjectId: number | null
+    }>
+    return {
+      members: rows.map(r => ({
+        id: r.id,
+        displayName: r.displayName,
+        githubUsername: r.githubUsername,
+        role: r.role,
+        joinedAt: r.joinedAt,
+        capabilities: parseCapabilities(r.capabilities),
+        allowedProjectIds: parseAllowedProjectIds(r.allowedProjectIds),
+        autoOpenProjectId: r.autoOpenProjectId,
+      })),
+    }
+  })
+
   app.patch<{
     Params: { id: string }
-    Body: { role?: string; status?: string; displayName?: string }
+    Body: {
+      role?: string
+      status?: string
+      displayName?: string
+      capabilities?: unknown
+      allowedProjectIds?: unknown
+      autoOpenProjectId?: number | null
+    }
   }>('/api/admin/members/:id', async (req, reply) => {
     const id = Number.parseInt(req.params.id, 10)
     if (!Number.isFinite(id)) return reply.code(400).send({ error: 'Invalid member id' })
 
     const updates: string[] = []
-    const values: Array<string | number> = []
+    const values: Array<string | number | null> = []
     if (req.body?.role) {
       if (!VALID_ROLES.includes(req.body.role as Role)) {
         return reply.code(400).send({ error: 'Invalid role' })
@@ -104,6 +211,27 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     if (typeof req.body?.displayName === 'string') {
       updates.push('displayName = ?')
       values.push(req.body.displayName.trim() || 'Unnamed member')
+    }
+    if ('capabilities' in (req.body ?? {})) {
+      const caps = coerceCapabilities(req.body!.capabilities)
+      if (caps) {
+        updates.push('capabilities = ?')
+        values.push(JSON.stringify(caps))
+      }
+    }
+    if ('allowedProjectIds' in (req.body ?? {})) {
+      const ids = coerceProjectIdList(req.body!.allowedProjectIds)
+      if (ids) {
+        updates.push('allowedProjectIds = ?')
+        values.push(JSON.stringify(ids))
+      }
+    }
+    if ('autoOpenProjectId' in (req.body ?? {})) {
+      const v = req.body!.autoOpenProjectId
+      if (v === null || Number.isFinite(v)) {
+        updates.push('autoOpenProjectId = ?')
+        values.push(v === null ? null : (v as number))
+      }
     }
     if (updates.length === 0) return { success: true } // no-op patch
 

@@ -17,6 +17,7 @@ import path from 'node:path'
 import type { FastifyBaseLogger } from 'fastify'
 import { getDb } from './db.js'
 import { issuePin, type IssuedPin } from './auth.js'
+import { parseCapabilities, parseAllowedProjectIds } from './db.js'
 import { config } from './config.js'
 
 /**
@@ -43,16 +44,30 @@ export async function maybeBootstrapAdminPin(log: FastifyBaseLogger): Promise<Is
   // Maybe a setup PIN from a previous boot is still hanging around.
   // Reuse it so a restart doesn't constantly print new PINs at the operator.
   const pendingAdminPin = db.prepare(
-    `SELECT code, role, expiresAt
+    `SELECT code, role, expiresAt, capabilities, allowedProjectIds, autoOpenProjectId
        FROM pins
       WHERE role = 'admin' AND consumedAt IS NULL
         AND (expiresAt IS NULL OR expiresAt > ?)
       ORDER BY createdAt DESC
       LIMIT 1`
-  ).get(Date.now()) as { code: string; role: 'admin'; expiresAt: number | null } | undefined
+  ).get(Date.now()) as {
+    code: string
+    role: 'admin'
+    expiresAt: number | null
+    capabilities: string | null
+    allowedProjectIds: string | null
+    autoOpenProjectId: number | null
+  } | undefined
 
-  const pin = pendingAdminPin
-    ? pendingAdminPin
+  const pin: IssuedPin = pendingAdminPin
+    ? {
+        code: pendingAdminPin.code,
+        role: pendingAdminPin.role,
+        expiresAt: pendingAdminPin.expiresAt,
+        capabilities: parseCapabilities(pendingAdminPin.capabilities),
+        allowedProjectIds: parseAllowedProjectIds(pendingAdminPin.allowedProjectIds),
+        autoOpenProjectId: pendingAdminPin.autoOpenProjectId,
+      }
     : issuePin({ role: 'admin', createdBy: null, ttlMs: null })
 
   await fs.writeFile(

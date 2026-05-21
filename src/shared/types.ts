@@ -259,11 +259,36 @@ export interface TeamConfig {
   welcomeMessage: string
 }
 
+/**
+ * Which home-screen buttons the member is allowed to see in FrameCAD.
+ * Set per-PIN by the admin; copied to the member row on enrollment.
+ * Independent of role — caps gate UI, role gates write-side power.
+ */
+export interface MemberCapabilities {
+  createProject: boolean
+  browseTeamProjects: boolean
+  openProject: boolean
+  manufacturingView: boolean
+}
+
 export interface TeamMember {
   id: number
   displayName: string
   githubUsername: string | null
   role: MemberRole
+}
+
+/** TeamMember + the per-user fields only the calling member sees about
+ *  themselves: capability flags, project allowlist, auto-open id. The
+ *  /api/members endpoint never returns these (privacy); /api/me does. */
+export interface MyMember extends TeamMember {
+  capabilities: MemberCapabilities
+  /** If non-empty AND role==='student', the desktop should only show
+   *  these project IDs in the Team Projects list. Empty = unrestricted. */
+  allowedProjectIds: number[]
+  /** When set, the desktop should auto-open this project on launch
+   *  (kiosk-style "one PIN, one project"). Null = no auto-open. */
+  autoOpenProjectId: number | null
 }
 
 export interface ProjectEntry {
@@ -283,8 +308,9 @@ export interface TeamSnapshot {
   enrolled: boolean
   /** Server URL the device is talking to. */
   serverUrl: string | null
-  /** Current user's member + role + display name. */
-  me: TeamMember | null
+  /** Current user's member info + their per-user capability flags +
+   *  per-user project allowlist + optional auto-open project id. */
+  me: MyMember | null
   team: TeamConfig | null
   members: TeamMember[]
   projects: ProjectEntry[]

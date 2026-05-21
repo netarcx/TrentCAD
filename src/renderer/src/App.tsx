@@ -236,6 +236,35 @@ export default function App() {
     }
   }, [])
 
+  // ── Kiosk auto-open ────────────────────────────────────────────────
+  // When the admin set `autoOpenProjectId` on this member, find the
+  // matching project in the user's recents (matched by repoUrl) and
+  // re-open it without showing the welcome screen. Only runs once
+  // per app launch — closing the project intentionally returns to the
+  // welcome screen for the rest of that session.
+  const autoOpenAttemptedRef = useRef(false)
+  useEffect(() => {
+    if (autoOpenAttemptedRef.current) return
+    if (project) return                          // already in a project
+    if (team.loading) return                     // wait for snapshot
+    const target = teamSnapshot?.me?.autoOpenProjectId ?? null
+    if (target === null) return
+    const projectEntry = teamSnapshot?.projects?.find(p => p.id === target)
+    if (!projectEntry) return
+    autoOpenAttemptedRef.current = true
+    void (async () => {
+      try {
+        const recents = await window.api.getRecentProjects()
+        const match = recents.find(r => r.remote && r.remote === projectEntry.repoUrl)
+        if (match) await openProject(match.path)
+        // No local clone yet — gracefully fall through to the welcome
+        // screen so the user (or admin) can pick "Team Projects" and
+        // clone it the first time. Once cloned and reopened it'll be
+        // in `recents` for next launch and the auto-open kicks in.
+      } catch { /* let the welcome screen surface the issue */ }
+    })()
+  }, [teamSnapshot, team.loading, project, openProject])
+
   const dismissOnboarding = useCallback(() => {
     localStorage.setItem('framecad-onboarding-seen', '1')
     setShowOnboarding(false)

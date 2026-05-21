@@ -24,6 +24,7 @@ import { promises as fs } from 'node:fs'
 import { app } from 'electron'
 import type {
   EnrollResult,
+  MyMember,
   ProjectEntry,
   TeamConfig,
   TeamMember,
@@ -36,7 +37,7 @@ import { getTeamServerSettings, setTeamServerSettings } from './config'
 interface InMemoryState {
   serverUrl: string | null
   token: string | null
-  me: TeamMember | null
+  me: MyMember | null
   team: TeamConfig | null
   members: TeamMember[]
   projects: ProjectEntry[]
@@ -193,7 +194,7 @@ export async function enroll(args: {
   try {
     const data = await fetchTeamApi<{
       token: string
-      member: TeamMember
+      member: MyMember
       team: TeamConfig
     }>('/api/enroll', {
       method: 'POST',
@@ -234,7 +235,7 @@ export async function refresh(): Promise<TeamSnapshot> {
     // Fire the four reads in parallel; with the server on a LAN this
     // is ~50ms total instead of 200ms serial.
     const [me, team, members, projects] = await Promise.all([
-      fetchTeamApi<{ member: TeamMember }>('/api/me').then(d => d.member),
+      fetchTeamApi<{ member: MyMember }>('/api/me').then(d => d.member),
       fetchTeamApi<TeamConfig>('/api/team'),
       fetchTeamApi<{ members: TeamMember[] }>('/api/members').then(d => d.members),
       fetchTeamApi<{ projects: ProjectEntry[] }>('/api/projects').then(d => d.projects),

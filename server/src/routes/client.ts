@@ -51,8 +51,21 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
   })
 
   app.get('/api/me', async req => {
+    // req.member already carries hydrated capabilities (see auth.ts —
+    // findDeviceByToken parses them on every authenticated call). The
+    // shape exposed here is what the desktop client persists into its
+    // TeamSnapshot.me — see src/shared/types.ts.
+    const m = req.member!
     return {
-      member: req.member,
+      member: {
+        id: m.id,
+        displayName: m.displayName,
+        githubUsername: m.githubUsername,
+        role: m.role,
+        capabilities: m.capabilities,
+        allowedProjectIds: m.allowedProjectIds,
+        autoOpenProjectId: m.autoOpenProjectId,
+      },
       device: req.device,
     }
   })
@@ -122,13 +135,25 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     return { members: rows }
   })
 
-  app.get('/api/projects', async () => {
+  app.get('/api/projects', async req => {
+    // Students with a per-member allowlist only see those project IDs.
+    // Admins and mentors always see the full registry — they need to
+    // be able to add a student to a project, which requires seeing
+    // the project. Members with an empty allowlist see everything,
+    // since "no allowlist" means "no restriction." A non-empty
+    // allowlist on a non-admin role is a strict filter.
+    const member = req.member!
     const rows = getDb().prepare(
       `SELECT id, name, repoUrl, description, createdAt
          FROM projects
         WHERE archived = 0
         ORDER BY createdAt DESC`
     ).all() as Array<Omit<ProjectRow, 'archived'>>
+
+    if (member.role === 'student' && member.allowedProjectIds.length > 0) {
+      const allowed = new Set(member.allowedProjectIds)
+      return { projects: rows.filter(p => allowed.has(p.id)) }
+    }
     return { projects: rows }
   })
 }

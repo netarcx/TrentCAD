@@ -27,6 +27,64 @@ export type Role = 'admin' | 'mentor' | 'student'
  *  revokes any device tokens. */
 export type MemberStatus = 'active' | 'inactive'
 
+/**
+ * Per-member home-screen capability flags. Drives which cards the
+ * student sees on the welcome screen. Admin curates at PIN-issue
+ * time so a fresh enrollment lands in the exact state the admin
+ * wants — kiosk-style "they only ever see what they need."
+ *
+ * Role is independent of capabilities: a student with `createProject`
+ * can still create projects, an admin without `manufacturingView`
+ * just doesn't see that card. (Admins of course can change their own
+ * caps from the web UI.)
+ */
+export interface MemberCapabilities {
+  createProject: boolean
+  browseTeamProjects: boolean
+  openProject: boolean
+  manufacturingView: boolean
+}
+
+/** New PIN / new member default. Admin ticks what they want enabled
+ *  before issuing the PIN; an unattended PIN issues with everything
+ *  off, which is intentional — surfaces "you forgot to grant caps"
+ *  immediately instead of accidentally over-permitting. */
+export const EMPTY_CAPABILITIES: MemberCapabilities = {
+  createProject: false,
+  browseTeamProjects: false,
+  openProject: false,
+  manufacturingView: false,
+}
+
+/** Parse a JSON-encoded capability blob (DB column) into the shape.
+ *  Missing keys default to false; unknown keys are dropped. */
+export function parseCapabilities(raw: string | null | undefined): MemberCapabilities {
+  if (!raw) return { ...EMPTY_CAPABILITIES }
+  try {
+    const v = JSON.parse(raw) as Partial<MemberCapabilities>
+    return {
+      createProject: !!v.createProject,
+      browseTeamProjects: !!v.browseTeamProjects,
+      openProject: !!v.openProject,
+      manufacturingView: !!v.manufacturingView,
+    }
+  } catch {
+    return { ...EMPTY_CAPABILITIES }
+  }
+}
+
+/** Parse a JSON-encoded number-array column. Returns [] on any error. */
+export function parseAllowedProjectIds(raw: string | null | undefined): number[] {
+  if (!raw) return []
+  try {
+    const v = JSON.parse(raw)
+    if (!Array.isArray(v)) return []
+    return v.filter((n): n is number => Number.isFinite(n))
+  } catch {
+    return []
+  }
+}
+
 /** Migrations run in order. New ones get appended; never reorder or
  *  edit existing entries — `user_version` records how many have
  *  already been applied. */
@@ -94,6 +152,21 @@ const MIGRATIONS: string[] = [
     target          TEXT,
     detail          TEXT
   );
+  `,
+  // v2: per-member home-screen capabilities, project allowlist, and
+  // optional auto-open project. Lets the admin curate exactly what
+  // each student sees on the welcome screen — Apple-style "one PIN
+  // and they're set up." Defaults to empty JSON / NULL so existing
+  // members effectively land in the "nothing on" state until the
+  // admin grants caps from the web UI.
+  `
+  ALTER TABLE members ADD COLUMN capabilities        TEXT;
+  ALTER TABLE members ADD COLUMN allowedProjectIds   TEXT;
+  ALTER TABLE members ADD COLUMN autoOpenProjectId   INTEGER REFERENCES projects(id) ON DELETE SET NULL;
+
+  ALTER TABLE pins ADD COLUMN capabilities        TEXT;
+  ALTER TABLE pins ADD COLUMN allowedProjectIds   TEXT;
+  ALTER TABLE pins ADD COLUMN autoOpenProjectId   INTEGER REFERENCES projects(id) ON DELETE SET NULL;
   `,
 ]
 

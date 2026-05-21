@@ -183,6 +183,7 @@ export default function SignIn() {
           <>
             <div className="sub">Sign in with your admin account</div>
             <form onSubmit={submitPassword}>
+            <fieldset disabled={busy} style={{ border: 0, padding: 0, margin: 0 }}>
               <label>Username</label>
               <input
                 value={username}
@@ -225,6 +226,7 @@ export default function SignIn() {
               >
                 {busy ? 'Signing in…' : 'Sign in'}
               </button>
+            </fieldset>
             </form>
             <div className="hint" style={{ marginTop: 14, textAlign: 'center' }}>
               <button
@@ -242,6 +244,7 @@ export default function SignIn() {
           <>
             <div className="sub">First-time setup — paste your admin PIN</div>
             <form onSubmit={submitPin}>
+            <fieldset disabled={busy} style={{ border: 0, padding: 0, margin: 0 }}>
               <label>PIN</label>
               <input
                 className="pin-input"
@@ -262,6 +265,7 @@ export default function SignIn() {
               <button className="primary" type="submit" disabled={busy || pin.length !== 6}>
                 {busy ? 'Signing in…' : 'Continue'}
               </button>
+            </fieldset>
             </form>
             <div className="hint" style={{ marginTop: 14, textAlign: 'center' }}>
               <button
@@ -282,6 +286,7 @@ export default function SignIn() {
               username and password for future sign-ins.
             </div>
             <form onSubmit={submitNewPassword}>
+            <fieldset disabled={busy} style={{ border: 0, padding: 0, margin: 0 }}>
               <label>Username</label>
               <input
                 value={chosenUsername}
@@ -350,6 +355,7 @@ export default function SignIn() {
               >
                 {busy ? 'Saving…' : 'Save & sign in'}
               </button>
+            </fieldset>
             </form>
           </>
         )}

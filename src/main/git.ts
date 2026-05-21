@@ -4,6 +4,7 @@ import os from 'os'
 import { createReadStream } from 'fs'
 import fs from 'fs/promises'
 import type { FileEntry, FileState, HistoryEntry, PartsManifest, PublishProgress, PublishResult, SyncResult } from '@shared/types'
+import { LFS_UNREACHABLE_SENTINEL } from '@shared/types'
 import { getLocks, verifyLocks } from './locking'
 import { loadManifest, syncManifest, annotatePartNumbers } from './parts'
 import { loadAllMeta, annotateMeta } from './meta'
@@ -264,7 +265,12 @@ async function ensureLfsRoutingForPush(
 
   let lfsObjectsInWorkingTree = 0
   try {
-    const out = await g.raw(['lfs', 'ls-files'])
+    // `--all` enumerates LFS pointers across all local refs, not just
+    // current HEAD. Without it, a feature branch with LFS pointers
+    // that the user is about to push would slip past the routing
+    // guard (push enumerates objects for every commit it sends, not
+    // just the current branch's HEAD).
+    const out = await g.raw(['lfs', 'ls-files', '--all'])
     lfsObjectsInWorkingTree = out.split('\n').filter(l => l.trim().length > 0).length
   } catch { /* lfs not initialised or no pointers yet */ }
 
@@ -288,15 +294,32 @@ async function ensureLfsRoutingForPush(
     // Local `.git/config` `lfs.*url` overrides BEAT `.lfsconfig` in
     // git-lfs's config-precedence order. Strip them so `.lfsconfig`
     // is actually authoritative. `--unset-all` exits 5 when the key
-    // isn't there — the `.catch(() => {})` swallows that cleanly.
-    await g.raw(['config', '--local', '--unset-all', 'lfs.url']).catch(() => {})
-    await g.raw(['config', '--local', '--unset-all', 'lfs.pushurl']).catch(() => {})
-    await g.raw(['config', '--local', '--unset-all', 'lfs.origin.url']).catch(() => {})
+    // isn't there — that's expected and safe to ignore. Any OTHER
+    // exit code (1=invalid section/key, 4=write-locked config from
+    // a Windows AV scan, etc.) means we DIDN'T strip the override
+    // and the next push will silently route past `.lfsconfig`. Log
+    // those loudly so the failure mode is visible.
+    const tryUnset = async (key: string): Promise<void> => {
+      try {
+        await g.raw(['config', '--local', '--unset-all', key])
+      } catch (err) {
+        const msg = (err as Error).message || ''
+        // simple-git surfaces git's exit code in the error message.
+        // Exit 5 is "no such key" — safe to swallow. Anything else
+        // means the unset didn't take effect, which is a routing
+        // hazard the user needs to know about.
+        if (/exit code 5\b/i.test(msg)) return
+        console.warn(`[LFS routing] Could not unset ${key} from .git/config: ${msg}`)
+      }
+    }
+    await tryUnset('lfs.url')
+    await tryUnset('lfs.pushurl')
+    await tryUnset('lfs.origin.url')
     if (remoteUrl) {
       // Per-remote overrides use the full URL as the section name in
       // `.git/config`. Strip the one for our actual remote so nothing
       // route-pins to GitHub's LFS endpoint.
-      await g.raw(['config', '--local', '--unset-all', `lfs.${remoteUrl}.url`]).catch(() => {})
+      await tryUnset(`lfs.${remoteUrl}.url`)
     }
     return { endpoint, lfsObjectsInWorkingTree, refuseReason: null }
   }
@@ -671,8 +694,10 @@ function isLfsUnreachableError(raw: string): boolean {
 }
 
 /** Sentinel the IPC layer / renderer match on to surface the
- *  "retry without LFS" UI instead of the generic error path. */
-export const LFS_UNREACHABLE_ERROR_PREFIX = 'LFS_UNREACHABLE:'
+ *  "retry without LFS" UI instead of the generic error path.
+ *  Re-exported from `@shared/types` so the renderer and main
+ *  process can't drift on the prefix string. */
+export const LFS_UNREACHABLE_ERROR_PREFIX = LFS_UNREACHABLE_SENTINEL
 
 export interface JoinProjectOptions {
   /** When true, set GIT_LFS_SKIP_SMUDGE=1 on the clone so git-lfs
@@ -1726,8 +1751,15 @@ export async function publish(
       const stagable = phaseFiles.filter(p => freshSet.has(p))
       if (stagable.length === 0) return null
 
-      // git add doesn't accept too many args at once on Windows command
-      // lines (cmd.exe caps argv at ~8 KB). Chunk in batches of 200 paths.
+      // git add doesn't accept too many args at once — Windows
+      // CreateProcess caps the whole command line near 32 KB, and CAD
+      // paths in this project average ~100 chars with the deep
+      // `COTS/<vendor>/<family>/...` hierarchy. 200 paths × ~150 char
+      // average = 30 KB, perilously close to the limit. 100 keeps a
+      // comfortable margin for both the git binary prefix and longer-
+      // than-average paths (Windows MAX_PATH is 260, and a single
+      // outlier could push 200 × 260 = 52 KB over the cliff).
+      // Matches `checkAttrLfsBatched` so the failure mode is uniform.
       //
       // Defensive retry: even with the freshStatus filter above, edge
       // cases (case-insensitive Windows FS reporting a renamed-by-case
@@ -1738,7 +1770,7 @@ export async function publish(
       // parse the offending path out of the error, drop it, and retry
       // the same chunk. Tasks are bounded by chunk size so this can
       // only loop a finite number of times.
-      const CHUNK = 200
+      const CHUNK = 100
       let cursor = 0
       let remaining = stagable.slice()
       while (cursor < remaining.length) {
@@ -1784,6 +1816,14 @@ export async function publish(
       }
 
       onProgress?.({ phase: 'uploading', files, percent: 0, detail: detailLabel })
+      // Re-mint the LFS JWT immediately before EACH phase's push. The
+      // token issued at the top of `publish` is only 15 minutes; a
+      // long phase-1 (lots of small LFS objects) followed by a slow
+      // phase-2 (a single 60 MB .sldasm over school WiFi) easily
+      // crosses the TTL midway. Without this, phase 2 starts with a
+      // token that expires partway through and git-lfs surfaces a
+      // confusing 401 after gigabytes of wasted bandwidth.
+      await refreshLfsAuthForOpenProject().catch(() => null)
       const pushGit = buildPushGit()
       try {
         await pushGit.push()
@@ -1827,7 +1867,14 @@ export async function publish(
     return { success: true, hash: phase2Hash ?? phase1Hash ?? undefined }
   } catch (err: unknown) {
     const errMsg = (err as Error).message
-    const remoteGone = detectRemoteGoneError(errMsg)
+    // Check LFS-unreachable BEFORE remote-gone. They overlap in
+    // surface keywords (`http 404`, `failed to connect`) but the
+    // user-facing remediation is different: LFS unreachable should
+    // offer the skip-smudge retry, whereas "remote gone" implies the
+    // GitHub repo is deleted. Picking the LFS path first prevents a
+    // real Giftless outage from being mis-labelled as a deleted repo.
+    const lfsUnreachable = isLfsUnreachableError(errMsg)
+    const remoteGone = !lfsUnreachable ? detectRemoteGoneError(errMsg) : null
     onProgress?.({
       phase: 'error',
       error: remoteGone ?? errMsg,

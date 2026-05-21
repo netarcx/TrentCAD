@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { api, ApiError } from '../api'
 import CapabilityControls from '../components/CapabilityControls'
 import {
@@ -126,8 +126,13 @@ export default function Members() {
           </thead>
           <tbody>
             {members.map(m => (
-              <>
-                <tr key={m.id}>
+              // `Fragment` (not the `<>` shorthand) so we can put the
+              // React key on the iteration root. The shorthand can't
+              // take a key, which used to leave both rows keyed only
+              // on their own internal id and confused reconciliation
+              // when members were added/removed/reordered.
+              <Fragment key={m.id}>
+                <tr>
                   <td>{m.displayName}</td>
                   <td className="mono">{m.githubUsername ? '@' + m.githubUsername : '—'}</td>
                   <td>
@@ -173,7 +178,7 @@ export default function Members() {
                   </td>
                 </tr>
                 {editingId === m.id && (
-                  <tr key={`${m.id}-edit`}>
+                  <tr>
                     <td colSpan={6} style={{ background: 'rgba(255,255,255,0.04)' }}>
                       <MemberCapsEditor
                         member={m}
@@ -185,7 +190,7 @@ export default function Members() {
                     </td>
                   </tr>
                 )}
-              </>
+              </Fragment>
             ))}
           </tbody>
         </table>

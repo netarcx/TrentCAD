@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import type { FileEntry, HistoryEntry, ProjectConfig, LockInfo } from '@shared/types'
 
 export function useGit() {
@@ -9,17 +9,21 @@ export function useGit() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selectedFile, setSelectedFile] = useState<FileEntry | null>(null)
-  const cleanupRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
-    cleanupRef.current = window.api.onFileChange((newFiles) => {
+    // Capture the cleanup in a local const + return it. The previous
+    // pattern parked the unsubscribe on a ref, which made StrictMode's
+    // mount → cleanup → re-mount cycle overwrite the ref between the
+    // first cleanup and the eventual second-mount cleanup — leaking
+    // a listener every dev re-render.
+    const fileCleanup = window.api.onFileChange((newFiles) => {
       setFiles(newFiles)
     })
     const errorCleanup = window.api.onError((err) => {
       setError(err)
     })
     return () => {
-      cleanupRef.current?.()
+      fileCleanup()
       errorCleanup()
     }
   }, [])

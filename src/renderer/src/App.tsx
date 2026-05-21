@@ -274,25 +274,33 @@ export default function App() {
   //
   // 1. autoOpenProjectId only (kioskMode=false): SOFT hint. Auto-open
   //    the matched project once per launch. Closing returns to the
-  //    welcome screen for the rest of the session — the once-per-
-  //    launch guard (`autoOpenAttemptedRef`) prevents a reopen loop.
+  //    welcome screen for the rest of the session — the per-target
+  //    guard prevents a reopen loop.
   //
   // 2. autoOpenProjectId + kioskMode=true: HARD lockdown. The user is
   //    locked into the project. Closing it re-opens immediately,
-  //    welcome screen is never shown. The ref guard is bypassed so
-  //    the effect fires every time `project` goes null.
-  const autoOpenAttemptedRef = useRef(false)
+  //    welcome screen is never shown. The guard is bypassed so the
+  //    effect fires every time `project` goes null.
+  //
+  // We track the last-attempted target (not just a boolean) so that
+  // when the admin reassigns the kiosk to a different project mid-
+  // session, the auto-open fires again for the new target. Using
+  // useState (not useRef) also means the kiosk-stuck banner picks up
+  // the transition on the very next render — refs don't trigger one,
+  // so the banner used to need an unrelated state change to appear.
+  const [autoOpenAttempted, setAutoOpenAttempted] = useState<number | null>(null)
   const kioskMode = !!teamSnapshot?.me?.kioskMode
   useEffect(() => {
     if (project) return                          // already in a project
     if (team.loading) return                     // wait for snapshot
     const target = teamSnapshot?.me?.autoOpenProjectId ?? null
     if (target === null) return
-    // Non-kiosk: don't re-attempt once we've tried this session.
-    if (!kioskMode && autoOpenAttemptedRef.current) return
+    // Non-kiosk: don't re-attempt the same target this session, but
+    // DO retry if the admin reassigned to a different project.
+    if (!kioskMode && autoOpenAttempted === target) return
     const projectEntry = teamSnapshot?.projects?.find(p => p.id === target)
     if (!projectEntry) return
-    autoOpenAttemptedRef.current = true
+    setAutoOpenAttempted(target)
     void (async () => {
       try {
         const recents = await window.api.getRecentProjects()
@@ -307,7 +315,7 @@ export default function App() {
         // alternative is a blank window with no recovery path.
       } catch { /* let the welcome screen surface the issue */ }
     })()
-  }, [teamSnapshot, team.loading, project, openProject, kioskMode])
+  }, [teamSnapshot, team.loading, project, openProject, kioskMode, autoOpenAttempted])
 
   const dismissOnboarding = useCallback(() => {
     localStorage.setItem('framecad-onboarding-seen', '1')
@@ -321,6 +329,11 @@ export default function App() {
   const [progressKind, setProgressKind] = useState<'publish' | 'join'>('publish')
   const [projectTotals, setProjectTotals] = useState<ProjectTotals | null>(null)
 
+  // Hold the auto-dismiss timer for the `done` phase in a ref so the
+  // next progress event (or unmount) can cancel it. Without that, a
+  // rapid re-publish during the 2-second auto-dismiss window would
+  // get its first 'preparing' event wiped by the still-pending timer.
+  const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     // Within a single phase, multiple sources emit progress events
     // with different field subsets — simple-git progress (percent +
@@ -334,33 +347,57 @@ export default function App() {
       if (!prev || prev.phase !== p.phase) return p
       return { ...prev, ...p }
     }
+    const cancelDismiss = (): void => {
+      if (dismissTimerRef.current !== null) {
+        clearTimeout(dismissTimerRef.current)
+        dismissTimerRef.current = null
+      }
+    }
     const cleanupPublish = window.api.onPublishProgress((p) => {
-      setProgressKind('publish')
+      cancelDismiss()
+      // If we were showing a join progress modal, discard its stale
+      // fields (files list, percent) before the publish takes over —
+      // otherwise the modal briefly shows join data attributed to a
+      // publish event because of the shallow merge.
+      setProgressKind(prev => {
+        if (prev !== 'publish') setPublishProgress(null)
+        return 'publish'
+      })
       setPublishProgress(merge(p))
       if (p.phase === 'error' || p.phase === 'preparing') {
         setProgressHidden(false)
       }
       if (p.phase === 'done') {
-        setTimeout(() => {
+        dismissTimerRef.current = setTimeout(() => {
+          dismissTimerRef.current = null
           setPublishProgress(null)
           setProgressHidden(false)
         }, 2000)
       }
     })
     const cleanupJoin = window.api.onJoinProgress((p) => {
-      setProgressKind('join')
+      cancelDismiss()
+      setProgressKind(prev => {
+        if (prev !== 'join') setPublishProgress(null)
+        return 'join'
+      })
       setPublishProgress(merge(p))
       if (p.phase === 'error' || p.phase === 'preparing') {
         setProgressHidden(false)
       }
       if (p.phase === 'done') {
-        setTimeout(() => {
+        dismissTimerRef.current = setTimeout(() => {
+          dismissTimerRef.current = null
           setPublishProgress(null)
           setProgressHidden(false)
         }, 2000)
       }
     })
-    return () => { cleanupPublish(); cleanupJoin() }
+    return () => {
+      cleanupPublish()
+      cleanupJoin()
+      cancelDismiss()
+    }
   }, [])
 
   const recheckDeps = useCallback(() => {
@@ -724,7 +761,7 @@ export default function App() {
     //     attempted and gave up (no local clone, can't navigate to
     //     other projects in kiosk mode).
     && (kioskAutoOpenEntry.remoteStatus === 'missing'
-        || autoOpenAttemptedRef.current)
+        || autoOpenAttempted === teamSnapshot.me!.autoOpenProjectId)
   const kioskStuckBanner = kioskStuck && (
     <div className="error-banner" style={{ background: 'rgba(252, 211, 77, 0.18)' }}>
       <span className="error-banner-message">
@@ -962,6 +999,7 @@ export default function App() {
         <ProjectSetup
           onJoinProject={joinProject}
           onOpenProject={openProject}
+          onDismissError={dismissError}
           prefilledJoinUrl={deepLinkJoinUrl}
           prefilledJoinSeq={deepLinkSeq}
           teamSnapshot={teamSnapshot}

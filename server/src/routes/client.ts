@@ -148,14 +148,29 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
       }
 
       const hash = await hashPassword(newPassword)
-      getDbInner().prepare(
-        `UPDATE members
-            SET passwordHash = ?,
-                username = ?,
-                failedLoginCount = 0,
-                lockedUntil = NULL
-          WHERE id = ?`
-      ).run(hash, usernameToWrite, m.id)
+      // Wrap the UPDATE in try/catch so a concurrent same-username
+      // claim (which the SELECT check above can miss under a TOCTOU
+      // race) surfaces as a clean 409 instead of a raw 500. The
+      // conditional unique index in migration v10 is the actual
+      // enforcement; we just translate its error code.
+      try {
+        getDbInner().prepare(
+          `UPDATE members
+              SET passwordHash = ?,
+                  username = ?,
+                  failedLoginCount = 0,
+                  lockedUntil = NULL
+            WHERE id = ?`
+        ).run(hash, usernameToWrite, m.id)
+      } catch (err) {
+        const code = (err as { code?: string }).code
+        if (code === 'SQLITE_CONSTRAINT_UNIQUE') {
+          return reply.code(409).send({
+            error: `The username "${usernameToWrite}" was just claimed by someone else. Pick another.`,
+          })
+        }
+        throw err
+      }
       const { logAudit } = await import('../db.js')
       logAudit({
         actorId: m.id,
@@ -347,8 +362,18 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
         writable = true
         quotaGrace = 'in-grace'
         if (scanOk) {
+          // Guarded UPDATE: only set the grace clock when the column
+          // is still NULL. Two concurrent /api/lfs/token calls would
+          // otherwise both run the UPDATE and the second's `now`
+          // would overwrite the first — effectively extending the
+          // grace window every time the user re-publishes during it.
+          // The `WHERE quotaGraceUsedAt IS NULL` clause makes only
+          // the very first crossing land; subsequent concurrent
+          // writes are no-ops.
           getDb().prepare(
-            `UPDATE projects SET quotaGraceUsedAt = ? WHERE id = ?`
+            `UPDATE projects
+                SET quotaGraceUsedAt = ?
+              WHERE id = ? AND quotaGraceUsedAt IS NULL`
           ).run(now, projectId)
         }
       } else if (now - project.quotaGraceUsedAt < GRACE_MS) {

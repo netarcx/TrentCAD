@@ -8,11 +8,20 @@ interface Team {
   gitHubOrg: string
   projectPrefix: string
   welcomeMessage: string
+  lfsUrl: string
 }
+
+// Reasonable client-side validation for the LFS URL. Catches the
+// common mistakes (no scheme, trailing whitespace, weird characters)
+// before the network call. Server runs the same check + strips
+// trailing slashes on save, so this is just for instant feedback.
+const LFS_URL_REGEX = /^https?:\/\/[^\s"'<>]+$/
 
 export default function TeamSettings() {
   const navigate = useNavigate()
-  const [team, setTeam] = useState<Team>({ name: '', gitHubOrg: '', projectPrefix: '', welcomeMessage: '' })
+  const [team, setTeam] = useState<Team>({
+    name: '', gitHubOrg: '', projectPrefix: '', welcomeMessage: '', lfsUrl: '',
+  })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
@@ -34,7 +43,16 @@ export default function TeamSettings() {
     setError(null)
     setStatus(null)
     try {
-      await api('PATCH', '/api/admin/team', team)
+      // Mirror the server's `.replace(/\/+$/, '')` on lfsUrl so the
+      // user sees the cleaned value reflected back into the field
+      // immediately after save without having to refetch.
+      const payload = { ...team, lfsUrl: team.lfsUrl.trim().replace(/\/+$/, '') }
+      if (payload.lfsUrl && !LFS_URL_REGEX.test(payload.lfsUrl)) {
+        setError('LFS URL must be a plain http:// or https:// URL (no quotes, spaces, or angle brackets).')
+        return
+      }
+      await api('PATCH', '/api/admin/team', payload)
+      setTeam(payload)
       setStatus('Saved. Connected clients pick this up on their next sync.')
     } catch (err) {
       setError((err as ApiError).message)
@@ -77,6 +95,32 @@ export default function TeamSettings() {
 
         <label>Project name prefix</label>
         <input value={team.projectPrefix} onChange={e => setTeam({ ...team, projectPrefix: e.target.value })} placeholder="framecad-" />
+      </div>
+
+      <div className="card">
+        <h3>Self-hosted LFS</h3>
+        <div className="hint">
+          The URL desktop clients use to reach the Giftless container. Must
+          be reachable from the team's machines on the school network — a
+          LAN IP or DNS name, not <span className="mono">localhost</span>.
+          Leave blank to fall back to GitHub LFS (not recommended; eats
+          your GitHub LFS quota).
+        </div>
+        <label>LFS URL</label>
+        <input
+          value={team.lfsUrl}
+          onChange={e => setTeam({ ...team, lfsUrl: e.target.value })}
+          placeholder="http://framecad.school.local:42131"
+          spellCheck={false}
+          autoCapitalize="off"
+        />
+        {team.lfsUrl && /^https?:\/\/(localhost|127\.0\.0\.1)([:/]|$)/i.test(team.lfsUrl) && (
+          <div className="hint" style={{ color: 'var(--red)', marginTop: 6 }}>
+            Heads up: localhost / 127.0.0.1 only works on the same machine as
+            the server. Use the host's LAN IP or DNS name so students' Windows
+            boxes can reach it.
+          </div>
+        )}
       </div>
 
       <div style={{ marginTop: 18 }}>

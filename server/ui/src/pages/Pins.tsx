@@ -185,11 +185,32 @@ export default function Pins() {
           // session on the students' network before grabbing the
           // link.
           const enrollUrl = `${window.location.origin}/enroll/${justIssued.code}`
+          // Detect the most common foot-gun: admin is on
+          // localhost/127.0.0.1, so the URL they're about to hand out
+          // will fail for anyone else. Surface a loud warning so they
+          // either re-open the admin UI from the LAN-facing hostname,
+          // or hand out the bare PIN instead.
+          const host = window.location.hostname
+          const localhostHost = (
+            host === 'localhost' ||
+            host === '127.0.0.1' ||
+            host === '[::1]' ||
+            host === '::1'
+          )
           return (
             <div className="success" style={{ marginTop: 18 }}>
               <div style={{ marginBottom: 8 }}>
                 New {justIssued.role} PIN — expires {relExpiry(justIssued.expiresAt)}. Hand this to the enrollee:
               </div>
+              {localhostHost && linkView === 'url' && (
+                <div className="hint" style={{ color: 'var(--red)', marginBottom: 8 }}>
+                  Heads up: you're viewing the admin UI on <span className="mono">{host}</span>.
+                  The link below uses that hostname, which won't be reachable
+                  from anyone else's machine. Either open the admin UI from
+                  the server's LAN IP / DNS name first, or click "Show PIN
+                  instead" and dictate the 6-character code.
+                </div>
+              )}
               {linkView === 'url' ? (
                 <>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>

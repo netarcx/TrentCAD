@@ -209,12 +209,44 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       if (!VALID_ROLES.includes(req.body.role as Role)) {
         return reply.code(400).send({ error: 'Invalid role' })
       }
+      // Prevent the calling admin from demoting themselves to a non-
+      // admin role — they'd lose access to every admin endpoint
+      // including this one, locking the server until someone with
+      // DB access manually flips them back. Same guard belongs on
+      // status='inactive' below since deactivating yourself has the
+      // same effect via the cascading device delete.
+      if (id === req.member!.id && req.body.role !== 'admin') {
+        return reply.code(400).send({
+          error: "Can't change your own role away from admin — you'd lock yourself out. Have another admin do it.",
+        })
+      }
+      // Also refuse to demote the last remaining admin (even by
+      // someone else doing it to a different admin), so the server
+      // never ends up with zero admins.
+      if (req.body.role !== 'admin') {
+        const adminCount = (getDb().prepare(
+          `SELECT COUNT(*) AS n FROM members WHERE role = 'admin' AND status = 'active'`
+        ).get() as { n: number }).n
+        const targetIsAdmin = (getDb().prepare(
+          `SELECT role FROM members WHERE id = ?`
+        ).get(id) as { role: string } | undefined)?.role === 'admin'
+        if (targetIsAdmin && adminCount <= 1) {
+          return reply.code(400).send({
+            error: "Can't demote the last remaining admin. Promote another member to admin first.",
+          })
+        }
+      }
       updates.push('role = ?')
       values.push(req.body.role)
     }
     if (req.body?.status) {
       if (req.body.status !== 'active' && req.body.status !== 'inactive') {
         return reply.code(400).send({ error: 'Invalid status' })
+      }
+      if (id === req.member!.id && req.body.status === 'inactive') {
+        return reply.code(400).send({
+          error: "Can't deactivate yourself — it would revoke all your sessions immediately. Have another admin do it.",
+        })
       }
       updates.push('status = ?')
       values.push(req.body.status)
@@ -445,13 +477,39 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         .replace(/\/+$/, '')
         .replace(/https?:\/\/[^/]*@/, 'https://')
 
+      // SSRF defence: only probe URLs that resolve to github.com.
+      // An admin could in principle set repoUrl to an internal URL
+      // (intentionally or by typo); fetching with default redirect-
+      // follow would then let an attacker who controls a repoUrl
+      // probe the server's internal network. We don't need to
+      // support arbitrary git hosts here — the entire FrameCAD
+      // workflow is GitHub-based.
+      let parsed: URL
+      try {
+        parsed = new URL(url)
+      } catch {
+        return reply.code(400).send({ error: 'Project repoUrl is not a valid URL.' })
+      }
+      if (parsed.hostname.toLowerCase() !== 'github.com') {
+        return reply.code(400).send({
+          error: 'check-remote only supports github.com URLs. If you need self-hosted git support, file a feature request.',
+        })
+      }
+
       let status: 'ok' | 'missing' | 'error' = 'error'
       let detail: string | null = null
       try {
         const controller = new AbortController()
         const timer = setTimeout(() => controller.abort(), 5000)
         try {
-          const res = await fetch(url, { method: 'HEAD', signal: controller.signal })
+          // `redirect: 'manual'` so a malicious 30x can't redirect us
+          // off github.com to an internal host. We treat any redirect
+          // as "I don't know" rather than following it.
+          const res = await fetch(url, {
+            method: 'HEAD',
+            signal: controller.signal,
+            redirect: 'manual',
+          })
           if (res.status === 200) status = 'ok'
           else if (res.status === 404 || res.status === 401) status = 'missing'
           else { status = 'error'; detail = `HTTP ${res.status}` }
@@ -532,6 +590,28 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         writable: true,
       })
       const lfsEndpoint = `${config.lfsServerUrl.replace(/\/+$/, '')}/framecad/${project.id}`
+      // Defence-in-depth: the lfsUrl validator on PATCH /api/admin/team
+      // should already block bad URLs from reaching here, but if an
+      // old DB row was set before the validator existed (or the env
+      // var fallback is wonky), refuse to template a script with an
+      // unsafe URL rather than handing the admin something that could
+      // execute arbitrary shell when pasted.
+      if (!/^https?:\/\/[^\s"'<>`$]+$/.test(config.lfsServerUrl)) {
+        return reply.code(500).send({
+          error: 'LFS server URL is malformed — ask whoever runs the server to fix it in Team Settings.',
+        })
+      }
+      // Sanitize project name + repoUrl for safe inclusion in shell /
+      // PowerShell script comments. Comments are only "safe" until a
+      // newline ends the comment — a name with embedded \r\n could
+      // smuggle commands onto the next line. Strip any newline /
+      // CR / backtick / `$()` shell-meta sequences proactively.
+      const scriptSafe = (s: string): string => s
+        .replace(/[\r\n\t]+/g, ' ')
+        .replace(/[`$]/g, '?')
+        .slice(0, 200)
+      const safeName = scriptSafe(project.name)
+      const safeRepoUrl = scriptSafe(project.repoUrl)
 
       // POSIX + Windows-PowerShell variants. We send both so the
       // admin can paste whichever matches their shell without
@@ -543,8 +623,8 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         '# self-hosted server. Run from inside a fresh clone of the',
         '# repo — fetch all LFS objects from origin, then push them',
         '# to the team\'s LFS endpoint with an admin-minted JWT.',
-        `# Project: ${project.name}`,
-        `# Repo:    ${project.repoUrl}`,
+        `# Project: ${safeName}`,
+        `# Repo:    ${safeRepoUrl}`,
         '',
         '# 1. Fetch every LFS object from GitHub.',
         'git lfs fetch --all origin',
@@ -559,8 +639,8 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
       const powershellScript = [
         '# PowerShell variant of the migrate-LFS script.',
-        `# Project: ${project.name}`,
-        `# Repo:    ${project.repoUrl}`,
+        `# Project: ${safeName}`,
+        `# Repo:    ${safeRepoUrl}`,
         '',
         'git lfs fetch --all origin',
         `git -c "http.${lfsEndpoint}/.extraheader=Authorization: Bearer ${token}" lfs push --all "${lfsEndpoint}"`,
@@ -680,18 +760,33 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     projectPrefix?: string
     welcomeMessage?: string
     lfsUrl?: string
-  } }>('/api/admin/team', async req => {
+  } }>('/api/admin/team', async (req, reply) => {
     const updates: string[] = []
     const values: string[] = []
     for (const field of [
       'name', 'gitHubOrg', 'projectPrefix', 'welcomeMessage', 'lfsUrl',
     ] as const) {
       if (typeof req.body?.[field] === 'string') {
-        updates.push(`${field} = ?`)
-        // Strip trailing slashes on lfsUrl so giftless's `/objects/...`
-        // resolves correctly regardless of how the admin typed it.
         const raw = req.body[field]!.trim()
-        values.push(field === 'lfsUrl' ? raw.replace(/\/+$/, '') : raw)
+        if (field === 'lfsUrl') {
+          // The lfsUrl flows into shell-script templates (the migrate-
+          // LFS endpoint) and into clients' `git -c lfs.url=…` configs.
+          // Both are injection-prone if the value contains whitespace,
+          // quotes, or angle brackets. Validate strictly here so a
+          // bad URL never reaches those downstream consumers.
+          if (raw && !/^https?:\/\/[^\s"'<>`$]+$/.test(raw)) {
+            return reply.code(400).send({
+              error: 'LFS URL must be a plain http:// or https:// URL with no quotes, spaces, or shell metacharacters.',
+            })
+          }
+          // Strip trailing slashes on lfsUrl so giftless's `/objects/...`
+          // resolves correctly regardless of how the admin typed it.
+          updates.push(`${field} = ?`)
+          values.push(raw.replace(/\/+$/, ''))
+        } else {
+          updates.push(`${field} = ?`)
+          values.push(raw)
+        }
       }
     }
     if (updates.length === 0) return { success: true }

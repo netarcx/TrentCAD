@@ -263,19 +263,15 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
       // GitHub username of "tfox" who sets their login username to
       // "tfox" too should resolve to themselves, not collide with
       // someone else who happens to be named "tfox" on display.
-      const member = db.prepare(
-        `SELECT id, displayName, githubUsername, role, status, passwordHash,
-                failedLoginCount, lockedUntil, capabilities, allowedProjectIds,
-                autoOpenProjectId, kioskMode
-           FROM members
-          WHERE status = 'active'
-            AND (
-              LOWER(username) = LOWER(?)
-              OR LOWER(displayName) = LOWER(?)
-              OR LOWER(githubUsername) = LOWER(?)
-            )
-          LIMIT 1`
-      ).get(username, username, username) as {
+      // Two-step lookup to avoid ambiguity. The original OR-match with
+      // LIMIT 1 (no ORDER BY) was non-deterministic — if two active
+      // members both responded to the same typed handle (one via
+      // `username`, another via `displayName`), SQLite picked whichever
+      // row it read first. Resolution-order needs to be deterministic
+      // AND prefer the explicit login handle, so we look up `username`
+      // first and only fall back to legacy display/github fields when
+      // no username row matches.
+      type MemberRow = {
         id: number
         displayName: string
         githubUsername: string | null
@@ -288,7 +284,26 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
         allowedProjectIds: string | null
         autoOpenProjectId: number | null
         kioskMode: number
-      } | undefined
+      }
+      const SELECT_FIELDS = `id, displayName, githubUsername, role, status, passwordHash,
+                             failedLoginCount, lockedUntil, capabilities, allowedProjectIds,
+                             autoOpenProjectId, kioskMode`
+      let member = db.prepare(
+        `SELECT ${SELECT_FIELDS}
+           FROM members
+          WHERE status = 'active' AND LOWER(username) = LOWER(?)
+          LIMIT 1`
+      ).get(username) as MemberRow | undefined
+      if (!member) {
+        member = db.prepare(
+          `SELECT ${SELECT_FIELDS}
+             FROM members
+            WHERE status = 'active'
+              AND (LOWER(displayName) = LOWER(?) OR LOWER(githubUsername) = LOWER(?))
+            ORDER BY id ASC
+            LIMIT 1`
+        ).get(username, username) as MemberRow | undefined
+      }
 
       // Sleep-on-fail to slow down brute force. argon2 verify on a
       // dummy hash for the "user not found" case keeps the timing
@@ -311,6 +326,19 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
         return reply.code(429).send({
           error: `Account temporarily locked due to repeated failed login attempts. Try again in about ${minutes} minute${minutes === 1 ? '' : 's'}.`,
         })
+      }
+      // Lock has expired — decay the failure counter back to 0 so the
+      // next typo doesn't immediately re-trigger the lock. Without
+      // this, a user with 4 historical fails from any time in the
+      // past would hit lockout at their FIRST fresh typo (not the
+      // documented 5-fails-in-15-min). Clear in-memory copy too so
+      // the count-increment branch below sees the reset value.
+      if (member.lockedUntil !== null && member.failedLoginCount > 0) {
+        db.prepare(
+          `UPDATE members SET failedLoginCount = 0, lockedUntil = NULL WHERE id = ?`
+        ).run(member.id)
+        member.failedLoginCount = 0
+        member.lockedUntil = null
       }
 
       const ok = await verifyPassword(member.passwordHash, password)

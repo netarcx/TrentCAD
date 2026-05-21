@@ -4,6 +4,7 @@ import logoUrl from '../assets/logo.png'
 import TeamEnroll from './TeamEnroll'
 import { prepareSlamSnapshot, triggerWaterSlam } from '../lib/water-slam'
 import type { GlobalAdminConfig, ProjectConfig, TeamSnapshot } from '@shared/types'
+import { LFS_UNREACHABLE_SENTINEL } from '@shared/types'
 
 interface Props {
   onJoinProject: (url: string, path: string, options?: { skipSmudge?: boolean }) => Promise<void>
@@ -32,6 +33,11 @@ interface Props {
   teamSnapshot: TeamSnapshot | null
   /** Force a fresh fetch from the team server (e.g. after enrollment). */
   onTeamRefresh?: () => Promise<void>
+  /** Clear useGit's `error` state. Called when a recoverable failure
+   *  (e.g. LFS unreachable) lands and we're about to offer a retry —
+   *  without this, the stale failure banner stays on screen overlaying
+   *  the retry confirm dialog. */
+  onDismissError?: () => void
 }
 
 /**
@@ -88,7 +94,7 @@ function installClickWaves(): void {
   )
 }
 
-export default function ProjectSetup({ onJoinProject, onOpenProject, onEnterManufacturingView, onOpenAdmin, isLoading, globalAdmin, prefilledJoinUrl, prefilledJoinSeq, teamSnapshot, onTeamRefresh }: Props) {
+export default function ProjectSetup({ onJoinProject, onOpenProject, onEnterManufacturingView, onOpenAdmin, isLoading, globalAdmin, prefilledJoinUrl, prefilledJoinSeq, teamSnapshot, onTeamRefresh, onDismissError }: Props) {
   const [mode, setMode] = useState<Mode>('select')
   // Form state used by the join screen (still alive — triggered
   // when the user clicks an uncloned project in the list). `path`
@@ -834,9 +840,21 @@ export default function ProjectSetup({ onJoinProject, onOpenProject, onEnterManu
                   // Detect the LFS-unreachable sentinel and offer a
                   // skip-smudge retry. Anything else bubbles up
                   // through useGit's error state as before.
+                  //
+                  // `includes` (not `startsWith`) — Electron's IPC
+                  // sometimes prefixes thrown errors with
+                  // `Error invoking remote method '...':` which would
+                  // shift the sentinel off the front and silently
+                  // skip the retry path.
                   const msg = (err as Error).message || ''
-                  if (!msg.startsWith('LFS_UNREACHABLE:')) return
-                  const friendly = msg.replace(/^LFS_UNREACHABLE:\s*/, '')
+                  if (!msg.includes(LFS_UNREACHABLE_SENTINEL)) return
+                  const friendly = msg
+                    .slice(msg.indexOf(LFS_UNREACHABLE_SENTINEL) + LFS_UNREACHABLE_SENTINEL.length)
+                    .replace(/^\s+/, '')
+                  // Clear useGit's error state so the previous failure
+                  // banner doesn't sit behind the confirm dialog (and
+                  // doesn't outlive the user's choice).
+                  onDismissError?.()
                   const ok = window.confirm(
                     friendly + '\n\nClone without LFS files now? ' +
                     'The project structure will be available immediately; ' +

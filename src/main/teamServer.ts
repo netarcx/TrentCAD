@@ -338,15 +338,40 @@ export function adminUiUrl(): string | null {
  * GitHub remote URL. Returns null if either we're not enrolled, the
  * remote isn't on the snapshot, or the team server hasn't told us an
  * LFS URL (in which case we leave .lfsconfig alone and the project
- * falls back to GitHub LFS). Normalises trailing `.git` so a remote
- * recorded as `https://...repo` matches a project stored as
- * `https://...repo.git`.
+ * falls back to GitHub LFS).
+ *
+ * Normalisation aims to make any equivalent way of pointing at the
+ * same GitHub repo compare equal:
+ *   - `https://github.com/Org/Repo.git`
+ *   - `https://github.com/org/repo`
+ *   - `http://github.com/org/repo/`
+ *   - `https://x-access-token:TOKEN@github.com/org/repo.git`
+ *   - `git@github.com:org/repo.git`  (ssh form)
+ *
+ * If a registered repo can't be matched against the actual git
+ * remote URL the working tree has, the publish guard incorrectly
+ * concludes the project is unregistered and either refuses the
+ * push or routes LFS objects to GitHub — exactly the failure mode
+ * the routing logic exists to prevent. So this needs to be liberal.
  */
 export function lookupProjectByRemote(
   remote: string,
 ): { projectId: number; lfsUrl: string } | null {
   if (!state.team?.lfsUrl) return null
-  const norm = (s: string): string => s.trim().replace(/\.git$/i, '').toLowerCase()
+  const norm = (s: string): string => {
+    let t = s.trim()
+    // Convert `git@host:owner/repo` → `https://host/owner/repo` so
+    // SSH-style remotes match HTTPS-stored projects.
+    const ssh = t.match(/^git@([^:]+):(.+)$/i)
+    if (ssh) t = `https://${ssh[1]}/${ssh[2]}`
+    // Strip any embedded user-info (`https://x-access-token:TKN@host/...`)
+    t = t.replace(/^(https?:\/\/)[^/@]*@/i, '$1')
+    // Normalise scheme to lowercase + drop trailing `.git` + slashes.
+    t = t.replace(/^https?:\/\//i, m => m.toLowerCase())
+    t = t.replace(/\.git$/i, '')
+    t = t.replace(/\/+$/, '')
+    return t.toLowerCase()
+  }
   const want = norm(remote)
   const match = state.projects.find(p => norm(p.repoUrl) === want)
   if (!match) return null

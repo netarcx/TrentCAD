@@ -407,8 +407,9 @@ export interface IpcApi {
    *  GIT_LFS_SKIP_SMUDGE=1 on the underlying git invocation so the
    *  working tree gets LFS pointer files instead of the actual
    *  content — used as a fallback when the LFS server is
-   *  unreachable. Errors prefixed with `LFS_UNREACHABLE:` indicate
-   *  the caller should offer the skip-smudge retry path. */
+   *  unreachable. Errors that contain `LFS_UNREACHABLE_SENTINEL`
+   *  (see below) indicate the caller should offer the skip-smudge
+   *  retry path. */
   joinProject(
     url: string,
     path: string,
@@ -550,6 +551,20 @@ export interface IpcApi {
   /** Subscribe to push notifications when the cached snapshot changes. */
   onTeamSnapshot(callback: (snapshot: TeamSnapshot) => void): () => void
 }
+
+/**
+ * Sentinel string the main process prefixes onto Error messages
+ * thrown when an LFS upload/download could not reach the team's
+ * LFS server. The renderer matches on `.includes()` (not
+ * `.startsWith()`) because Electron's IPC error serialisation
+ * sometimes wraps the message with `Error invoking remote method
+ * '...':` — which would shift the prefix off index 0 and silently
+ * disable the skip-smudge retry affordance.
+ *
+ * One canonical location for both main and renderer so the prefix
+ * never drifts between processes.
+ */
+export const LFS_UNREACHABLE_SENTINEL = 'LFS_UNREACHABLE:'
 
 declare global {
   interface Window {

@@ -12,7 +12,7 @@
  * server sent one, so handlers can render them cleanly.
  */
 
-import { getToken } from './auth'
+import { clearSession, getToken } from './auth'
 
 export class ApiError extends Error {
   status: number
@@ -47,6 +47,23 @@ export async function api<T = unknown>(
     const message = (data && typeof data === 'object' && 'error' in data
       ? String((data as { error: unknown }).error)
       : null) ?? `${method} ${path} failed (${res.status})`
+    // 401 on any authed call means the server revoked our session or
+    // the token expired (30-day web-session TTL). Centralise the
+    // recovery here so every page doesn't need its own redirect
+    // logic — clear stored tokens and bounce to the sign-in page.
+    // Skip the redirect for the /api/login + /api/enroll calls
+    // themselves (a wrong password is also a 401 but we want the
+    // SignIn page to display its inline error, not re-route).
+    const isLoginAttempt = path === '/api/login' || path === '/api/enroll'
+    if (res.status === 401 && !isLoginAttempt) {
+      clearSession()
+      // Hard redirect rather than React router so any cached
+      // component state (member identity, in-progress forms) is
+      // wiped — we have no idea which identity to render for.
+      if (typeof window !== 'undefined' && !window.location.hash.startsWith('#/sign-in')) {
+        window.location.hash = '#/sign-in'
+      }
+    }
     throw new ApiError(res.status, message, data)
   }
 

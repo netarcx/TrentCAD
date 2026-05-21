@@ -126,10 +126,13 @@ services:
     environment:
       <<: *shared-env
       GIFTLESS_CONFIG_FILE: /etc/giftless/giftless.yaml
-      # Bind on every interface inside the container — Docker handles
-      # the rest via the `ports:` mapping.
-      GIFTLESS_HTTP_HOST: 0.0.0.0
-      GIFTLESS_HTTP_PORT: "5000"
+      # giftless's entrypoint script uses bare `PORT` / `HOST` env
+      # vars (no GIFTLESS_ prefix) as the uWSGI bind args. With
+      # PORT unset the launcher binds to `127.0.0.1:${PORT}` —
+      # literal string — so nothing outside the container can reach
+      # it. Set both explicitly to expose 0.0.0.0:5000 inside.
+      PORT: "5000"
+      HOST: "0.0.0.0"
       # Quiet by default; flip to "true" when chasing a 401.
       GIFTLESS_DEBUG: "false"
 

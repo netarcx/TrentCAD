@@ -359,6 +359,23 @@ export default function SignIn() {
             </form>
           </>
         )}
+
+        {/* Desktop installer download. Visible on every sign-in mode
+            so anyone who lands on the admin URL by accident (a student
+            looking for the desktop app) has a one-click path to the
+            latest installer. Points at the upstream GitHub releases
+            page, which auto-redirects to whichever release tag is
+            current. */}
+        <div className="hint" style={{ marginTop: 22, textAlign: 'center', borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+          Looking for the desktop app?{' '}
+          <a
+            href="https://github.com/netarcx/framecad/releases/latest"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Download FrameCAD Desktop
+          </a>
+        </div>
       </div>
     </div>
   )

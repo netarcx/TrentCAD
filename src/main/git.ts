@@ -1587,6 +1587,19 @@ export async function publish(
       onProgress?.({ phase: 'error', error: lfsRouting.refuseReason })
       return { success: false, error: lfsRouting.refuseReason }
     }
+    if (lfsRouting.endpoint && lfsRouting.lfsObjectsInWorkingTree > 0) {
+      // Surface the resolved endpoint to the renderer so the user can
+      // see where LFS objects are about to be sent. Cheap, but huge
+      // diagnostic value when something looks wrong — Trent can read
+      // it off the publish progress modal without dropping into a
+      // terminal.
+      onProgress?.({
+        phase: 'preparing',
+        files,
+        detail: `LFS routing: ${lfsRouting.endpoint} ` +
+          `(${lfsRouting.lfsObjectsInWorkingTree} LFS object${lfsRouting.lfsObjectsInWorkingTree === 1 ? '' : 's'} in working tree)`,
+      })
+    }
     // Stage `.lfsconfig` for inclusion in this commit if the helper
     // just wrote a fresh one — that way future clones pick up the
     // self-hosted endpoint on day one.
@@ -1631,7 +1644,22 @@ export async function publish(
     // list (across both phases) so that count is stable and accurate;
     // the per-phase detail string distinguishes which phase is running.
     const buildPushGit = () => {
+      // Pin the LFS endpoint via `git -c lfs.url=<endpoint>` so every
+      // git invocation through this simple-git instance gets the
+      // self-hosted Giftless URL injected as command-line config.
+      // Command-line `-c` beats every other source (system, global,
+      // `.lfsconfig`, local `.git/config`) so a legacy clone whose
+      // `.git/config` still has GitHub's `lfs.url` baked in from the
+      // pre-self-hosted rollout can't silently route past us.
+      //
+      // Important: `GIT_LFS_URL` env var is NOT supported by git-lfs
+      // (v3.0.7 used it as a belt-and-suspenders but it was a no-op).
+      // The right override is `-c lfs.url=...` on the git CLI itself.
+      const lfsConfigOverride = lfsRouting.endpoint
+        ? [`lfs.url=${lfsRouting.endpoint}`]
+        : []
       const pushGit = simpleGit(getProjectPath(), {
+        config: lfsConfigOverride,
         progress: ({ method, stage, progress }) => {
           if (method === 'push' && onProgress) {
             onProgress({
@@ -1647,15 +1675,6 @@ export async function publish(
       // surface per-file transfer bytes to the renderer. No-op when
       // the file failed to initialise; we just lose per-file detail.
       pushGit.env('GIT_LFS_PROGRESS', lfsProgressFile)
-      // Pin the LFS endpoint via env so it overrides every other
-      // source of truth (system gitconfig, global gitconfig,
-      // `.lfsconfig`, local `.git/config`). If the project is on the
-      // team server, this guarantees LFS objects flow to Giftless
-      // even on legacy clones whose `.git/config` still carries the
-      // pre-self-hosted `lfs.url` from GitHub.
-      if (lfsRouting.endpoint) {
-        pushGit.env('GIT_LFS_URL', lfsRouting.endpoint)
-      }
       pushGit.outputHandler((_bin, _stdout, stderr) => {
         stderr.on('data', (chunk: Buffer) => {
           const text = chunk.toString()

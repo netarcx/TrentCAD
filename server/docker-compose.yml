@@ -138,11 +138,15 @@ services:
     # the bug is in the ini file, not the env.
     #
     # Bypass the broken ini by invoking uwsgi directly with explicit
-    # flags. The giftless app object lives at giftless.wsgi_entrypoint:
-    # app — same module the upstream image targets — so this is just
-    # the same uwsgi invocation with --http hardcoded.
+    # flags. Both `entrypoint:` and `command:` are overridden — the
+    # image's default ENTRYPOINT is `uwsgi`, which would otherwise
+    # prepend another `uwsgi` to our command and yield
+    # `uwsgi uwsgi --http ...` (uwsgi then tries to load a config
+    # file literally named "uwsgi" and fails with "unable to load
+    # configuration from uwsgi"). Setting entrypoint=uwsgi explicitly
+    # collapses to a single invocation.
+    entrypoint: ["uwsgi"]
     command:
-      - uwsgi
       - --http
       - 0.0.0.0:42131
       - --module

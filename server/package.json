@@ -16,8 +16,8 @@
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f",
-    "docker:dev": "docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build",
-    "docker:build": "docker build -t framecad-server:local ."
+    "docker:build": "docker compose build",
+    "docker:dev": "docker compose up -d --build"
   },
   "dependencies": {
     "fastify": "^5.0.0",

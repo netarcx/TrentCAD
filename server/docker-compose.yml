@@ -40,19 +40,17 @@ services:
     # `server-image` job). To pin a specific release, replace
     # `:latest` with e.g. `:3.0.0`.
     image: ghcr.io/netarcx/framecad-server:latest
-    # To build from local source instead of pulling the CI image,
-    # use the dev overlay rather than editing this file:
+    # Pre-built multi-arch image from GitHub Actions
+    # (`.github/workflows/build-installer.yml` → `server-image` job).
+    # To pin a specific release replace `:latest` with e.g. `:3.0.0`.
     #
-    #   npm run docker:dev        (from server/)
-    #     OR
-    #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
-    #
-    # See server/README.md "Building the image locally" for details.
+    # `build:` is set too so `docker compose build` works directly —
+    # builds from local source and tags as the same name above, which
+    # then shadows the pull in the local cache. To switch back to the
+    # CI image, `docker compose pull`.
+    build:
+      context: .
     container_name: framecad-server
-    # Always check for a newer image when `docker compose up` runs,
-    # so a fresh `docker compose pull` (or `up --pull always`) actually
-    # picks up the build CI just produced.
-    pull_policy: always
     restart: unless-stopped
 
     # Expose the API + admin web UI on the host's port 42130. Change

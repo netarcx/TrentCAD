@@ -150,48 +150,43 @@ and avoids hand-syncing the shared env vars.
 
 ## Building the image locally
 
-Two supported paths — pick whichever matches what you're doing.
-
-### Path A: Pre-built CI image (recommended for operators)
-
-The default `docker compose up -d` pulls
-[`ghcr.io/netarcx/framecad-server:latest`](https://github.com/netarcx/FrameCAD/pkgs/container/framecad-server),
-which is built by GitHub Actions on every push to `main` (job
-`server-image` in `.github/workflows/build-installer.yml`). Multi-arch
-(`linux/amd64` + `linux/arm64`), so x86 servers and Raspberry Pis
-both get a native image. No local Docker build needed.
-
-### Path B: Local Docker build (for patching the server source)
-
-When you've changed `server/` and want to test the change in a real
-container — production Dockerfile, multi-stage build, giftless
-sidecar — without pushing to CI:
+`docker compose build` builds from local source and tags the image as
+`ghcr.io/netarcx/framecad-server:latest` — same name the production
+compose pulls — so the next `docker compose up -d` uses your local
+build automatically.
 
 ```bash
-npm run docker:dev
+docker compose build           # build from current source
+docker compose up -d           # start the stack (uses the just-built image)
 ```
 
-That wrapper runs `docker compose -f docker-compose.yml -f
-docker-compose.dev.yml up -d --build`. The dev overlay tags the
-locally-built image as `framecad-server:local` so it doesn't collide
-with the GHCR pull tag — `npm run docker:up` next time will pull
-the CI image on top with no manual cleanup.
-
-To build the image standalone without bringing the compose stack up:
+To switch back to the CI image:
 
 ```bash
-npm run docker:build     # alias for `docker build -t framecad-server:local .`
+docker compose pull            # pull ghcr.io/.../framecad-server:latest
+docker compose up -d           # restart with the pulled image
 ```
 
-### Other compose shortcuts
+### Why the same tag for built + pulled?
+
+Pulling and building both target `ghcr.io/netarcx/framecad-server:latest`,
+so whichever you ran most recently wins in your local image cache —
+no separate tag bookkeeping, no compose-file edits. The image is
+multi-arch when CI builds it (linux/amd64 + linux/arm64); your local
+build is just whatever arch your machine is.
+
+### Compose shortcuts (npm scripts)
+
+Thin wrappers around the equivalent `docker compose` invocations, for
+operators who prefer not to remember flags:
 
 | Script | What it does |
 |---|---|
-| `npm run docker:up` | `docker compose up -d` (pull CI image, start both containers) |
+| `npm run docker:up` | `docker compose up -d` |
 | `npm run docker:down` | `docker compose down` |
 | `npm run docker:logs` | `docker compose logs -f` |
-| `npm run docker:dev` | Build server source locally + start stack |
-| `npm run docker:build` | Build server image only, no compose |
+| `npm run docker:build` | `docker compose build` (build only) |
+| `npm run docker:dev` | `docker compose up -d --build` (build + start in one step) |
 
 ## Local dev
 

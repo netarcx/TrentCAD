@@ -482,3 +482,38 @@ table th {
 }
 
 .signin-card .primary { width: 100%; padding: 10px; margin-top: 14px; }
+
+/* ───── Modal (LFS migrate script display) ─────
+   Used by the Projects page "Migrate LFS" button to surface the
+   generated shell script for the admin to copy. Fixed-position
+   backdrop + centered card. */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 24px;
+}
+.modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px 28px;
+  width: 100%;
+  max-width: 560px;
+  max-height: 88vh;
+  overflow-y: auto;
+}
+.modal h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.modal .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

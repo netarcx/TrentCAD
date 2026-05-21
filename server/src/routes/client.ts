@@ -164,12 +164,14 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
       }
 
       const project = getDb().prepare(
-        `SELECT id, name, quotaBytes, storageBytes FROM projects WHERE id = ?`
+        `SELECT id, name, quotaBytes, storageBytes, quotaGraceUsedAt
+           FROM projects WHERE id = ?`
       ).get(projectId) as {
         id: number
         name: string
         quotaBytes: number | null
         storageBytes: number
+        quotaGraceUsedAt: number | null
       } | undefined
       if (!project) {
         return reply.code(404).send({ error: 'Project not found' })
@@ -196,14 +198,50 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
         ).run(currentBytes, Date.now(), projectId)
       } catch { /* keep cached value */ }
 
-      const overQuota = project.quotaBytes !== null
+      // Three-state quota check with a 24-hour grace window. The user
+      // who first crosses the cap gets a writable token + a warning so
+      // they can delete files; if they keep pushing past the grace
+      // window the token drops to read-only. Cleaning up + dropping
+      // back under the cap clears the timestamp so a future cross
+      // gets its own fresh grace.
+      const GRACE_MS = 24 * 60 * 60 * 1000
+      const now = Date.now()
+      const isOverCap = project.quotaBytes !== null
         && currentBytes >= project.quotaBytes
+      let writable: boolean
+      let quotaGrace: 'ok' | 'in-grace' | 'expired' = 'ok'
+
+      if (!isOverCap) {
+        // Under the cap. Clear any past grace timestamp so the next
+        // crossing gets a fresh 24-hour window.
+        writable = true
+        if (project.quotaGraceUsedAt !== null) {
+          getDb().prepare(
+            `UPDATE projects SET quotaGraceUsedAt = NULL WHERE id = ?`
+          ).run(projectId)
+        }
+      } else if (project.quotaGraceUsedAt === null) {
+        // First crossing — start the grace clock + grant write.
+        writable = true
+        quotaGrace = 'in-grace'
+        getDb().prepare(
+          `UPDATE projects SET quotaGraceUsedAt = ? WHERE id = ?`
+        ).run(now, projectId)
+      } else if (now - project.quotaGraceUsedAt < GRACE_MS) {
+        // Still within the grace window. Keep granting writes.
+        writable = true
+        quotaGrace = 'in-grace'
+      } else {
+        // Grace expired. Read-only until the user drops back under.
+        writable = false
+        quotaGrace = 'expired'
+      }
 
       const { token, expiresAt } = mintLfsToken({
         memberId: m.id,
         displayName: m.displayName,
         projectId,
-        writable: !overQuota,
+        writable,
       })
 
       return {
@@ -211,10 +249,14 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
         expiresAt,
         url: config.lfsServerUrl,
         projectId,
-        writable: !overQuota,
+        writable,
         quota: {
           used: currentBytes,
           limit: project.quotaBytes,  // null = unlimited
+          /** 'ok' under cap; 'in-grace' over but still inside the
+           *  24-hour window; 'expired' grace gone, writes refused. */
+          grace: quotaGrace,
+          graceStartedAt: project.quotaGraceUsedAt,
         },
       }
     },

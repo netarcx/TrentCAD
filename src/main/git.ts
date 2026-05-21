@@ -1163,7 +1163,16 @@ export async function publish(
     // commit; without this we'd happily push that bad commit on top of
     // new work).
     const projectDir = getProjectPath()
+    // 50 MB triggers the LFS self-heal (a non-LFS-tracked file at this
+    // size gets routed through LFS automatically — see below). 75 MB
+    // is the HARD cap regardless of LFS status: comfortably under
+    // GitHub's 100 MB per-file ceiling so even a doubling between
+    // saves never crosses GitHub's wire limit; team servers can
+    // similarly enforce smaller-than-GitHub LFS storage so no file
+    // ever escapes their cap. Files this large should be split into
+    // sub-assemblies; refusing them at publish forces the conversation.
     const WARN_BYTES = 50 * 1024 * 1024
+    const HARD_BYTES = 75 * 1024 * 1024
 
     const candidatePaths = new Set<string>(files)
     try {
@@ -1275,6 +1284,70 @@ export async function publish(
         onProgress?.({ phase: 'error', error: msg })
         return { success: false, error: msg }
       }
+    }
+
+    // ── 75 MB hard cap ────────────────────────────────────────────
+    // Anything above the WARN threshold has now been routed through
+    // LFS (either originally or via the self-heal above). Past
+    // HARD_BYTES we refuse regardless of LFS status — the team's
+    // self-hosted LFS server is intentionally capped below GitHub's
+    // 100 MB per-file limit, and files this big should be split into
+    // sub-assemblies rather than shovelled into version control whole.
+    const oversized = sizes.filter(s => s.size > HARD_BYTES)
+    if (oversized.length > 0) {
+      const list = oversized.map(s =>
+        `  - ${s.path} (${(s.size / 1024 / 1024).toFixed(0)} MB)`
+      ).join('\n')
+      const msg =
+        `${oversized.length} file(s) are over the 75 MB per-file limit:\n\n${list}\n\n` +
+        `FrameCAD's self-hosted LFS server caps individual files at 75 MB so ` +
+        `they fit under GitHub's 100 MB wire limit with headroom. Files this ` +
+        `large usually mean a SolidWorks assembly that should be split into ` +
+        `sub-assemblies (use the design tree to identify subsystems and Save ` +
+        `As → New Document for each), or a non-CAD file that shouldn't be in ` +
+        `the repo (zip / installer / video).`
+      onProgress?.({ phase: 'error', error: msg })
+      return { success: false, error: msg }
+    }
+
+    // ── File-type blacklist ──────────────────────────────────────
+    // Block formats that don't belong in a CAD repo regardless of
+    // size: photos, videos, archives, executables, raw browser URL
+    // shortcuts. Catches the common "I accidentally dragged my
+    // Downloads folder into the project" case BEFORE the push
+    // wastes bandwidth + bloats history. Extension match is
+    // case-insensitive against the trailing dot-segment.
+    const BLOCKED_EXTS = new Set<string>([
+      // Photos / images
+      'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tif', 'tiff', 'heic', 'heif', 'svg', 'ico',
+      // Video
+      'mp4', 'mov', 'avi', 'mkv', 'wmv', 'webm', 'm4v', 'flv', 'mpg', 'mpeg', '3gp',
+      // Audio (lumped in for the same reasons)
+      'mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg', 'opus',
+      // Archives
+      'zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'txz', 'iso', 'lz', 'lzma', 'z',
+      // Executables / installers
+      'exe', 'msi', 'dll', 'dmg', 'pkg', 'app', 'apk', 'deb', 'rpm',
+      'bat', 'cmd', 'com', 'ps1', 'sh', 'run', 'bin',
+      // URL shortcuts (browser-saved links, easy to drop in by accident)
+      'url', 'webloc', 'desktop',
+    ])
+    const blacklisted = sizes
+      .map(s => ({ path: s.path, ext: path.extname(s.path).replace(/^\./, '').toLowerCase() }))
+      .filter(s => s.ext && BLOCKED_EXTS.has(s.ext))
+    if (blacklisted.length > 0) {
+      const list = blacklisted.map(s => `  - ${s.path}`).join('\n')
+      const exts = [...new Set(blacklisted.map(s => s.ext))].sort().join(', ')
+      const msg =
+        `${blacklisted.length} file(s) have a file type that's not allowed ` +
+        `in a CAD repo:\n\n${list}\n\nBlocked extensions in this batch: ${exts}.\n\n` +
+        `FrameCAD blocks photos, videos, archives (zip / rar / 7z / tar.gz / xz), ` +
+        `executables, and URL shortcuts at publish time. Delete these files, or ` +
+        `add them to your .gitignore if they belong on disk but shouldn't be ` +
+        `tracked. (Genuine CAD outputs — STEP / IGES / STL / 3D PDF / etc. — ` +
+        `are NOT on the blacklist.)`
+      onProgress?.({ phase: 'error', error: msg })
+      return { success: false, error: msg }
     }
 
     const finalMessage = (message ?? '').trim() || randomCommitMessage()

@@ -489,6 +489,104 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   )
 
+  // Generate a shell script the admin runs on their dev machine to
+  // migrate a project's existing GitHub-LFS objects over to the
+  // self-hosted LFS server. We don't run git on the team server
+  // itself — that'd require cloning the repo + having GitHub
+  // credentials at the server level, which is a much bigger lift.
+  // Instead we hand the admin the exact commands so they can do it
+  // from a workstation that already has the repo cloned + the LFS
+  // server reachable.
+  //
+  // The endpoint mints a fresh LFS JWT and embeds it in the script so
+  // the admin doesn't need to wrangle authentication separately. The
+  // token is the standard 15-minute one — long enough for `git lfs
+  // push` of a typical robot's worth of objects, short enough that a
+  // leaked script copy is useless after that window.
+  app.post<{ Params: { id: string } }>(
+    '/api/admin/projects/:id/migrate-lfs',
+    async (req, reply) => {
+      const id = Number.parseInt(req.params.id, 10)
+      if (!Number.isFinite(id)) {
+        return reply.code(400).send({ error: 'Invalid project id' })
+      }
+      const project = getDb().prepare(
+        `SELECT id, name, repoUrl FROM projects WHERE id = ?`
+      ).get(id) as { id: number; name: string; repoUrl: string } | undefined
+      if (!project) {
+        return reply.code(404).send({ error: 'Project not found' })
+      }
+
+      const { lfsEnabled, mintLfsToken } = await import('../lfs.js')
+      const { config } = await import('../config.js')
+      if (!lfsEnabled() || !config.lfsServerUrl) {
+        return reply.code(503).send({
+          error: 'Self-hosted LFS is not configured on this server.',
+        })
+      }
+
+      const { token } = mintLfsToken({
+        memberId: req.member!.id,
+        displayName: req.member!.displayName,
+        projectId: project.id,
+        writable: true,
+      })
+      const lfsEndpoint = `${config.lfsServerUrl.replace(/\/+$/, '')}/framecad/${project.id}`
+
+      // POSIX + Windows-PowerShell variants. We send both so the
+      // admin can paste whichever matches their shell without
+      // having to translate quoting / continuation chars by hand.
+      const posixScript = [
+        '#!/usr/bin/env bash',
+        'set -e',
+        '# Migrate this project\'s LFS objects from GitHub LFS to the',
+        '# self-hosted server. Run from inside a fresh clone of the',
+        '# repo — fetch all LFS objects from origin, then push them',
+        '# to the team\'s LFS endpoint with an admin-minted JWT.',
+        `# Project: ${project.name}`,
+        `# Repo:    ${project.repoUrl}`,
+        '',
+        '# 1. Fetch every LFS object from GitHub.',
+        'git lfs fetch --all origin',
+        '',
+        '# 2. Push them to our LFS server, authenticating via the',
+        '#    short-lived JWT below (~15 min lifetime; if it expires',
+        '#    before the push completes, hit the Migrate LFS button',
+        '#    again to get a fresh script).',
+        `git -c "http.${lfsEndpoint}/.extraheader=Authorization: Bearer ${token}" \\`,
+        `      lfs push --all "${lfsEndpoint}"`,
+      ].join('\n')
+
+      const powershellScript = [
+        '# PowerShell variant of the migrate-LFS script.',
+        `# Project: ${project.name}`,
+        `# Repo:    ${project.repoUrl}`,
+        '',
+        'git lfs fetch --all origin',
+        `git -c "http.${lfsEndpoint}/.extraheader=Authorization: Bearer ${token}" lfs push --all "${lfsEndpoint}"`,
+      ].join('\n')
+
+      logAudit({
+        actorId: req.member!.id,
+        actorLabel: req.member!.displayName,
+        action: 'project.migrate-lfs.script',
+        target: `project:${id}`,
+      })
+
+      return {
+        projectId: project.id,
+        projectName: project.name,
+        repoUrl: project.repoUrl,
+        lfsEndpoint,
+        tokenLifetimeMinutes: 15,
+        scripts: {
+          posix: posixScript,
+          powershell: powershellScript,
+        },
+      }
+    },
+  )
+
   // ── Setup state ────────────────────────────────────────────────────
 
   // Returns the data the first-launch wizard needs to decide whether

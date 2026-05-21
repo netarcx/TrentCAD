@@ -223,6 +223,20 @@ const MIGRATIONS: string[] = [
   ALTER TABLE projects ADD COLUMN remoteStatus     TEXT NOT NULL DEFAULT 'unknown';
   ALTER TABLE projects ADD COLUMN remoteCheckedAt  INTEGER;
   `,
+  // v8: 24-hour grace period on the LFS quota. When a project goes
+  // OVER its `quotaBytes` cap, the first publish that crosses still
+  // succeeds with a warning and the timestamp gets recorded in
+  // `quotaGraceUsedAt`. Subsequent over-quota publishes within 24
+  // hours of that timestamp also succeed (the user has the grace
+  // window to delete files); after the window, /api/lfs/token drops
+  // to read-only and writes are blocked until usage falls back under
+  // the cap. Null = grace not yet consumed (or never crossed). The
+  // value is RESET to null any time storageBytes goes back below
+  // quotaBytes, so a user who cleans up and crosses again later gets
+  // a fresh grace.
+  `
+  ALTER TABLE projects ADD COLUMN quotaGraceUsedAt INTEGER;
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

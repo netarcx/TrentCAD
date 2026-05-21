@@ -455,11 +455,21 @@ export async function createProject(name: string, dirPath: string, remote: strin
 
   await fs.writeFile(path.join(dirPath, '.gitattributes'), buildGitAttributes())
 
-  // Point LFS at the team's self-hosted server if one's configured.
-  // No-op when the project isn't on the team server snapshot yet —
-  // in that case the file isn't written at all, so the repo falls
-  // through to GitHub LFS until the admin registers it.
-  await writeLfsConfig(dirPath, remote)
+  // Point LFS at the team's self-hosted server. When the project
+  // isn't on the team server snapshot yet, writeLfsConfig is a
+  // no-op and the next publish that involves any LFS-tracked file
+  // will be REFUSED (the policy is "never push LFS to GitHub" —
+  // see the LFS-routing guard in publish() below). Log the
+  // misconfiguration here so the admin sees it at create time.
+  const wrote = await writeLfsConfig(dirPath, remote)
+  if (!wrote && remote) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[createProject] Project not registered on the team server. ' +
+      'LFS-tracked files won\'t be publishable until an admin adds this ' +
+      'project at the team admin UI (Projects → Add).',
+    )
+  }
 
   const gitignore = [
     '~$*',
@@ -1375,6 +1385,72 @@ export async function publish(
         `are NOT on the blacklist.)`
       onProgress?.({ phase: 'error', error: msg })
       return { success: false, error: msg }
+    }
+
+    // ── LFS routing policy: SELF-HOSTED ONLY ─────────────────────
+    // FrameCAD never pushes LFS objects to GitHub. They eat GitHub's
+    // metered LFS quota and silently brick the team when budget runs
+    // out (Trent's team learned this the hard way). For any publish
+    // that involves LFS-tracked files, the project MUST be on the
+    // team server's registry AND have `.lfsconfig` pointing at the
+    // self-hosted Giftless endpoint. We auto-write `.lfsconfig` when
+    // we can; we refuse the publish when we can't (project not
+    // registered → admin task, not a thing the user can self-serve).
+    const stagedAttrs = files.length > 0
+      ? await g.raw(['check-attr', 'filter', '--', ...files])
+      : ''
+    const stagedLfsFiles: string[] = []
+    for (const line of stagedAttrs.split('\n')) {
+      const m = line.match(/^(.+):\s*filter:\s*lfs\s*$/)
+      if (m) stagedLfsFiles.push(m[1].trim())
+    }
+    if (stagedLfsFiles.length > 0) {
+      const remotes = await g.getRemotes(true)
+      const origin = remotes.find(r => r.name === 'origin')
+      const remoteUrl = origin?.refs?.fetch ?? origin?.refs?.push ?? ''
+      const cfg = remoteUrl ? lookupProjectByRemote(remoteUrl) : null
+      if (!cfg) {
+        const preview = stagedLfsFiles.slice(0, 5).map(f => `  - ${f}`).join('\n')
+        const more = stagedLfsFiles.length > 5
+          ? `\n  …and ${stagedLfsFiles.length - 5} more`
+          : ''
+        const msg =
+          `${stagedLfsFiles.length} LFS-tracked file${stagedLfsFiles.length === 1 ? '' : 's'} would be pushed by this publish:\n\n${preview}${more}\n\n` +
+          `This project isn't registered on your team server, so FrameCAD has nowhere to send the LFS objects. ` +
+          `We never push LFS to GitHub — it consumes GitHub's metered LFS quota and blocks the whole team when it runs out.\n\n` +
+          `Ask your admin to register this project at the team admin UI (Projects → Add), then publish again. ` +
+          `If this is a legacy repo that already has LFS data on GitHub, the admin should also click ` +
+          `"Migrate LFS" on the project row to move the existing objects across.`
+        onProgress?.({ phase: 'error', error: msg })
+        return { success: false, error: msg }
+      }
+
+      // Project IS registered. Make sure `.lfsconfig` exists in the
+      // working tree and points at the self-hosted endpoint we just
+      // looked up. If missing or pointing somewhere else, write the
+      // correct one and stage it for the upcoming commit — that way
+      // the very first publish on a freshly-registered legacy repo
+      // also commits the routing config, so future clients clone
+      // straight to self-hosted.
+      const expectedEndpoint = lfsEndpointForProject(cfg.lfsUrl, cfg.projectId)
+      const lfsConfigPath = path.join(projectDir, '.lfsconfig')
+      let lfsConfigOk = false
+      try {
+        const content = await fs.readFile(lfsConfigPath, 'utf-8')
+        if (content.includes(expectedEndpoint)) lfsConfigOk = true
+      } catch { /* file missing */ }
+      if (!lfsConfigOk) {
+        onProgress?.({
+          phase: 'preparing',
+          files,
+          detail: 'Routing LFS to self-hosted server (writing .lfsconfig)…',
+        })
+        await writeLfsConfig(projectDir, remoteUrl)
+        try { await g.add(['.lfsconfig']) } catch { /* best-effort */ }
+        // Re-stat the staged set so .lfsconfig is part of the file
+        // list reported to the renderer's progress modal.
+        if (!files.includes('.lfsconfig')) files.push('.lfsconfig')
+      }
     }
 
     const finalMessage = (message ?? '').trim() || randomCommitMessage()

@@ -331,6 +331,32 @@ export function adminUiUrl(): string | null {
   return state.serverUrl ? state.serverUrl.replace(/\/+$/, '') + '/#/sign-in' : null
 }
 
+/**
+ * Cheap health probe of the team server. Hits `/api/health` (an
+ * unauthenticated GET that doesn't read the DB) with a short timeout
+ * so the renderer can render a "team server reachable" status dot
+ * without blocking on a slow network. Returns:
+ *   - 'reachable'    : got HTTP 200 from /api/health
+ *   - 'unreachable'  : connection refused, DNS fail, timeout, non-2xx
+ *   - 'not-enrolled' : no server URL stored — the dot should be hidden
+ */
+export async function pingTeamServer(): Promise<'reachable' | 'unreachable' | 'not-enrolled'> {
+  if (!state.serverUrl) return 'not-enrolled'
+  const url = state.serverUrl.replace(/\/+$/, '') + '/api/health'
+  const controller = new AbortController()
+  // 4s is short enough that a hung server doesn't make the status dot
+  // feel laggy, long enough to forgive a school WiFi handshake.
+  const timer = setTimeout(() => controller.abort(), 4000)
+  try {
+    const res = await fetch(url, { method: 'GET', signal: controller.signal })
+    return res.ok ? 'reachable' : 'unreachable'
+  } catch {
+    return 'unreachable'
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 // ── LFS helpers ─────────────────────────────────────────────────────
 
 /**

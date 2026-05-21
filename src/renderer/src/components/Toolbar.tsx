@@ -19,6 +19,12 @@ interface Props {
   /** Count of commits on origin ahead of local. > 0 highlights the Sync
    *  button so the user knows there's something to pull. */
   remoteAhead?: number
+  /** Count of commits LOCAL is ahead of origin — i.e. user has
+   *  committed work that hasn't been published yet. > 0 puts a
+   *  badge on the Publish button so committed-but-unpushed state
+   *  doesn't slip through the user noticing only the "modified
+   *  files" status (which zeros out as soon as they commit). */
+  localAhead?: number
   /** When true, this project pre-dates FrameCAD's part-numbering and
    *  uses filenames as the de-facto part numbers. The auto-numbered
    *  New Part / New Assembly buttons are hidden so we don't impose
@@ -37,6 +43,7 @@ export default function Toolbar({
   selectedFile, isLoading, hasProject, isCotsProject,
   activeSection, inspectorOpen, onToggleInspector,
   remoteAhead = 0,
+  localAhead = 0,
   legacyMode = false
 }: Props) {
   const [showPublish, setShowPublish] = useState(false)
@@ -129,12 +136,17 @@ export default function Toolbar({
             )}
           </button>
           <button
-            className="toolbar-btn primary"
+            className={`toolbar-btn primary${localAhead > 0 ? ' has-unpushed' : ''}`}
             onClick={() => setShowPublish(true)}
             disabled={!hasProject || isLoading}
-            title="Send your changes to the team"
+            title={localAhead > 0
+              ? `${localAhead} commit${localAhead === 1 ? '' : 's'} not yet published`
+              : 'Send your changes to the team'}
           >
             <Upload size={14} strokeWidth={1.75} /> Publish
+            {localAhead > 0 && (
+              <span className="toolbar-btn-badge">{localAhead}</span>
+            )}
           </button>
         </div>
 

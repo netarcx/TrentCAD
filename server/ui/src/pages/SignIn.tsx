@@ -160,12 +160,28 @@ export default function SignIn() {
         setError(body.error || `HTTP ${res.status}`)
         return
       }
+      // Server may have upgraded the displayName from "Unnamed
+      // member" → the chosen username on first set-password. The
+      // pendingSession.member object snapshotted at PIN-claim time
+      // is now stale — reflect the fresh state by refetching /api/me
+      // before we commit the session, otherwise the sidebar shows
+      // the stale "Unnamed member" until the next page refresh.
+      let freshMember = pendingSession.member
+      try {
+        const meRes = await fetch('/api/me', {
+          headers: { 'Authorization': `Bearer ${pendingSession.token}` },
+        })
+        if (meRes.ok) {
+          const me = await meRes.json() as { member: AuthedMember }
+          if (me?.member) freshMember = me.member
+        }
+      } catch { /* network blip — keep the snapshot we already have */ }
       // Now commit the session and navigate — same as the password
       // login success path. Also stash the username on the login
       // form so a quick sign-out / sign-in round-trip doesn't make
       // the user re-type it.
       setUsername(cleanUsername)
-      setSession(pendingSession.token, pendingSession.member, staySignedIn)
+      setSession(pendingSession.token, freshMember, staySignedIn)
       navigate('/', { replace: true })
     } catch (err) {
       setError((err as Error).message)

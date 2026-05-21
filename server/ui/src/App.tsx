@@ -141,7 +141,21 @@ function AdminShell() {
         <NavLink to="/settings" className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>Settings</NavLink>
         <div className="sidebar-spacer" />
         <div className="sidebar-footer">
-          Signed in as <strong>{member?.displayName}</strong>
+          {/* Robust fallback chain — even if a legacy member still has
+              the placeholder `displayName='Unnamed member'` (set by
+              the server when enrollment didn't carry a name, common
+              for the bootstrap-PIN admin), show their GitHub handle
+              if available so the sidebar isn't literally "Signed in
+              as Unnamed member". The set-password flow now upgrades
+              displayName at first claim so this is a safety net for
+              old data, not the primary path. */}
+          Signed in as <strong>
+            {member?.displayName && member.displayName !== 'Unnamed member'
+              ? member.displayName
+              : member?.githubUsername
+                ? '@' + member.githubUsername
+                : 'admin'}
+          </strong>
           <br />
           <button onClick={signOut}>Sign out</button>
         </div>

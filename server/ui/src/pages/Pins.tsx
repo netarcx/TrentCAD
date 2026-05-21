@@ -213,10 +213,25 @@ export default function Pins() {
               )}
               {linkView === 'url' ? (
                 <>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                    <span className="tag mono" style={{ wordBreak: 'break-all', maxWidth: '100%' }}>
-                      {enrollUrl}
-                    </span>
+                  <div style={{ display: 'flex', alignItems: 'stretch', gap: 8, flexWrap: 'wrap' }}>
+                    {/* Readonly input + click-to-select-all is the
+                        most reliable way to make sure the user copies
+                        the FULL URL. Selecting a styled span with
+                        wordBreak: break-all is finicky — triple-click
+                        on a wrapped URL can grab just one line and
+                        the user pastes a half-URL into the client.
+                        An input with onFocus={e => e.target.select()}
+                        guarantees a Ctrl+A-friendly single-click
+                        selects every character. */}
+                    <input
+                      readOnly
+                      className="mono"
+                      value={enrollUrl}
+                      onFocus={e => e.currentTarget.select()}
+                      onClick={e => (e.currentTarget as HTMLInputElement).select()}
+                      style={{ flex: '1 1 280px', minWidth: 0, fontSize: 13 }}
+                      aria-label="Enrollment URL"
+                    />
                     <button className="secondary" onClick={() => handleCopy(enrollUrl)}>
                       {copyState?.code === enrollUrl
                         ? (copyState.ok ? '✓ Copied!' : '✗ Failed')

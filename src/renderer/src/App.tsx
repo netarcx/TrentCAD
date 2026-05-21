@@ -446,26 +446,55 @@ export default function App() {
   // user runs Sync or Publish so the badge clears the moment the gap
   // closes. Failures (offline, auth, no remote) are silently treated
   // as zero by the IPC.
-  const [remoteAhead, setRemoteAhead] = useState(0)
+  // Team-server reachability dot. Polled on a slow cadence (30s)
+  // because it's a network round-trip — fast enough that a flaky
+  // school WiFi shows up within a typical CAD session, slow enough
+  // that the constant pulse doesn't waste packets. 'unknown' is the
+  // pre-first-result state so we don't render a misleading red dot
+  // before the first ping completes.
+  const [serverReach, setServerReach] = useState<
+    'unknown' | 'reachable' | 'unreachable' | 'not-enrolled'
+  >('unknown')
   useEffect(() => {
-    if (!project) { setRemoteAhead(0); return }
+    let cancelled = false
+    const ping = () => {
+      window.api.teamPingServer()
+        .then(s => { if (!cancelled) setServerReach(s) })
+        .catch(() => { if (!cancelled) setServerReach('unreachable') })
+    }
+    ping()
+    const id = setInterval(ping, 30000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [teamSnapshot?.enrolled])
+
+  const [remoteAhead, setRemoteAhead] = useState(0)
+  // Counterpart: how many local commits are ahead of origin (i.e.
+  // unpublished work). Polls on the same cadence + clears via the
+  // same files-changed signal.
+  const [localAhead, setLocalAhead] = useState(0)
+  useEffect(() => {
+    if (!project) { setRemoteAhead(0); setLocalAhead(0); return }
     let cancelled = false
     const refresh = () => {
       window.api.getRemoteAhead()
         .then(n => { if (!cancelled) setRemoteAhead(n) })
         .catch(() => { if (!cancelled) setRemoteAhead(0) })
+      window.api.getLocalAhead()
+        .then(n => { if (!cancelled) setLocalAhead(n) })
+        .catch(() => { if (!cancelled) setLocalAhead(0) })
     }
     refresh()
     const id = setInterval(refresh, 60000)
     return () => { cancelled = true; clearInterval(id) }
   }, [project])
 
-  // Re-check the moment Sync or Publish finishes so the badge clears
+  // Re-check the moment Sync or Publish finishes so the badges clear
   // without waiting for the next 60s tick. files changes is the closest
   // signal we have for "git state moved" on the local side.
   useEffect(() => {
     if (!project) return
     window.api.getRemoteAhead().then(setRemoteAhead).catch(() => {})
+    window.api.getLocalAhead().then(setLocalAhead).catch(() => {})
   }, [files, project])
 
   // Role tiers — `isAdmin` ⊇ `isMentor` ⊇ student. Standalone mode
@@ -1157,6 +1186,7 @@ export default function App() {
         inspectorOpen={inspectorOpen}
         onToggleInspector={() => setInspectorOpen(o => !o)}
         remoteAhead={remoteAhead}
+        localAhead={localAhead}
         legacyMode={parts.legacyMode}
       />
 
@@ -1364,6 +1394,28 @@ export default function App() {
         {locks.length > 0 && (
           <span className="status-item">
             {locks.length} total lock{locks.length !== 1 ? 's' : ''}
+          </span>
+        )}
+        {/* Team server reachability dot. Hidden in standalone mode
+            (no server URL configured); otherwise shows green when
+            /api/health responded 200 within 4s, red when we couldn't
+            reach it, and stays neutral during the first-load
+            'unknown' window. */}
+        {serverReach !== 'not-enrolled' && serverReach !== 'unknown' && (
+          <span
+            className="status-item"
+            title={serverReach === 'reachable'
+              ? 'Team server reachable'
+              : "Can't reach the team server — Sync / Publish will fail until connectivity comes back"}
+            style={{ marginLeft: 'auto' }}
+          >
+            <span
+              className="status-dot"
+              style={{
+                background: serverReach === 'reachable' ? 'var(--green)' : 'var(--red)',
+              }}
+            />
+            {serverReach === 'reachable' ? 'Server online' : 'Server offline'}
           </span>
         )}
       </div>

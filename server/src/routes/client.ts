@@ -104,8 +104,12 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
       // Pull current state so we can decide whether username is
       // required + whether currentPassword needs to verify.
       const row = getDbInner().prepare(
-        `SELECT passwordHash, username FROM members WHERE id = ?`
-      ).get(m.id) as { passwordHash: string | null; username: string | null }
+        `SELECT passwordHash, username, displayName FROM members WHERE id = ?`
+      ).get(m.id) as {
+        passwordHash: string | null
+        username: string | null
+        displayName: string
+      }
 
       if (row.passwordHash) {
         const { verifyPassword } = await import('../auth.js')
@@ -147,6 +151,18 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
         usernameToWrite = raw
       }
 
+      // If the member is currently named "Unnamed member" (the
+      // server-side fallback when enrollment didn't carry a
+      // displayName — typical of the bootstrap-PIN admin flow),
+      // upgrade the displayName to match the chosen username on
+      // first set-password. Otherwise the sidebar's "Signed in as
+      // <displayName>" would keep showing "Unnamed member" forever.
+      // Existing real displayNames are preserved.
+      const displayNameToWrite =
+        (row.displayName.trim() === '' || row.displayName === 'Unnamed member') && usernameToWrite
+          ? usernameToWrite
+          : row.displayName
+
       const hash = await hashPassword(newPassword)
       // Wrap the UPDATE in try/catch so a concurrent same-username
       // claim (which the SELECT check above can miss under a TOCTOU
@@ -158,10 +174,11 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
           `UPDATE members
               SET passwordHash = ?,
                   username = ?,
+                  displayName = ?,
                   failedLoginCount = 0,
                   lockedUntil = NULL
             WHERE id = ?`
-        ).run(hash, usernameToWrite, m.id)
+        ).run(hash, usernameToWrite, displayNameToWrite, m.id)
       } catch (err) {
         const code = (err as { code?: string }).code
         if (code === 'SQLITE_CONSTRAINT_UNIQUE') {
@@ -179,7 +196,11 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
         target: `member:${m.id}`,
         detail: userChanged ? `username=${usernameToWrite}` : undefined,
       })
-      return { success: true, username: usernameToWrite }
+      return {
+        success: true,
+        username: usernameToWrite,
+        displayName: displayNameToWrite,
+      }
     },
   )
 

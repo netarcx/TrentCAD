@@ -230,6 +230,10 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     return gitOps.getRemoteAhead()
   })
 
+  ipcMain.handle('get-local-ahead', async () => {
+    return gitOps.getLocalAhead()
+  })
+
   ipcMain.handle('set-legacy-mode', async (_e, enabled: boolean) => {
     await partsOps.setLegacyMode(enabled)
     broadcastStatus(getMainWindow)
@@ -719,6 +723,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   }) => teamServer.enroll(args))
   ipcMain.handle('team-sign-out', () => teamServer.signOut())
   ipcMain.handle('team-admin-ui-url', () => teamServer.adminUiUrl())
+  ipcMain.handle('team-ping-server', () => teamServer.pingTeamServer())
 
   // Push snapshot updates to the renderer so the App-level cache
   // stays current without polling. Each render that subscribes via

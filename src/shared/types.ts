@@ -426,6 +426,12 @@ export interface IpcApi {
   forceCheckIn(filePath: string): Promise<void>
   getLocks(): Promise<LockInfo[]>
   getRemoteAhead(): Promise<number>
+  /** How many commits the local branch is ahead of origin — i.e.
+   *  unpushed work. UI uses this to surface a badge on the Publish
+   *  button so users notice committed-but-unpublished changes
+   *  (otherwise they'd only see the "modified files" status which
+   *  zeros out once they commit). */
+  getLocalAhead(): Promise<number>
   setLegacyMode(enabled: boolean): Promise<void>
   selectDirectory(): Promise<string | null>
   openFileExplorer(path: string): Promise<void>
@@ -548,6 +554,10 @@ export interface IpcApi {
   teamSignOut(): Promise<void>
   /** Returns the URL to open the admin web UI in a browser (or null when not enrolled). */
   teamAdminUiUrl(): Promise<string | null>
+  /** Cheap health probe of the team server (`GET /api/health`).
+   *  Used by the desktop UI to render a connectivity status dot.
+   *  Returns 'not-enrolled' when no server URL is stored. */
+  teamPingServer(): Promise<'reachable' | 'unreachable' | 'not-enrolled'>
   /** Subscribe to push notifications when the cached snapshot changes. */
   onTeamSnapshot(callback: (snapshot: TeamSnapshot) => void): () => void
 }

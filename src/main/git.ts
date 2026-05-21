@@ -1134,6 +1134,38 @@ export async function getRemoteAhead(): Promise<number> {
   }
 }
 
+/**
+ * Count commits the LOCAL branch is ahead of origin/<branch> — i.e.
+ * how many commits the user has committed but not yet `git push`ed.
+ * Mirror of `getRemoteAhead`, used by the desktop UI to render a
+ * "you have unpublished changes" badge on the Publish button.
+ *
+ * Deliberately does NOT fetch origin — keeps this cheap enough to
+ * poll on every status refresh. Stale by however much origin has
+ * advanced since the last sync, but the count we care about (local
+ * → origin) only changes from local commits / publishes, both of
+ * which are user actions that already trigger a status refresh.
+ *
+ * Returns 0 on any error (no remote, no upstream, fresh repo) so
+ * the badge gracefully hides instead of showing an error.
+ */
+export async function getLocalAhead(): Promise<number> {
+  if (!git) return 0
+  try {
+    const remotes = await git.getRemotes(false)
+    if (remotes.length === 0) return 0
+    const branchSummary = await git.branchLocal()
+    const branch = branchSummary.current || 'main'
+    const remoteRef = `origin/${branch}`
+    await git.raw(['rev-parse', '--verify', remoteRef])
+    const out = (await git.raw(['rev-list', '--count', `${remoteRef}..HEAD`])).trim()
+    const n = parseInt(out, 10)
+    return Number.isFinite(n) && n > 0 ? n : 0
+  } catch {
+    return 0
+  }
+}
+
 export async function createProgressTag(
   name: string,
   message?: string

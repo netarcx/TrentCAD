@@ -229,6 +229,7 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
             <div className="form-group">
               <label>Your name</label>
               <input
+                className="enroll-link-input"
                 value={displayName}
                 onChange={e => setDisplayName(e.target.value)}
                 placeholder="Jane Smith"
@@ -244,6 +245,7 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
             <div className="form-group">
               <label>This device (optional)</label>
               <input
+                className="enroll-link-input"
                 value={deviceLabel}
                 onChange={e => setDeviceLabel(e.target.value)}
                 placeholder="e.g. Trent's laptop"
@@ -292,23 +294,27 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
               >
                 Back
               </button>
-              <button
-                className="toolbar-btn link"
-                onClick={() => void submitEnroll()}
-                disabled={busy || !displayName.trim()}
-                title={authStatus?.loggedIn
-                  ? 'Finish enrollment with your GitHub account'
-                  : "Skip GitHub for now — you can sign in later"}
-              >
-                {authStatus?.loggedIn ? '' : 'Skip GitHub & '}Finish
-              </button>
+              {/* One Finish button. When signed in to GitHub, the
+                  primary action is just "Finish". When not signed
+                  in, label changes to "Skip GitHub & Finish" so the
+                  user knows what they're committing to.
+                  (Previous version rendered TWO Finish buttons when
+                  signed in — link variant + primary — both with the
+                  same label, which read as a UI bug.) */}
               <button
                 className="toolbar-btn primary"
                 onClick={() => void submitEnroll()}
-                disabled={busy || !displayName.trim() || !authStatus?.loggedIn}
+                disabled={busy || !displayName.trim()}
                 style={{ minWidth: 120 }}
+                title={authStatus?.loggedIn
+                  ? 'Finish enrollment with your GitHub account'
+                  : "Skip GitHub for now — you can sign in later from Settings"}
               >
-                {busy ? 'Enrolling…' : 'Finish'}
+                {busy
+                  ? 'Enrolling…'
+                  : authStatus?.loggedIn
+                    ? 'Finish'
+                    : 'Skip GitHub & Finish'}
               </button>
             </div>
           </div>

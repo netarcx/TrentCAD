@@ -824,8 +824,24 @@ export default function ProjectSetup({ onJoinProject, onOpenProject, onEnterManu
           <div className="form-group">
             <label>Save To</label>
             <div className="path-input">
-              <input value={path} onChange={e => setPath(e.target.value)} placeholder="C:\Users\team2129\Documents" />
+              <input value={path} onChange={e => setPath(e.target.value)} placeholder="C:\framecad" />
               <button className="browse-btn" onClick={handleBrowse}>Browse</button>
+            </div>
+            {/* Heads-up about two common Windows footguns:
+                  1. Deep folder paths blow Windows' 260-char MAX_PATH
+                     limit fast with CAD's nested COTS hierarchies +
+                     SolidWorks's long config-suffixed filenames →
+                     "filename too long" errors on clone or checkout.
+                  2. OneDrive synced folders silently rewrite file
+                     timestamps + race against git's pack file writes,
+                     producing index corruption that LOOKS like a
+                     FrameCAD bug but is actually OneDrive fighting
+                     git. We've burned hours on both. */}
+            <div className="form-hint" style={{ marginTop: 6, lineHeight: 1.5 }}>
+              <strong>Pro tip:</strong> put the project folder as close to the
+              drive root as possible (e.g. <span className="mono">C:\framecad\</span>)
+              and <strong>never</strong> inside a OneDrive / iCloud / Dropbox
+              folder — sync services fight with git and corrupt the repo.
             </div>
           </div>
           <div className="form-actions">

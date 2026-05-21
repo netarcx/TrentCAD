@@ -40,6 +40,8 @@ const api: IpcApi = {
 
   getRemoteAhead: () =>
     ipcRenderer.invoke('get-remote-ahead'),
+  getLocalAhead: () =>
+    ipcRenderer.invoke('get-local-ahead'),
 
   setLegacyMode: (enabled) =>
     ipcRenderer.invoke('set-legacy-mode', enabled),
@@ -233,6 +235,9 @@ const api: IpcApi = {
 
   teamAdminUiUrl: () =>
     ipcRenderer.invoke('team-admin-ui-url'),
+
+  teamPingServer: () =>
+    ipcRenderer.invoke('team-ping-server'),
 
   onTeamSnapshot: (callback) => {
     const handler = (_event: Electron.IpcRendererEvent, snapshot: unknown) =>

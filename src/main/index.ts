@@ -109,8 +109,35 @@ function createWindow(): void {
   })
 
   // Drop the default Electron File/Edit/View menu so students don't see a
-  // distracting menu bar — FrameCAD's own UI exposes everything they need
+  // distracting menu bar — FrameCAD's own UI exposes everything they need.
+  // Side effect: this also drops the default DevTools accelerator, so we
+  // re-attach it as a `before-input-event` listener below; otherwise a
+  // grey-screen failure of the renderer leaves the user with no way to
+  // inspect what broke.
   Menu.setApplicationMenu(null)
+
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || mainWindow == null) return
+    const key = input.key.toLowerCase()
+    // Ctrl+Shift+I (Cmd+Shift+I on mac) → toggle DevTools
+    if ((input.control || input.meta) && input.shift && key === 'i') {
+      mainWindow.webContents.toggleDevTools()
+      event.preventDefault()
+      return
+    }
+    // F12 → toggle DevTools (familiar to Windows users)
+    if (key === 'f12') {
+      mainWindow.webContents.toggleDevTools()
+      event.preventDefault()
+      return
+    }
+    // Ctrl+R → reload the renderer. Useful when the dev-mode HMR
+    // gets confused or to retry from a paint-error state.
+    if ((input.control || input.meta) && !input.shift && key === 'r') {
+      mainWindow.webContents.reload()
+      event.preventDefault()
+    }
+  })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])

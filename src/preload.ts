@@ -89,6 +89,12 @@ const api: IpcApi = {
   getAppVersion: () =>
     ipcRenderer.invoke('get-app-version'),
 
+  getOsHostname: () =>
+    ipcRenderer.invoke('get-os-hostname'),
+
+  getOsUsername: () =>
+    ipcRenderer.invoke('get-os-username'),
+
   checkDependencies: () =>
     ipcRenderer.invoke('check-dependencies'),
 

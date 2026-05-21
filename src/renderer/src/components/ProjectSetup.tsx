@@ -600,6 +600,7 @@ export default function ProjectSetup({ onJoinProject, onOpenProject, onEnterManu
           onTeamRefresh?.().catch(() => { /* offline */ })
           setMode('select')
         }}
+        globalAdmin={globalAdmin}
       />
     )
   }

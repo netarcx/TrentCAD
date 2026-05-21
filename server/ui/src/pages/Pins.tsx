@@ -49,6 +49,10 @@ export default function Pins() {
   const [githubUsername, setGithubUsername] = useState('')
   const [caps, setCaps] = useState<CapabilityValue>(EMPTY_CAPABILITY_VALUE)
   const [justIssued, setJustIssued] = useState<IssuedPin | null>(null)
+  // Toggle the just-issued PIN display between the new full-URL form
+  // (default — matches the desktop's paste-link wizard) and the
+  // legacy bare 6-char code. Resets to 'url' on every fresh issuance.
+  const [linkView, setLinkView] = useState<'url' | 'pin'>('url')
 
   async function load(): Promise<void> {
     try {
@@ -78,6 +82,7 @@ export default function Pins() {
         kioskMode: caps.kioskMode,
       })
       setJustIssued(res)
+      setLinkView('url')
       setDisplayName('')
       setGithubUsername('')
       setCaps(EMPTY_CAPABILITY_VALUE)
@@ -197,22 +202,67 @@ export default function Pins() {
           )}
         </div>
 
-        {justIssued && (
-          <div className="success" style={{ marginTop: 18 }}>
-            <div style={{ marginBottom: 8 }}>
-              New {justIssued.role} PIN — expires {relExpiry(justIssued.expiresAt)}. Hand this to the enrollee:
+        {justIssued && (() => {
+          // Build the full enrollment URL the same way the desktop
+          // wizard expects it: `<server-origin>/enroll/<PIN>`. Uses
+          // window.location.origin because that's whatever URL the
+          // admin's browser actually used to reach this server —
+          // which is what desktop clients on the same network will
+          // also use. NOTE: if the admin opened the UI on localhost
+          // but the students will reach the server via a different
+          // hostname, the admin should re-open the admin UI from a
+          // session on the students' network before grabbing the
+          // link.
+          const enrollUrl = `${window.location.origin}/enroll/${justIssued.code}`
+          return (
+            <div className="success" style={{ marginTop: 18 }}>
+              <div style={{ marginBottom: 8 }}>
+                New {justIssued.role} PIN — expires {relExpiry(justIssued.expiresAt)}. Hand this to the enrollee:
+              </div>
+              {linkView === 'url' ? (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                    <span className="tag mono" style={{ wordBreak: 'break-all', maxWidth: '100%' }}>
+                      {enrollUrl}
+                    </span>
+                    <button className="secondary" onClick={() => handleCopy(enrollUrl)}>
+                      {copyState?.code === enrollUrl
+                        ? (copyState.ok ? '✓ Copied!' : '✗ Failed')
+                        : 'Copy link'}
+                    </button>
+                    <button className="link" onClick={() => setLinkView('pin')}>
+                      Show PIN instead
+                    </button>
+                    <button className="link" onClick={() => setJustIssued(null)}>Hide</button>
+                  </div>
+                  <div className="hint" style={{ marginTop: 8 }}>
+                    They paste this into FrameCAD desktop's Sync with Team
+                    screen — no separate server URL or PIN entry needed.
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                    <span className="tag">{justIssued.code}</span>
+                    <button className="secondary" onClick={() => handleCopy(justIssued.code)}>
+                      {copyState?.code === justIssued.code
+                        ? (copyState.ok ? '✓ Copied!' : '✗ Failed')
+                        : 'Copy PIN'}
+                    </button>
+                    <button className="link" onClick={() => setLinkView('url')}>
+                      Show link instead
+                    </button>
+                    <button className="link" onClick={() => setJustIssued(null)}>Hide</button>
+                  </div>
+                  <div className="hint" style={{ marginTop: 8 }}>
+                    The 6-character PIN is a fallback for clients that
+                    don't support pasting the full link.
+                  </div>
+                </>
+              )}
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span className="tag">{justIssued.code}</span>
-              <button className="secondary" onClick={() => handleCopy(justIssued.code)}>
-                {copyState?.code === justIssued.code
-                  ? (copyState.ok ? '✓ Copied!' : '✗ Failed')
-                  : 'Copy'}
-              </button>
-              <button className="link" onClick={() => setJustIssued(null)}>Hide</button>
-            </div>
-          </div>
-        )}
+          )
+        })()}
       </div>
 
       <div className="card">

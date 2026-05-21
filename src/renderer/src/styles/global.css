@@ -3433,6 +3433,150 @@ body.slam-shake {
 
 .setup-form input:focus { border-color: var(--accent); }
 
+/* ───── Enrollment wizard (v3.x paste-link flow) ─────
+   Three-step guided enrollment that replaces the old single-form
+   "type server URL + PIN" page. The whole thing lives inside the
+   existing .setup-screen wrapper so the welcome screen's screensaver
+   + easter eggs continue to work between steps. */
+
+.enroll-wizard {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: 100%;
+  max-width: 520px;
+  margin: 0 auto;
+}
+
+/* Progress dots row at the top so the user knows where they are. */
+.enroll-step-dots {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+.enroll-step-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+}
+.enroll-step-dot.active {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.enroll-step-dot.done {
+  background: var(--bg-surface);
+  border-color: var(--accent);
+}
+
+.enroll-step {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px 28px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.enroll-step h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+.enroll-step .subtitle {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+/* Step 1: paste-link input. Wider than the standard form input
+   because URLs are long; monospace so a typo'd character is
+   obvious. */
+.enroll-link-input {
+  width: 100%;
+  padding: 12px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font: inherit;
+  font-family: 'SF Mono', Consolas, Monaco, monospace;
+  font-size: 13px;
+  outline: none;
+}
+.enroll-link-input:focus { border-color: var(--accent); }
+
+.enroll-link-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  font-size: 12px;
+}
+.enroll-link-chip-ok {
+  color: var(--green);
+  background: rgba(134, 239, 172, 0.12);
+  border: 1px solid rgba(134, 239, 172, 0.3);
+}
+.enroll-link-chip-err {
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+}
+
+/* Step 2: GitHub sign-in block. Quieter than a hero button so it
+   doesn't compete with the name field above it. */
+.enroll-github-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.enroll-github-row label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-secondary);
+}
+.enroll-github-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: var(--radius);
+}
+.enroll-github-status-ok {
+  color: var(--green);
+  background: rgba(134, 239, 172, 0.10);
+  border: 1px solid rgba(134, 239, 172, 0.25);
+}
+.enroll-github-status-pending {
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  font-style: italic;
+}
+.enroll-github-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Step 3: submitting. Just a centered spinner so the wizard
+   doesn't flash an empty card. */
+.enroll-spinner-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
 .setup-form .path-input {
   display: flex;
   gap: 8px;

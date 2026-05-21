@@ -251,6 +251,11 @@ export interface GlobalAdminConfig {
   welcomeMessage?: string
   gitHubOrg?: string
   projectPrefix?: string
+  /** Pre-baked team-server URL from the FRAMECAD_DEFAULT_SERVER_URL
+   *  build-time env var. When set, the enrollment wizard uses this as
+   *  the fallback server URL if the user pastes a bare PIN with no
+   *  full link. Empty/undefined → user must paste a full link. */
+  defaultServerUrl?: string
 }
 
 export interface GlobalAdminState {
@@ -421,6 +426,12 @@ export interface IpcApi {
     error?: string
   }>
   getAppVersion(): Promise<string>
+  /** Best-effort OS hostname for pre-filling the enrollment wizard's
+   *  Device Label field. Returns '' on any failure. */
+  getOsHostname(): Promise<string>
+  /** Best-effort OS username for pre-filling the wizard's display-
+   *  name field. Returns '' on any failure. */
+  getOsUsername(): Promise<string>
   checkDependencies(): Promise<DependencyStatus>
   openExternal(url: string): Promise<void>
   githubAuthStatus(): Promise<GitHubAuthStatus>
@@ -500,7 +511,13 @@ export interface IpcApi {
   /** Force a fresh fetch from the team server. Updates the cache. */
   teamRefresh(): Promise<TeamSnapshot>
   /** Trade a PIN + serverUrl for a bearer token. Stores the token + role locally. */
-  teamEnroll(args: { serverUrl: string; pin: string; deviceLabel?: string }): Promise<EnrollResult>
+  teamEnroll(args: {
+    serverUrl: string
+    pin: string
+    deviceLabel?: string
+    displayName?: string
+    githubUsername?: string
+  }): Promise<EnrollResult>
   /** Drop the local token + cache. Server-side audit row still records the device. */
   teamSignOut(): Promise<void>
   /** Returns the URL to open the admin web UI in a browser (or null when not enrolled). */

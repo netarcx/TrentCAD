@@ -1,4 +1,5 @@
 import { ipcMain, dialog, shell, app, BrowserWindow, Notification } from 'electron'
+import os from 'os'
 import path from 'path'
 import { watch } from 'chokidar'
 import * as gitOps from './git'
@@ -308,6 +309,17 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('get-app-version', () => app.getVersion())
+
+  // Tiny getters used by the enrollment wizard to pre-fill the
+  // "Your name" + "Device label" fields with sensible defaults.
+  // Both are best-effort: a renderer that doesn't get a value just
+  // shows empty fields.
+  ipcMain.handle('get-os-hostname', () => {
+    try { return os.hostname() } catch { return '' }
+  })
+  ipcMain.handle('get-os-username', () => {
+    try { return os.userInfo().username } catch { return '' }
+  })
 
   ipcMain.handle('check-dependencies', async () => depsOps.checkDependencies())
   ipcMain.handle('github-auth-status', async () => authOps.githubAuthStatus())
@@ -688,8 +700,13 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   // only to (a) enroll once with a PIN and (b) read snapshots.
   ipcMain.handle('team-get-snapshot', () => teamServer.currentSnapshot())
   ipcMain.handle('team-refresh', () => teamServer.refresh())
-  ipcMain.handle('team-enroll', (_e, args: { serverUrl: string; pin: string; deviceLabel?: string }) =>
-    teamServer.enroll(args))
+  ipcMain.handle('team-enroll', (_e, args: {
+    serverUrl: string
+    pin: string
+    deviceLabel?: string
+    displayName?: string
+    githubUsername?: string
+  }) => teamServer.enroll(args))
   ipcMain.handle('team-sign-out', () => teamServer.signOut())
   ipcMain.handle('team-admin-ui-url', () => teamServer.adminUiUrl())
 

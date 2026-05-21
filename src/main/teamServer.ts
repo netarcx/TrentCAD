@@ -182,6 +182,12 @@ export async function enroll(args: {
   serverUrl: string
   pin: string
   deviceLabel?: string
+  /** User-typed display name (step 2 of the wizard). Server falls
+   *  back to the PIN's pre-baked name if this is empty. */
+  displayName?: string
+  /** GitHub login from the wizard's "Sign in to GitHub" step. Server
+   *  falls back to the PIN's pre-baked githubUsername if empty. */
+  githubUsername?: string
 }): Promise<EnrollResult> {
   const cleanUrl = args.serverUrl.trim().replace(/\/+$/, '')
   if (!/^https?:\/\//i.test(cleanUrl)) {
@@ -206,6 +212,8 @@ export async function enroll(args: {
       body: {
         pin: cleanPin,
         deviceLabel: args.deviceLabel?.trim() || undefined,
+        displayName: args.displayName?.trim() || undefined,
+        githubUsername: args.githubUsername?.trim() || undefined,
         clientVersion: app.getVersion(),
       },
     })

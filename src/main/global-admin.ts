@@ -6,12 +6,19 @@ declare const __FRAMECAD_DEFAULT_GITHUB_ORG__: string
 declare const __FRAMECAD_DEFAULT_PROJECT_PREFIX__: string
 declare const __FRAMECAD_DEFAULT_TEAM_NAME__: string
 declare const __FRAMECAD_DEFAULT_WELCOME_MESSAGE__: string
+declare const __FRAMECAD_DEFAULT_SERVER_URL__: string
 
 export interface GlobalAdminConfig {
   teamName?: string
   welcomeMessage?: string
   gitHubOrg?: string
   projectPrefix?: string
+  /** Pre-baked team-server URL. When set, the enrollment wizard
+   *  uses this as the fallback server URL if the user pastes a
+   *  bare PIN (no full link). Build-time only — set via
+   *  FRAMECAD_DEFAULT_SERVER_URL env var before packaging; users
+   *  cannot override it locally. */
+  defaultServerUrl?: string
 }
 
 export interface GlobalAdminState {
@@ -52,6 +59,8 @@ function buildDefaults(): GlobalAdminConfig {
       typeof __FRAMECAD_DEFAULT_TEAM_NAME__ !== 'undefined' ? __FRAMECAD_DEFAULT_TEAM_NAME__ : undefined),
     welcomeMessage: readDefine('WELCOME',
       typeof __FRAMECAD_DEFAULT_WELCOME_MESSAGE__ !== 'undefined' ? __FRAMECAD_DEFAULT_WELCOME_MESSAGE__ : undefined),
+    defaultServerUrl: readDefine('SERVER_URL',
+      typeof __FRAMECAD_DEFAULT_SERVER_URL__ !== 'undefined' ? __FRAMECAD_DEFAULT_SERVER_URL__ : undefined),
   }
 }
 
@@ -106,6 +115,10 @@ function merge(defaults: GlobalAdminConfig, local: GlobalAdminConfig | null): Gl
     welcomeMessage: pick(local.welcomeMessage) ?? defaults.welcomeMessage,
     gitHubOrg: pick(local.gitHubOrg) ?? defaults.gitHubOrg,
     projectPrefix: pick(local.projectPrefix) ?? defaults.projectPrefix,
+    // defaultServerUrl is build-time only — local overrides aren't
+    // accepted (writeLocal doesn't persist it either) so the bake
+    // never gets accidentally clobbered by a settings-page toggle.
+    defaultServerUrl: defaults.defaultServerUrl,
   }
 }
 

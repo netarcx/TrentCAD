@@ -5,8 +5,8 @@ const api: IpcApi = {
   createProject: (name, path, remote, isCotsProject) =>
     ipcRenderer.invoke('create-project', name, path, remote, isCotsProject),
 
-  joinProject: (url, path) =>
-    ipcRenderer.invoke('join-project', url, path),
+  joinProject: (url, path, options) =>
+    ipcRenderer.invoke('join-project', url, path, options),
 
   openProject: (path) =>
     ipcRenderer.invoke('open-project', path),

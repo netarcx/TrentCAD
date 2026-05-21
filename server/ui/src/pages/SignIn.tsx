@@ -20,8 +20,10 @@ type Mode = 'password' | 'pin' | 'set-password'
  *    account). After successful claim, if the member has no password
  *    yet, snap to `set-password` so they leave the screen with a
  *    real account.
- *  - `set-password`: a forced step right after first PIN claim. Two
- *    fields (new + confirm) and a Save button.
+ *  - `set-password`: a forced step right after first PIN claim.
+ *    Three fields (username + new password + confirm) and a Save
+ *    button. The username chosen here becomes the canonical login
+ *    handle stored in the `members.username` column.
  *
  * Once a password is set, future sign-ins use `password` mode.
  * Password mode is the default landing because PIN-only authentication
@@ -46,6 +48,11 @@ export default function SignIn() {
   // set-password mode
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  // Username chosen at first-set time. Default seeded from
+  // displayName / githubUsername when the PIN claim resolves, but
+  // editable — display names have spaces / capitals that won't
+  // satisfy the server's [a-z0-9._-]{3,30} rule.
+  const [chosenUsername, setChosenUsername] = useState('')
   // Carries the post-PIN auth state so we can stash the token AFTER
   // the password is set — otherwise a user who bails out of step 2
   // would walk away with an admin device but no password (the very
@@ -103,9 +110,18 @@ export default function SignIn() {
       // submit handler.
       setPendingSession(res)
       setMode('set-password')
-      // Carry over a sensible username default for the eventual
-      // login-form switch: GitHub username if set, else displayName.
-      setUsername((res.member.githubUsername || res.member.displayName).toLowerCase())
+      // Seed a username default from GitHub (if set) or display
+      // name. Strip anything outside [a-z0-9._-] so the suggestion
+      // already passes the server's validation rule — saves the
+      // user from having to clean it up themselves.
+      const seed = (res.member.githubUsername || res.member.displayName)
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]/g, '')
+        .slice(0, 30)
+      setChosenUsername(seed)
+      // Also pre-fill the "Username" field they'll see on the
+      // password-mode login screen after this flow.
+      setUsername(seed)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : (err as Error).message)
     } finally {
@@ -120,6 +136,11 @@ export default function SignIn() {
       setError("Passwords don't match.")
       return
     }
+    const cleanUsername = chosenUsername.trim().toLowerCase()
+    if (!/^[a-z0-9._-]{3,30}$/.test(cleanUsername)) {
+      setError('Username must be 3-30 characters, letters/digits/dot/hyphen/underscore only.')
+      return
+    }
     setBusy(true)
     setError(null)
     try {
@@ -132,7 +153,7 @@ export default function SignIn() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${pendingSession.token}`,
         },
-        body: JSON.stringify({ newPassword }),
+        body: JSON.stringify({ newPassword, username: cleanUsername }),
       })
       if (!res.ok) {
         const body = await res.json().catch(() => ({})) as { error?: string }
@@ -140,7 +161,10 @@ export default function SignIn() {
         return
       }
       // Now commit the session and navigate — same as the password
-      // login success path.
+      // login success path. Also stash the username on the login
+      // form so a quick sign-out / sign-in round-trip doesn't make
+      // the user re-type it.
+      setUsername(cleanUsername)
       setSession(pendingSession.token, pendingSession.member, staySignedIn)
       navigate('/', { replace: true })
     } catch (err) {
@@ -254,17 +278,36 @@ export default function SignIn() {
         {mode === 'set-password' && (
           <>
             <div className="sub">
-              Welcome, {pendingSession?.member.displayName}. Set a password for
-              future sign-ins. Username will be <strong>{username}</strong>.
+              Welcome, {pendingSession?.member.displayName}. Pick a
+              username and password for future sign-ins.
             </div>
             <form onSubmit={submitNewPassword}>
+              <label>Username</label>
+              <input
+                value={chosenUsername}
+                onChange={e =>
+                  setChosenUsername(
+                    e.target.value
+                      .toLowerCase()
+                      .replace(/[^a-z0-9._-]/g, '')
+                      .slice(0, 30),
+                  )
+                }
+                placeholder="e.g. tfox"
+                autoComplete="username"
+                spellCheck={false}
+                autoFocus
+              />
+              <div className="hint" style={{ marginTop: 6 }}>
+                3-30 characters. Letters, digits, dot, hyphen, underscore.
+                This is what you'll type at the sign-in screen.
+              </div>
               <label>New password</label>
               <input
                 type="password"
                 value={newPassword}
                 onChange={e => setNewPassword(e.target.value)}
                 autoComplete="new-password"
-                autoFocus
               />
               <label>Confirm password</label>
               <input
@@ -298,7 +341,12 @@ export default function SignIn() {
               <button
                 className="primary"
                 type="submit"
-                disabled={busy || newPassword.length < 10 || !confirmPassword}
+                disabled={
+                  busy
+                  || newPassword.length < 10
+                  || !confirmPassword
+                  || !/^[a-z0-9._-]{3,30}$/.test(chosenUsername)
+                }
               >
                 {busy ? 'Saving…' : 'Save & sign in'}
               </button>

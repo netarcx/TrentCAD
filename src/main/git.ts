@@ -549,14 +549,52 @@ export async function createProject(name: string, dirPath: string, remote: strin
   })
 }
 
+/**
+ * Pattern-match a clone error to detect the "LFS server unreachable"
+ * shape that smudges throw when GitHub LFS is over-budget or the
+ * self-hosted server is down. Returns true when the user's likely
+ * next step is "retry without downloading the LFS objects" rather
+ * than "fix your network" or "re-auth".
+ */
+function isLfsUnreachableError(raw: string): boolean {
+  const msg = raw.toLowerCase()
+  return (
+    msg.includes('exceeded its lfs budget') ||
+    msg.includes('this repository exceeded') ||
+    msg.includes('smudge filter lfs failed') ||
+    (msg.includes('error downloading object') && msg.includes('batch response')) ||
+    msg.includes('lfs/objects/batch') && msg.includes('403')
+  )
+}
+
+/** Sentinel the IPC layer / renderer match on to surface the
+ *  "retry without LFS" UI instead of the generic error path. */
+export const LFS_UNREACHABLE_ERROR_PREFIX = 'LFS_UNREACHABLE:'
+
+export interface JoinProjectOptions {
+  /** When true, set GIT_LFS_SKIP_SMUDGE=1 on the clone so git-lfs
+   *  doesn't try to fetch object contents. Result: a working tree
+   *  where binary files appear as small pointer text files. The
+   *  user gets the project structure + history immediately and can
+   *  `git lfs pull` later once their team's LFS server is reachable. */
+  skipSmudge?: boolean
+}
+
 export async function joinProject(
   url: string,
   dirPath: string,
-  onProgress?: (p: PublishProgress) => void
+  onProgress?: (p: PublishProgress) => void,
+  options?: JoinProjectOptions,
 ): Promise<void> {
   await addSafeDirectory(dirPath)
   await addSafeDirectory(path.dirname(dirPath))
-  onProgress?.({ phase: 'preparing', files: [], detail: 'Starting clone…' })
+  onProgress?.({
+    phase: 'preparing',
+    files: [],
+    detail: options?.skipSmudge
+      ? 'Starting clone (LFS skipped)…'
+      : 'Starting clone…',
+  })
 
   // Mirror the publish() tail setup so a clone's LFS smudge phase
   // also surfaces per-file bytes to the renderer. Created/cleaned
@@ -572,13 +610,32 @@ export async function joinProject(
   })
 
   try {
-    await runJoinClone(url, dirPath, onProgress, lfsProgressFile)
+    await runJoinClone(url, dirPath, onProgress, lfsProgressFile, options?.skipSmudge)
     onProgress?.({ phase: 'done', files: [], percent: 100, detail: 'Project ready' })
   } catch (err) {
     // Without this, the renderer's progress modal sits in "Downloading"
     // forever when a clone fails (auth, network, etc.) — the caller's
     // outer catch returns an error but the modal doesn't know.
-    onProgress?.({ phase: 'error', error: (err as Error).message })
+    const errMsg = (err as Error).message
+    // Recognise the LFS-budget / smudge-failure shape and tag the
+    // error so the renderer can offer a "retry without LFS" path.
+    // skipSmudge runs don't fire this — if we get here while already
+    // skipping LFS, the failure is something else (auth, network).
+    if (!options?.skipSmudge && isLfsUnreachableError(errMsg)) {
+      const friendly =
+        'Your team\'s LFS server is unreachable. The git history downloaded fine, ' +
+        'but git-lfs couldn\'t fetch the actual binary file contents — usually because ' +
+        'GitHub LFS is over its monthly budget or the self-hosted LFS server is offline. ' +
+        'Your local files were rolled back. Try again with "Clone without LFS files" to ' +
+        'get the project structure now; you can `git lfs pull` once your admin has ' +
+        'migrated the data.'
+      onProgress?.({
+        phase: 'error',
+        error: friendly,
+      })
+      throw new Error(`${LFS_UNREACHABLE_ERROR_PREFIX} ${friendly}`)
+    }
+    onProgress?.({ phase: 'error', error: errMsg })
     throw err
   } finally {
     stopLfsTail?.()
@@ -591,6 +648,7 @@ async function runJoinClone(
   dirPath: string,
   onProgress?: (p: PublishProgress) => void,
   lfsProgressFile?: string,
+  skipSmudge?: boolean,
 ): Promise<void> {
   await withDubiousOwnershipRecovery(async () => {
     // simple-git surfaces git's --progress lines through this callback
@@ -615,6 +673,13 @@ async function runJoinClone(
       // Hook git-lfs's progress file so the tail watcher in
       // joinProject() can surface per-file smudge bytes to the UI.
       cloneGit.env('GIT_LFS_PROGRESS', lfsProgressFile)
+    }
+    if (skipSmudge) {
+      // Tell git-lfs not to download / replace pointer files with
+      // actual content during the clone. The working tree gets the
+      // pointer text files (each is ~130 bytes); the user can run
+      // `git lfs pull` later once their LFS server is reachable.
+      cloneGit.env('GIT_LFS_SKIP_SMUDGE', '1')
     }
 
     // Inject the GitHub token directly into the clone URL. Packaged

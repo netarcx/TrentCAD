@@ -59,16 +59,24 @@ export function useGit() {
     }
   }, [])
 
-  const joinProject = useCallback(async (url: string, path: string) => {
+  const joinProject = useCallback(async (
+    url: string,
+    path: string,
+    options?: { skipSmudge?: boolean },
+  ) => {
     setIsLoading(true)
     setError(null)
     try {
-      await window.api.joinProject(url, path)
+      await window.api.joinProject(url, path, options)
       const config = await window.api.getProjectConfig()
       setProject(config)
       await fetchAll()
     } catch (err) {
+      // Let the caller decide what to do — surface via local error
+      // state AND re-throw so the welcome screen can intercept the
+      // LFS_UNREACHABLE sentinel and offer a retry.
       setError((err as Error).message)
+      throw err
     } finally {
       setIsLoading(false)
     }

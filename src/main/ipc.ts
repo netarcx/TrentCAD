@@ -108,11 +108,21 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     if (win) startWatching(dirPath, win)
   })
 
-  ipcMain.handle('join-project', async (_e, url: string, dirPath: string) => {
+  ipcMain.handle('join-project', async (
+    _e,
+    url: string,
+    dirPath: string,
+    options?: { skipSmudge?: boolean },
+  ) => {
     const win = getMainWindow()
-    await gitOps.joinProject(url, dirPath, (progress) => {
-      if (win && !win.isDestroyed()) win.webContents.send('join-progress', progress)
-    })
+    await gitOps.joinProject(
+      url,
+      dirPath,
+      (progress) => {
+        if (win && !win.isDestroyed()) win.webContents.send('join-progress', progress)
+      },
+      options,
+    )
     const name = path.basename(dirPath)
     currentProject = { name, path: dirPath, remote: url }
     await addRecentProject(currentProject)

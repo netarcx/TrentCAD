@@ -263,6 +263,21 @@ const MIGRATIONS: string[] = [
   ALTER TABLE members ADD COLUMN lastLoginAt       INTEGER;
   ALTER TABLE devices ADD COLUMN kind              TEXT NOT NULL DEFAULT 'desktop';
   `,
+  // v10: explicit `username` column on members. Originally login
+  // matched against `displayName` or `githubUsername`, but neither
+  // is great as a login handle — display names have spaces, GitHub
+  // usernames change. Username is a stable, member-chosen, case-
+  // insensitive-unique handle that's the canonical login key.
+  // Set alongside the password at first-claim time (see the
+  // set-password flow in client.ts). The conditional unique index
+  // allows multiple NULL usernames (legacy members who haven't
+  // logged in yet) but enforces one-per-value once set.
+  `
+  ALTER TABLE members ADD COLUMN username TEXT;
+  CREATE UNIQUE INDEX members_username_lower_uq
+    ON members(LOWER(username))
+    WHERE username IS NOT NULL;
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

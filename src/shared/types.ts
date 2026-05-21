@@ -403,7 +403,17 @@ export interface AppState {
 
 export interface IpcApi {
   createProject(name: string, path: string, remote: string, isCotsProject?: boolean): Promise<void>
-  joinProject(url: string, path: string): Promise<void>
+  /** Clone a project. The optional `options.skipSmudge` flag sets
+   *  GIT_LFS_SKIP_SMUDGE=1 on the underlying git invocation so the
+   *  working tree gets LFS pointer files instead of the actual
+   *  content — used as a fallback when the LFS server is
+   *  unreachable. Errors prefixed with `LFS_UNREACHABLE:` indicate
+   *  the caller should offer the skip-smudge retry path. */
+  joinProject(
+    url: string,
+    path: string,
+    options?: { skipSmudge?: boolean },
+  ): Promise<void>
   openProject(path: string): Promise<ProjectConfig>
   closeProject(): Promise<void>
   sync(): Promise<SyncResult>

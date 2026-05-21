@@ -6,7 +6,7 @@ import { prepareSlamSnapshot, triggerWaterSlam } from '../lib/water-slam'
 import type { GlobalAdminConfig, ProjectConfig, TeamSnapshot } from '@shared/types'
 
 interface Props {
-  onJoinProject: (url: string, path: string) => Promise<void>
+  onJoinProject: (url: string, path: string, options?: { skipSmudge?: boolean }) => Promise<void>
   onOpenProject: (path: string) => Promise<void>
   /** Open a project and jump straight into the Manufacturing View
    *  (shop-floor mode). Disabled when there are no recent projects to
@@ -827,7 +827,29 @@ export default function ProjectSetup({ onJoinProject, onOpenProject, onEnterManu
             <button
               className="toolbar-btn primary"
               disabled={!url || !path || isLoading}
-              onClick={() => onJoinProject(url, path)}
+              onClick={async () => {
+                try {
+                  await onJoinProject(url, path)
+                } catch (err) {
+                  // Detect the LFS-unreachable sentinel and offer a
+                  // skip-smudge retry. Anything else bubbles up
+                  // through useGit's error state as before.
+                  const msg = (err as Error).message || ''
+                  if (!msg.startsWith('LFS_UNREACHABLE:')) return
+                  const friendly = msg.replace(/^LFS_UNREACHABLE:\s*/, '')
+                  const ok = window.confirm(
+                    friendly + '\n\nClone without LFS files now? ' +
+                    'The project structure will be available immediately; ' +
+                    'CAD files will appear as small placeholder pointers ' +
+                    'until the LFS server is reachable.',
+                  )
+                  if (ok) {
+                    try {
+                      await onJoinProject(url, path, { skipSmudge: true })
+                    } catch { /* useGit surfaces the error banner */ }
+                  }
+                }
+              }}
             >
               {isLoading ? <span className="loading-spinner" /> : 'Join'}
             </button>

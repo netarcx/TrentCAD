@@ -74,12 +74,23 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
 
   // Set or change the password on the calling member's account. New-
   // member flow: admin claims via PIN → /api/me/has-password says
-  // false → web UI prompts to set one before letting them leave the
-  // sign-in screen. Existing-account flow: settings page can call
-  // this with their current password as confirmation. The "current"
-  // password is optional but the admin UI requires it when one is
-  // already set.
-  app.post<{ Body: { currentPassword?: string; newPassword?: string } }>(
+  // false → web UI prompts to pick a username + set a password
+  // before letting them leave the sign-in screen. Existing-account
+  // flow: settings page can call this with their current password
+  // as confirmation. The "current" password is optional but the
+  // admin UI requires it when one is already set.
+  //
+  // `username` is REQUIRED on first set (when the member doesn't
+  // yet have one stored). Letters / digits / dot / hyphen /
+  // underscore, 3-30 chars, case-insensitive-unique across the
+  // members table. The login endpoint matches against this field
+  // first, then falls back to displayName / githubUsername for
+  // legacy rows that haven't been through the set-password flow.
+  app.post<{ Body: {
+    currentPassword?: string
+    newPassword?: string
+    username?: string
+  } }>(
     '/api/me/set-password',
     async (req, reply) => {
       const { getDb: getDbInner } = await import('../db.js')
@@ -89,11 +100,13 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
       if (!check.ok) {
         return reply.code(400).send({ error: check.reason })
       }
-      // If the member already has a password, require the current
-      // one to swap it. Empty `currentPassword` only OK on first-set.
+
+      // Pull current state so we can decide whether username is
+      // required + whether currentPassword needs to verify.
       const row = getDbInner().prepare(
-        `SELECT passwordHash FROM members WHERE id = ?`
-      ).get(m.id) as { passwordHash: string | null }
+        `SELECT passwordHash, username FROM members WHERE id = ?`
+      ).get(m.id) as { passwordHash: string | null; username: string | null }
+
       if (row.passwordHash) {
         const { verifyPassword } = await import('../auth.js')
         const ok = await verifyPassword(row.passwordHash, req.body?.currentPassword ?? '')
@@ -101,18 +114,57 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
           return reply.code(401).send({ error: 'Current password is incorrect.' })
         }
       }
+
+      // Username handling. On first set (no row.username) require
+      // the field. On subsequent changes the caller may omit it to
+      // keep the existing handle; passing a new value re-runs the
+      // validation + uniqueness check.
+      let usernameToWrite: string | null = row.username
+      const raw = (req.body?.username ?? '').trim().toLowerCase()
+      const userChanged = raw && raw !== (row.username ?? '').toLowerCase()
+      if (!row.username && !raw) {
+        return reply.code(400).send({
+          error: 'Username is required when setting a password for the first time.',
+        })
+      }
+      if (userChanged) {
+        if (!/^[a-z0-9._-]{3,30}$/.test(raw)) {
+          return reply.code(400).send({
+            error: 'Username must be 3-30 characters, letters/digits/dot/hyphen/underscore only.',
+          })
+        }
+        // Case-insensitive uniqueness check. The conditional unique
+        // index in migration v10 enforces this too, but checking
+        // here lets us return a friendly 409 instead of a SQL error.
+        const clash = getDbInner().prepare(
+          `SELECT id FROM members WHERE LOWER(username) = ? AND id != ?`
+        ).get(raw, m.id) as { id: number } | undefined
+        if (clash) {
+          return reply.code(409).send({
+            error: `The username "${raw}" is already taken. Pick another.`,
+          })
+        }
+        usernameToWrite = raw
+      }
+
       const hash = await hashPassword(newPassword)
       getDbInner().prepare(
-        `UPDATE members SET passwordHash = ?, failedLoginCount = 0, lockedUntil = NULL WHERE id = ?`
-      ).run(hash, m.id)
+        `UPDATE members
+            SET passwordHash = ?,
+                username = ?,
+                failedLoginCount = 0,
+                lockedUntil = NULL
+          WHERE id = ?`
+      ).run(hash, usernameToWrite, m.id)
       const { logAudit } = await import('../db.js')
       logAudit({
         actorId: m.id,
         actorLabel: m.displayName,
         action: row.passwordHash ? 'password.change' : 'password.set',
         target: `member:${m.id}`,
+        detail: userChanged ? `username=${usernameToWrite}` : undefined,
       })
-      return { success: true }
+      return { success: true, username: usernameToWrite }
     },
   )
 
@@ -123,9 +175,12 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
   app.get('/api/me/has-password', async req => {
     const { getDb: getDbInner } = await import('../db.js')
     const row = getDbInner().prepare(
-      `SELECT passwordHash FROM members WHERE id = ?`
-    ).get(req.member!.id) as { passwordHash: string | null }
-    return { hasPassword: row.passwordHash !== null }
+      `SELECT passwordHash, username FROM members WHERE id = ?`
+    ).get(req.member!.id) as { passwordHash: string | null; username: string | null }
+    return {
+      hasPassword: row.passwordHash !== null,
+      username: row.username,
+    }
   })
 
   app.get('/api/me', async req => {

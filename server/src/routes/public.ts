@@ -255,18 +255,27 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
       const db = getDb()
       const now = Date.now()
 
-      // Lookup is case-insensitive across both name and GitHub
-      // username so a member who sets up as "Trent Fox" can log in
-      // as "trent fox" (and also as their GitHub username if set).
+      // Lookup is case-insensitive and tries the explicit `username`
+      // column first (the canonical login handle picked at set-
+      // password time), then falls back to displayName / githubUsername
+      // for legacy members who haven't been through the set-password
+      // flow yet. The order matters: a member named "trent" with a
+      // GitHub username of "tfox" who sets their login username to
+      // "tfox" too should resolve to themselves, not collide with
+      // someone else who happens to be named "tfox" on display.
       const member = db.prepare(
         `SELECT id, displayName, githubUsername, role, status, passwordHash,
                 failedLoginCount, lockedUntil, capabilities, allowedProjectIds,
                 autoOpenProjectId, kioskMode
            FROM members
           WHERE status = 'active'
-            AND (LOWER(displayName) = LOWER(?) OR LOWER(githubUsername) = LOWER(?))
+            AND (
+              LOWER(username) = LOWER(?)
+              OR LOWER(displayName) = LOWER(?)
+              OR LOWER(githubUsername) = LOWER(?)
+            )
           LIMIT 1`
-      ).get(username, username) as {
+      ).get(username, username, username) as {
         id: number
         displayName: string
         githubUsername: string | null

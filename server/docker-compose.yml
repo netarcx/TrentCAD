@@ -126,16 +126,32 @@ services:
     environment:
       <<: *shared-env
       GIFTLESS_CONFIG_FILE: /etc/giftless/giftless.yaml
-      # giftless's entrypoint script uses bare `PORT` / `HOST` env
-      # vars (no GIFTLESS_ prefix) as the uWSGI bind args. With
-      # PORT unset the launcher binds to `127.0.0.1:${PORT}` —
-      # literal string — so nothing outside the container can reach
-      # it. Set both explicitly so we listen on 0.0.0.0:42131 inside
-      # and the container-internal port matches the published port.
-      PORT: "42131"
-      HOST: "0.0.0.0"
       # Quiet by default; flip to "true" when chasing a 401.
       GIFTLESS_DEBUG: "false"
+
+    # The datopian/giftless image's default CMD loads a uwsgi.ini that
+    # uses bash-style `${PORT}` placeholders. uWSGI's own variable
+    # substitution syntax is `$(PORT)`, not `${PORT}`, so uwsgi takes
+    # the literal string `${PORT}` as the port number, binds to the
+    # garbage address `127.0.0.1:${PORT}`, and nothing can reach the
+    # container from outside. PORT/HOST env vars don't help because
+    # the bug is in the ini file, not the env.
+    #
+    # Bypass the broken ini by invoking uwsgi directly with explicit
+    # flags. The giftless app object lives at giftless.wsgi_entrypoint:
+    # app — same module the upstream image targets — so this is just
+    # the same uwsgi invocation with --http hardcoded.
+    command:
+      - uwsgi
+      - --http
+      - 0.0.0.0:42131
+      - --module
+      - giftless.wsgi_entrypoint:app
+      - --master
+      - --processes
+      - "2"
+      - --threads
+      - "2"
 
     labels:
       org.opencontainers.image.title: FrameCAD LFS Server

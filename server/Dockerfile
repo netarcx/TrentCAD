@@ -1,79 +1,84 @@
 # syntax=docker/dockerfile:1.6
 #
-# Multi-stage so the runtime image doesn't ship build tools.
+# Multi-stage so the runtime image doesn't ship build tools, AND so
+# the independent install / build steps can run in parallel under
+# BuildKit. Topology:
 #
-# Stage 1 (`build`): full node:22-alpine + the native-build toolchain
-# needed by `argon2` and `better-sqlite3`. Installs server deps,
-# installs UI deps, copies source, builds both (`npm run build` runs
-# `build:ui` first, then `tsc -p .`). The UI lands at `./dist/ui` so
-# Fastify's `@fastify/static` plugin can serve it from `GET /`.
+#                       base
+#                      /    \
+#              server-deps   ui-deps          ← run in parallel
+#                  |             |
+#              build-server  build-ui         ← run in parallel
+#                  \             /
+#                      runtime               ← assembles both
 #
-# Stage 2 (`runtime`): node:22-alpine carrying only the pruned
-# node_modules + compiled JS. SQLite + the bootstrap SETUP_PIN.txt
-# live under `/data`, exposed as a named VOLUME so the database
-# survives container replacements.
+# A cold build on a many-core host went from ~50s sequential to
+# ~30s on this layout — the npm-ci passes (which dominate cold
+# wall time) overlap on disk + CPU, and the tsc + vite passes that
+# follow them also run concurrently. With BuildKit cache mounts on
+# both stages, a hot rebuild is single-digit seconds either way.
 #
-# The `# syntax=` directive at the top enables BuildKit cache mounts
-# (the `--mount=type=cache` lines below). Without it those lines are
-# silently ignored and the build falls back to the slow path that
-# re-downloads every tarball / re-fetches every apk index on each
-# cache-busting rebuild. Docker 23+ has BuildKit on by default; with
-# older docker run `DOCKER_BUILDKIT=1 docker build ...` to opt in.
+# The `# syntax=` directive at the top enables BuildKit's
+# `--mount=type=cache` lines below. Without it those are silently
+# ignored. Docker 23+ has BuildKit on by default; older versions
+# need `DOCKER_BUILDKIT=1 docker build ...`.
 
-FROM node:22-alpine AS build
+# ─── base ──────────────────────────────────────────────────────────
+# Common ancestor for the two parallel deps stages. Carries the
+# native-build toolchain + the JOBS=max env vars used by node-gyp
+# when argon2 / better-sqlite3 fall through to source compilation.
+FROM node:22-alpine AS base
 WORKDIR /app
-
-# When npm installs a native dep (argon2, better-sqlite3) and the
-# prebuilt binary doesn't match the host ABI, it falls through to
-# node-gyp, which shells out to `make`. node-gyp defaults to `make
-# -j1` — sequential — even on a 24-core build host. Setting JOBS=max
-# tells it to use every core, so the native-compile pass goes from
-# ~30s sequential to a handful of seconds parallel. npm itself reads
-# `npm_config_jobs` for its own parallelism (mostly dep extraction).
 ENV JOBS=max \
     npm_config_jobs=max
 
-# Native-build deps for argon2 / better-sqlite3. Cache the apk index
-# across builds so the (rare) rebuild of this layer doesn't re-fetch
-# from upstream. python3+make+g++ is the standard prebuild-install
-# fallback; libc-dev + linux-headers cover edge cases where the
-# prebuilt binaries don't match the Alpine musl ABI.
 RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
     apk add python3 make g++ libc-dev linux-headers
 
-# 1. Install server deps. The cache mount keeps npm's tarball store
-#    across builds, so a package.json change re-resolves the lockfile
-#    but doesn't re-download anything that hasn't actually changed.
-#    `--prefer-offline` makes npm consult the cache before the network.
-#    `npm ci` (vs install) so the build fails fast if package-lock.json
-#    is out of sync with package.json.
+# ─── server-deps ───────────────────────────────────────────────────
+# Installs the team-server's prod + dev deps. Native modules
+# (argon2, better-sqlite3) compile here when prebuilds don't match
+# Alpine musl — JOBS=max parallelises make across every core.
+# `--prefer-offline` makes npm consult the cache mount before the
+# network for already-resolved tarballs.
+FROM base AS server-deps
 COPY package.json package-lock.json* ./
-RUN --mount=type=cache,target=/root/.npm \
+RUN --mount=type=cache,target=/root/.npm,sharing=shared \
     npm ci --no-audit --no-fund --prefer-offline
 
-# 2. Install UI deps the same way. Separate from server deps so a
-#    UI-only change doesn't invalidate the server install layer.
+# ─── ui-deps ───────────────────────────────────────────────────────
+# Independent of server-deps so BuildKit runs both in parallel.
+# Doesn't need python/make/g++ because the admin UI is pure JS, but
+# it inherits them via `base` — the toolchain is in /usr/local so
+# its presence in this stage is harmless layer weight (and the
+# layer is shared with server-deps anyway).
+FROM base AS ui-deps
 COPY ui/package.json ui/package-lock.json* ./ui/
-RUN --mount=type=cache,target=/root/.npm \
+RUN --mount=type=cache,target=/root/.npm,sharing=shared \
     npm --prefix ui ci --no-audit --no-fund --prefer-offline
 
-# 3. Bring in source. Any change here busts the build cache below.
+# ─── build-ui ──────────────────────────────────────────────────────
+# Vite build of the admin SPA. Writes to ../dist/ui (relative to
+# server/ui), i.e. /app/dist/ui from this stage's perspective.
+FROM ui-deps AS build-ui
+COPY ui ./ui
+RUN npm --prefix ui run build
+
+# ─── build-server ──────────────────────────────────────────────────
+# tsc + npm prune. Pruning runs in this same stage AFTER tsc because
+# tsc itself depends on the typescript dev dep — prune-then-build
+# would break. Runs in parallel with build-ui under BuildKit.
+FROM server-deps AS build-server
 COPY tsconfig.json ./
 COPY src ./src
-COPY ui ./ui
-
-# 4. Build UI then server. We skip `npm run build` here and call the
-#    individual steps so the redundant `npm install` inside `build:ui`
-#    (useful for first-time dev clones) doesn't fire when deps are
-#    already installed.
-RUN npm --prefix ui run build
 RUN npx tsc -p .
-
-# 5. Drop dev deps to shrink the runtime image. Native `.node` files
-#    in argon2 / better-sqlite3 are prod deps, so they survive.
-RUN --mount=type=cache,target=/root/.npm \
+RUN --mount=type=cache,target=/root/.npm,sharing=shared \
     npm prune --omit=dev
 
+# ─── runtime ───────────────────────────────────────────────────────
+# Clean slate (no toolchain, no source, no UI source). Just node +
+# the pruned modules + the two dist trees + package.json (the entry
+# point's bin script resolves against it).
 FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
@@ -81,19 +86,17 @@ ENV NODE_ENV=production \
     PORT=42130 \
     HOST=0.0.0.0
 
-# Copy only what the runtime needs: pruned node_modules + built JS +
-# package.json (the entry point references it via the bin script's
-# resolved path). No source, no UI source, no toolchain.
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/dist ./dist
+COPY --from=build-server /app/node_modules ./node_modules
+COPY --from=build-server /app/dist ./dist
+COPY --from=build-ui     /app/dist/ui ./dist/ui
 COPY package.json ./
 
 VOLUME ["/data"]
 EXPOSE 42130
 
-# Polls our own /api/health. Docker marks the container unhealthy if
-# the endpoint stops responding — useful for orchestrators (compose,
-# Swarm, Kubernetes) and for `docker ps` at-a-glance.
+# Polls our own /api/health. Docker marks the container unhealthy
+# if the endpoint stops responding — useful for orchestrators
+# (compose, Swarm, Kubernetes) and for `docker ps` at-a-glance.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+process.env.PORT+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 

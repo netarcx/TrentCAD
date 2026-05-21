@@ -2956,19 +2956,30 @@ body.slam-shake {
   overflow: hidden;
 }
 
-/* Local filesystem path, shown only when the project has a local
-   clone (i.e. the status pill is "✓ Local"). Smaller + monospace +
-   muted so it reads as ancillary detail without competing with the
-   project name. Single-line truncation with the full path in
-   `title` for the rare deeply-nested case. */
+/* Local filesystem path, rendered as a peek-on-hover detail under
+   cloned project names. Hidden by default so the rows stay tidy;
+   reveals on row hover/focus with a soft fade. Even fainter than
+   `--text-muted` so it never competes with the name or description
+   when it is showing. Single-line truncation with the full path
+   in the `title` tooltip. */
 .project-list-row-path {
   font-size: 11px;
   font-family: 'SF Mono', Consolas, Monaco, monospace;
   color: var(--text-muted);
-  margin-top: 3px;
+  opacity: 0;
+  max-height: 0;
+  margin-top: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  transition: opacity 0.15s ease-out, max-height 0.15s ease-out, margin-top 0.15s ease-out;
+}
+
+.project-list-row:hover .project-list-row-path,
+.project-list-row:focus-visible .project-list-row-path {
+  opacity: 0.55;
+  max-height: 1.4em;
+  margin-top: 3px;
 }
 
 .project-list-row-status {

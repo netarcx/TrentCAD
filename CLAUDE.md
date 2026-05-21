@@ -4,7 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is FrameCAD
 
-A desktop CAD collaboration tool built for FRC Team 2129. Wraps Git LFS with a user-friendly UI so SolidWorks users can share files without learning Git. Uses check-out/check-in (lock-based) collaboration like GrabCAD Workbench. GitHub is the Git host.
+A desktop CAD collaboration tool built for FRC Team 2129. Wraps Git LFS with a user-friendly UI so SolidWorks users can share files without learning Git. Uses check-out/check-in (lock-based) collaboration like GrabCAD Workbench. GitHub hosts the Git repos; **a self-hosted Giftless container** hosts the LFS objects (so the team isn't billed by GitHub for storage / bandwidth).
+
+## Terminology: "server" vs "client"
+
+Strict, non-overlapping. Don't conflate them:
+- **Server** = the team server. Docker Compose deployment under `server/`. Hosts the admin web UI at port 42130 + the self-hosted Giftless LFS server at 42131. **All administration lives here**: PINs, members, devices, projects, team settings, capabilities, storage quotas, version status, audit log.
+- **Client** = the Electron desktop app under `src/`. Pure end-user surface: project browser, check-out/check-in, sync, publish, parts. Talks to the server over HTTPS for auth + team state. **No admin functionality** — anything that affects the team belongs on the server. The legacy `AdminPage.tsx` is slated for removal/shrinking to client-local prefs only.
 
 ## Build Commands
 
@@ -48,12 +54,18 @@ Self-hosted Node + Fastify + SQLite (via `better-sqlite3`). Replaces the old Git
 
 - `src/index.ts` — entry, migrations, bootstrap PIN
 - `src/db.ts` — SQLite schema (`team`, `members`, `devices`, `pins`, `projects`, `audit_events`)
-- `src/auth.ts` — PIN gen (6-char alphanum), token gen, argon2id hashing, bearer middleware
-- `src/routes/{public,client,admin}.ts` — `/api/enroll`, `/api/me`, `/api/team`, `/api/members`, `/api/projects`, `/api/admin/*`
+- `src/auth.ts` — PIN gen (6-char alphanum), token gen, argon2id hashing, bearer middleware. Reads `X-Client-Version` from every authed request and updates `devices.clientVersion`.
+- `src/version.ts` — Reads server's own version from `package.json`, fetches latest GitHub release (1h cache), HS256 semver-ish comparator. Powers the Dashboard "update available" banner.
+- `src/lfs.ts` — Mints short-lived (15min) HS256 JWTs the desktop client sends to Giftless. Uses `node:crypto.createHmac` — no jose/jsonwebtoken dep.
+- `src/routes/{public,client,admin}.ts` — `/api/enroll`, `/api/me`, `/api/team`, `/api/members`, `/api/projects`, `/api/lfs/token`, `/api/admin/*`, `/api/admin/version-status`
 - `src/bootstrap.ts` — first-launch admin PIN to `data/SETUP_PIN.txt`
-- `ui/` — React admin web UI served at `GET /` (built bundle lands in `dist/ui/`)
+- `ui/` — React admin web UI served at `GET /` (built bundle lands in `dist/ui/`). Pages: `Dashboard`, `Members`, `Pins`, `Projects`, `TeamSettings`. Components: `UpdateBanner`, `CapabilityControls`.
 
-Ships as a Docker image (`server/Dockerfile` + `server/docker-compose.yml`); operators self-host on Unraid / Pi / school server.
+Ships as two Docker images under `server/docker-compose.yml`:
+- **`framecad-server`** (`server/Dockerfile`) — the Node app on port 42130
+- **`framecad-lfs`** (`datopian/giftless`) — LFS object store on port 42131, validates JWTs signed by `framecad-server` using a shared `LFS_JWT_SECRET` env var. Object storage is a host bind-mount at `./data/lfs-objects` (so backups are plain rsync/borg).
+
+Operators self-host on Unraid / Pi / school server. `.env` (next to compose file) must set `LFS_JWT_SECRET`; see `server/.env.example`.
 
 ### SolidWorks add-in (`solidworks-addin/`)
 
@@ -78,12 +90,35 @@ The file browser is the central element (full-width table, not a sidebar tree). 
 
 ## Tech Stack
 
+Desktop client:
 - Electron + React + TypeScript
 - electron-vite (Vite-based build)
 - simple-git (Git CLI wrapper)
 - chokidar (file watching)
 - electron-builder (packaging)
 - @vitejs/plugin-react v4 (must stay v4 for electron-vite/vite 6 compat)
+
+Team server:
+- Node 22 + Fastify + TypeScript
+- better-sqlite3 (synchronous, single-file DB)
+- argon2 (PIN/token hashing)
+- React + Vite (admin web UI bundle served by the same Fastify instance)
+- HS256 JWT signing via node:crypto (no jose/jsonwebtoken dep)
+
+LFS server (separate container):
+- Giftless (Python/Flask, from datopian/giftless) with local filesystem backend
+- HS256 JWT auth — same shared secret as the team server
+
+## Admin onboarding workflow (target UX)
+
+Goal: "Apple-level" — one linear flow on first launch, sensible defaults, skip-able. After consuming the bootstrap PIN from `SETUP_PIN.txt`, the admin web UI walks the operator through:
+
+1. **Team info** — name, GitHub org, project prefix, welcome message
+2. **LFS setup** — confirm the public LFS URL clients will use (the env-default works for single-machine, otherwise the operator types the LAN URL). Test connection button.
+3. **First project** — admin pastes GitHub repo URL → server records the project, ALSO sets the project's storage quota (per-project hard cap; default 10 GB, editable). Storage usage shown live (`5.2 GB / 12 GB` with a progress bar) once data flows.
+4. **First member** — issue a PIN with role + capabilities + project allowlist + auto-open. Skip to do later.
+
+After the wizard, the admin can do anything from the sidebar — wizard is for the first-launch path, not the only path. Subsequent admins don't see it. Per-project quota lives on the Projects page (per-row); not a separate Storage page.
 
 ## Part Numbering (Phase 2)
 

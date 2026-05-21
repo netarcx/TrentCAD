@@ -236,19 +236,27 @@ export default function App() {
     }
   }, [])
 
-  // ── Kiosk auto-open ────────────────────────────────────────────────
-  // When the admin set `autoOpenProjectId` on this member, find the
-  // matching project in the user's recents (matched by repoUrl) and
-  // re-open it without showing the welcome screen. Only runs once
-  // per app launch — closing the project intentionally returns to the
-  // welcome screen for the rest of that session.
+  // ── Auto-open / kiosk mode ─────────────────────────────────────────
+  // Two related behaviours sharing the same effect:
+  //
+  // 1. autoOpenProjectId only (kioskMode=false): SOFT hint. Auto-open
+  //    the matched project once per launch. Closing returns to the
+  //    welcome screen for the rest of the session — the once-per-
+  //    launch guard (`autoOpenAttemptedRef`) prevents a reopen loop.
+  //
+  // 2. autoOpenProjectId + kioskMode=true: HARD lockdown. The user is
+  //    locked into the project. Closing it re-opens immediately,
+  //    welcome screen is never shown. The ref guard is bypassed so
+  //    the effect fires every time `project` goes null.
   const autoOpenAttemptedRef = useRef(false)
+  const kioskMode = !!teamSnapshot?.me?.kioskMode
   useEffect(() => {
-    if (autoOpenAttemptedRef.current) return
     if (project) return                          // already in a project
     if (team.loading) return                     // wait for snapshot
     const target = teamSnapshot?.me?.autoOpenProjectId ?? null
     if (target === null) return
+    // Non-kiosk: don't re-attempt once we've tried this session.
+    if (!kioskMode && autoOpenAttemptedRef.current) return
     const projectEntry = teamSnapshot?.projects?.find(p => p.id === target)
     if (!projectEntry) return
     autoOpenAttemptedRef.current = true
@@ -261,9 +269,12 @@ export default function App() {
         // screen so the user (or admin) can pick "Team Projects" and
         // clone it the first time. Once cloned and reopened it'll be
         // in `recents` for next launch and the auto-open kicks in.
+        // In kiosk mode the welcome screen IS still shown in this
+        // edge case so the operator can finish first-time setup; the
+        // alternative is a blank window with no recovery path.
       } catch { /* let the welcome screen surface the issue */ }
     })()
-  }, [teamSnapshot, team.loading, project, openProject])
+  }, [teamSnapshot, team.loading, project, openProject, kioskMode])
 
   const dismissOnboarding = useCallback(() => {
     localStorage.setItem('framecad-onboarding-seen', '1')
@@ -854,23 +865,37 @@ export default function App() {
       {errorBanner}
 
       <div className="app-header">
-        <button
-          className="logo-home-btn"
-          onClick={() => { setActiveSection('files'); closeProject() }}
-          title="Close this project and return to the welcome screen"
-        >
-          <img className="logo-img" src={logoUrl} alt="FrameCAD" />
-          <span className="logo">FrameCAD</span>
-        </button>
-        <span className="divider" />
-        <button
-          className="back-btn"
-          onClick={() => { setActiveSection('files'); closeProject() }}
-          title="Close this project and go back to the project picker"
-        >
-          <ChevronLeft size={16} strokeWidth={2} />
-          <span>Back</span>
-        </button>
+        {/* In kiosk mode the welcome screen is unreachable by design,
+            so closing/going back is a dead end (the auto-open effect
+            would re-fire). Render the brand as a non-interactive
+            label instead of a button, and drop the back arrow
+            entirely. Non-kiosk users get the usual two-click exit. */}
+        {kioskMode ? (
+          <div className="logo-home-btn" style={{ cursor: 'default' }}>
+            <img className="logo-img" src={logoUrl} alt="FrameCAD" />
+            <span className="logo">FrameCAD</span>
+          </div>
+        ) : (
+          <>
+            <button
+              className="logo-home-btn"
+              onClick={() => { setActiveSection('files'); closeProject() }}
+              title="Close this project and return to the welcome screen"
+            >
+              <img className="logo-img" src={logoUrl} alt="FrameCAD" />
+              <span className="logo">FrameCAD</span>
+            </button>
+            <span className="divider" />
+            <button
+              className="back-btn"
+              onClick={() => { setActiveSection('files'); closeProject() }}
+              title="Close this project and go back to the project picker"
+            >
+              <ChevronLeft size={16} strokeWidth={2} />
+              <span>Back</span>
+            </button>
+          </>
+        )}
         <span className="project-name-label" title={project.path}>{project.name}</span>
         <span className="spacer" />
         <button

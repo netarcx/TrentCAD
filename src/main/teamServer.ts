@@ -260,6 +260,7 @@ export async function refresh(): Promise<TeamSnapshot> {
       },
       allowedProjectIds: me.allowedProjectIds ?? [],
       autoOpenProjectId: me.autoOpenProjectId ?? null,
+      kioskMode: !!me.kioskMode,
     }
     state.team = team
     state.members = members

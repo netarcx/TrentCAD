@@ -11,11 +11,15 @@ export interface MemberCapabilities {
 }
 
 /** Convenience bundle: every form that edits capabilities edits this
- *  shape, and submits the same three fields to the server. */
+ *  shape, and submits the same fields to the server. */
 export interface CapabilityValue {
   capabilities: MemberCapabilities
   allowedProjectIds: number[]
   autoOpenProjectId: number | null
+  /** When true (and `autoOpenProjectId` is set), the desktop runs in
+   *  kiosk lockdown: welcome screen hidden, project auto-reopens
+   *  on close, no escape hatch to other projects. */
+  kioskMode: boolean
 }
 
 export interface ProjectOption {
@@ -32,6 +36,7 @@ export const EMPTY_CAPABILITY_VALUE: CapabilityValue = {
   },
   allowedProjectIds: [],
   autoOpenProjectId: null,
+  kioskMode: false,
 }
 
 export function capCount(c: MemberCapabilities): number {

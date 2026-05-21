@@ -97,6 +97,11 @@ export interface IssuedPin {
   capabilities: MemberCapabilities
   allowedProjectIds: number[]
   autoOpenProjectId: number | null
+  /** When true AND autoOpenProjectId is set, the desktop launches
+   *  into that project and stays there — welcome screen never
+   *  appears, closing the project re-opens it. Locked-down kiosk
+   *  for shared shop computers. */
+  kioskMode: boolean
 }
 
 /**
@@ -121,6 +126,7 @@ export function issuePin(args: {
   capabilities?: MemberCapabilities
   allowedProjectIds?: number[]
   autoOpenProjectId?: number | null
+  kioskMode?: boolean
 }): IssuedPin {
   const now = Date.now()
   const ttl = args.ttlMs === undefined ? DEFAULT_PIN_TTL_MS : args.ttlMs
@@ -137,6 +143,11 @@ export function issuePin(args: {
   )
   const allowedProjectIds = args.allowedProjectIds ?? []
   const autoOpenProjectId = args.autoOpenProjectId ?? null
+  // kioskMode is meaningless without an autoOpenProjectId — there's
+  // nothing to lock into. Silently zero it out instead of erroring;
+  // the admin UI prevents the bad-config combination but a hand-
+  // crafted API call could still set kiosk without a project.
+  const kioskMode = !!args.kioskMode && autoOpenProjectId !== null
 
   // Loop on the very rare PRIMARY-KEY collision. We're not relying on
   // luck — at 6 chars × 32-letter alphabet that's ~10^9 keyspace, and
@@ -146,8 +157,8 @@ export function issuePin(args: {
     try {
       getDb().prepare(
         `INSERT INTO pins (code, role, displayName, githubUsername, expiresAt, createdBy, createdAt,
-                           capabilities, allowedProjectIds, autoOpenProjectId)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                           capabilities, allowedProjectIds, autoOpenProjectId, kioskMode)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         code,
         args.role,
@@ -159,8 +170,9 @@ export function issuePin(args: {
         JSON.stringify(capabilities),
         JSON.stringify(allowedProjectIds),
         autoOpenProjectId,
+        kioskMode ? 1 : 0,
       )
-      return { code, role: args.role, expiresAt, capabilities, allowedProjectIds, autoOpenProjectId }
+      return { code, role: args.role, expiresAt, capabilities, allowedProjectIds, autoOpenProjectId, kioskMode }
     } catch (err) {
       // SQLITE_CONSTRAINT_PRIMARYKEY — try a different code.
       if ((err as { code?: string }).code === 'SQLITE_CONSTRAINT_PRIMARYKEY') continue
@@ -184,6 +196,7 @@ export interface PinRecord {
   /** JSON-encoded number[]. Use parseAllowedProjectIds() to read. */
   allowedProjectIds: string | null
   autoOpenProjectId: number | null
+  kioskMode: number  // SQLite stores boolean as 0/1
 }
 
 /** Convenience: hydrate a raw PinRecord into structured caps + allowlist. */
@@ -191,11 +204,13 @@ export function pinCapabilities(pin: PinRecord): {
   capabilities: MemberCapabilities
   allowedProjectIds: number[]
   autoOpenProjectId: number | null
+  kioskMode: boolean
 } {
   return {
     capabilities: parseCapabilities(pin.capabilities),
     allowedProjectIds: parseAllowedProjectIds(pin.allowedProjectIds),
     autoOpenProjectId: pin.autoOpenProjectId,
+    kioskMode: pin.kioskMode === 1 && pin.autoOpenProjectId !== null,
   }
 }
 
@@ -246,6 +261,7 @@ export interface AuthedMember {
   capabilities: MemberCapabilities
   allowedProjectIds: number[]
   autoOpenProjectId: number | null
+  kioskMode: boolean
 }
 
 export interface AuthedDevice {
@@ -279,7 +295,7 @@ async function findDeviceByToken(token: string): Promise<{
   const rows = getDb().prepare(
     `SELECT d.id AS dId, d.memberId, d.label, d.tokenHash,
             m.id AS mId, m.displayName, m.githubUsername, m.role, m.status,
-            m.capabilities, m.allowedProjectIds, m.autoOpenProjectId
+            m.capabilities, m.allowedProjectIds, m.autoOpenProjectId, m.kioskMode
        FROM devices d
        JOIN members m ON m.id = d.memberId
       WHERE m.status = 'active'`
@@ -296,6 +312,7 @@ async function findDeviceByToken(token: string): Promise<{
     capabilities: string | null
     allowedProjectIds: string | null
     autoOpenProjectId: number | null
+    kioskMode: number
   }>
 
   for (const row of rows) {
@@ -311,6 +328,7 @@ async function findDeviceByToken(token: string): Promise<{
           capabilities: parseCapabilities(row.capabilities),
           allowedProjectIds: parseAllowedProjectIds(row.allowedProjectIds),
           autoOpenProjectId: row.autoOpenProjectId,
+          kioskMode: row.kioskMode === 1 && row.autoOpenProjectId !== null,
         },
       }
     }

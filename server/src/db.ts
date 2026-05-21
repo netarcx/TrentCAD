@@ -200,6 +200,17 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE team ADD COLUMN lfsUrl TEXT;
   `,
+  // v6: kiosk-mode flag on PINs + members. When ON (1) and the row
+  // also has an `autoOpenProjectId`, the desktop client treats this
+  // member as locked into that project: skip the welcome screen,
+  // auto-reopen on close, no escape hatch back to project browsing.
+  // OFF (0, the default) keeps the existing soft-autoopen behavior
+  // where the user is brought into the project on launch but can
+  // still close back to the welcome screen.
+  `
+  ALTER TABLE pins    ADD COLUMN kioskMode INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE members ADD COLUMN kioskMode INTEGER NOT NULL DEFAULT 0;
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

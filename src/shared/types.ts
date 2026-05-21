@@ -291,9 +291,15 @@ export interface MyMember extends TeamMember {
   /** If non-empty AND role==='student', the desktop should only show
    *  these project IDs in the Team Projects list. Empty = unrestricted. */
   allowedProjectIds: number[]
-  /** When set, the desktop should auto-open this project on launch
-   *  (kiosk-style "one PIN, one project"). Null = no auto-open. */
+  /** When set, the desktop should auto-open this project on launch.
+   *  Soft hint by default — closing the project returns to the
+   *  welcome screen for the rest of the session. Null = no auto-open. */
   autoOpenProjectId: number | null
+  /** Full kiosk lockdown. When true (and autoOpenProjectId is set),
+   *  the desktop skips the welcome screen entirely, auto-reopens
+   *  the project on close, and hides any UI that would let the user
+   *  navigate to a different project. For shared shop computers. */
+  kioskMode?: boolean
 }
 
 export interface ProjectEntry {

@@ -53,6 +53,7 @@ interface MemberRow {
   capabilities: string | null
   allowedProjectIds: string | null
   autoOpenProjectId: number | null
+  kioskMode: number
 }
 
 export async function registerPublicRoutes(app: FastifyInstance): Promise<void> {
@@ -103,12 +104,13 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
     const pinCaps = parseCapabilities(pinRow.capabilities)
     const pinAllowlist = parseAllowedProjectIds(pinRow.allowedProjectIds)
     const pinAutoOpen = pinRow.autoOpenProjectId
+    const pinKiosk = (pinRow as { kioskMode?: number }).kioskMode === 1 && pinAutoOpen !== null
 
     if (!member) {
       const result = db.prepare(
         `INSERT INTO members (displayName, githubUsername, role, status, joinedAt,
-                              capabilities, allowedProjectIds, autoOpenProjectId)
-         VALUES (?, ?, ?, 'active', ?, ?, ?, ?)`
+                              capabilities, allowedProjectIds, autoOpenProjectId, kioskMode)
+         VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)`
       ).run(
         displayName,
         githubUsername,
@@ -117,6 +119,7 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
         JSON.stringify(pinCaps),
         JSON.stringify(pinAllowlist),
         pinAutoOpen,
+        pinKiosk ? 1 : 0,
       )
       member = db.prepare(
         `SELECT * FROM members WHERE id = ?`
@@ -154,14 +157,28 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
       // Auto-open: keep the existing one if set; only overwrite when the
       // member had none and the PIN provides one.
       const mergedAutoOpen = member.autoOpenProjectId ?? pinAutoOpen
+      // Kiosk mode: OR-merge so a kiosk PIN can promote an existing
+      // non-kiosk member into kiosk mode, but a non-kiosk re-enroll
+      // never accidentally drops someone out of kiosk. Locked to the
+      // mergedAutoOpen value — kiosk without a project is meaningless.
+      const existingKiosk = member.kioskMode === 1
+      const mergedKiosk = (existingKiosk || pinKiosk) && mergedAutoOpen !== null
       db.prepare(
         `UPDATE members
-            SET capabilities = ?, allowedProjectIds = ?, autoOpenProjectId = ?
+            SET capabilities = ?, allowedProjectIds = ?, autoOpenProjectId = ?,
+                kioskMode = ?
           WHERE id = ?`
-      ).run(JSON.stringify(mergedCaps), JSON.stringify(mergedAllowlist), mergedAutoOpen, member.id)
+      ).run(
+        JSON.stringify(mergedCaps),
+        JSON.stringify(mergedAllowlist),
+        mergedAutoOpen,
+        mergedKiosk ? 1 : 0,
+        member.id,
+      )
       member.capabilities = JSON.stringify(mergedCaps)
       member.allowedProjectIds = JSON.stringify(mergedAllowlist)
       member.autoOpenProjectId = mergedAutoOpen
+      member.kioskMode = mergedKiosk ? 1 : 0
     }
 
     // Mint the device row + bearer token. Token is shown ONCE (in the
@@ -197,6 +214,7 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
         capabilities: parseCapabilities(member.capabilities),
         allowedProjectIds: parseAllowedProjectIds(member.allowedProjectIds),
         autoOpenProjectId: member.autoOpenProjectId,
+        kioskMode: member.kioskMode === 1 && member.autoOpenProjectId !== null,
       },
       team: {
         name: team.name,

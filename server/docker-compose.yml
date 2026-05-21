@@ -108,11 +108,11 @@ services:
     restart: unless-stopped
 
     # Same default port pattern as the team server's 42130. Operators
-    # can remap the left side (`"42131:5000"`) without touching
-    # giftless's internals — the right side is what giftless binds
-    # inside the container.
+    # can remap the left side without touching giftless's internals.
+    # Internal port matches external (42131) so there's no port-number
+    # confusion with whatever else might run on common ports like 5000.
     ports:
-      - "42131:5000"
+      - "42131:42131"
 
     volumes:
       # Object store. Survives container restarts because it's a host
@@ -130,8 +130,9 @@ services:
       # vars (no GIFTLESS_ prefix) as the uWSGI bind args. With
       # PORT unset the launcher binds to `127.0.0.1:${PORT}` —
       # literal string — so nothing outside the container can reach
-      # it. Set both explicitly to expose 0.0.0.0:5000 inside.
-      PORT: "5000"
+      # it. Set both explicitly so we listen on 0.0.0.0:42131 inside
+      # and the container-internal port matches the published port.
+      PORT: "42131"
       HOST: "0.0.0.0"
       # Quiet by default; flip to "true" when chasing a 401.
       GIFTLESS_DEBUG: "false"

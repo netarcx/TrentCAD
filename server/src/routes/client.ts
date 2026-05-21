@@ -87,6 +87,7 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
         capabilities: m.capabilities,
         allowedProjectIds: m.allowedProjectIds,
         autoOpenProjectId: m.autoOpenProjectId,
+        kioskMode: m.kioskMode,
       },
       device: req.device,
     }

@@ -110,8 +110,8 @@ export default function Members() {
       <div className="card">
         <h3>Roster</h3>
         <div className="hint">
-          Change a role to promote / demote a member. Edit caps to control
-          which home-screen buttons they see in FrameCAD.
+          Change a role to promote / demote a member. Set permissions to
+          control which home-screen buttons they see in FrameCAD.
         </div>
         <table>
           <thead>
@@ -165,7 +165,7 @@ export default function Members() {
                       disabled={savingId === m.id}
                       onClick={() => setEditingId(editingId === m.id ? null : m.id)}
                     >
-                      {editingId === m.id ? 'Cancel' : 'Edit caps'}
+                      {editingId === m.id ? 'Cancel' : 'Set Permissions'}
                     </button>
                     <button className="secondary danger" disabled={savingId === m.id} onClick={() => remove(m)}>
                       Remove

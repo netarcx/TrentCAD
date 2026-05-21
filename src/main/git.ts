@@ -617,6 +617,19 @@ async function runJoinClone(
   // persist the values if the --config form ever stops working in a
   // future git version) — it just no-ops on already-set values
   await applyUploadTunings()
+
+  // Ensure .lfsconfig exists pointing at the team's self-hosted LFS
+  // server. Three scenarios:
+  //   - Repo was created by FrameCAD recently → .lfsconfig already
+  //     committed, our write is a no-op overwrite with the same value
+  //   - Repo was created before LFS support → no .lfsconfig in clone,
+  //     we write a fresh one (uncommitted; the user's next publish
+  //     picks it up and ships it to the team)
+  //   - The project isn't on the team-server registry → no-op
+  // Either way, LFS routing for THIS clone now points at the team's
+  // server starting immediately; everyone else picks it up on sync
+  // once a commit including .lfsconfig lands on origin.
+  await writeLfsConfig(dirPath, url).catch(() => null)
 }
 
 /**
@@ -1059,31 +1072,87 @@ export async function publish(
     )
     const largeCandidates = sizes.filter(s => s.size > WARN_BYTES)
     if (largeCandidates.length > 0) {
-      // Batch one `git check-attr filter -- <path>...` to learn which of
-      // the large files are LFS-tracked. Anything matching .gitattributes'
-      // `filter=lfs` is fine at any size up to LFS's 5 GB cap; everything
-      // else is going through regular git and will fail.
-      const checkOut = await g.raw([
-        'check-attr', 'filter', '--',
-        ...largeCandidates.map(s => s.path)
-      ])
-      const lfsPaths = new Set<string>()
-      for (const line of checkOut.split('\n')) {
-        const m = line.match(/^(.+):\s*filter:\s*lfs\s*$/)
-        if (m) lfsPaths.add(m[1].trim())
+      // Helper: ask git which paths currently resolve to the LFS filter
+      // via .gitattributes. Returns a Set of paths that are LFS-tracked.
+      async function lfsTrackedSet(paths: string[]): Promise<Set<string>> {
+        const out = await g.raw(['check-attr', 'filter', '--', ...paths])
+        const set = new Set<string>()
+        for (const line of out.split('\n')) {
+          const m = line.match(/^(.+):\s*filter:\s*lfs\s*$/)
+          if (m) set.add(m[1].trim())
+        }
+        return set
       }
-      const blockers = largeCandidates.filter(s => !lfsPaths.has(s.path))
+
+      let lfsPaths = await lfsTrackedSet(largeCandidates.map(s => s.path))
+      let blockers = largeCandidates.filter(s => !lfsPaths.has(s.path))
+
+      // SELF-HEAL pass. The end-user shouldn't have to understand LFS
+      // tracking — when they drop a big binary (a .sldasm, a .step, a
+      // zip the team-shared CAD pulled in) into the project, FrameCAD
+      // routes it to LFS automatically. We do that by adding their
+      // file extensions to .gitattributes via `git lfs track`, then
+      // re-staging them with --renormalize so the index entry becomes
+      // an LFS pointer instead of a raw blob.
+      //
+      // Files >100 MB that already exist as raw blobs in the staged
+      // commit can't be salvaged this way (LFS can't intercept after
+      // the blob has been written), but the renormalize covers the
+      // common case where the file is in the working tree or in a
+      // local-ahead-of-origin commit that we already reset away
+      // above. Anything still over the 100 MB hard limit after
+      // self-heal falls through to the original error.
+      if (blockers.length > 0) {
+        onProgress?.({
+          phase: 'preparing',
+          files: [],
+          detail: `Setting up LFS for ${blockers.length} large file${blockers.length === 1 ? '' : 's'}…`,
+        })
+        const exts = new Set<string>()
+        for (const b of blockers) {
+          const raw = path.extname(b.path).replace(/^\./, '')
+          if (raw) {
+            // Track both the literal extension and its lower-case
+            // form so a `.SLDASM` and a `.sldasm` both pick up the
+            // same filter. `git lfs track` is idempotent — re-adding
+            // an existing pattern is a no-op.
+            exts.add(raw)
+            exts.add(raw.toLowerCase())
+            exts.add(raw.toUpperCase())
+          }
+        }
+        for (const ext of exts) {
+          try {
+            await g.raw(['lfs', 'track', `*.${ext}`])
+          } catch { /* best-effort — surfaces in the recheck below */ }
+        }
+        // Stage the updated .gitattributes alongside the renormalized
+        // blockers, so the very next commit carries both the rule and
+        // the conversion in one atomic step.
+        try { await g.raw(['add', '.gitattributes']) } catch { /* */ }
+        for (const b of blockers) {
+          try {
+            await g.raw(['add', '--renormalize', b.path])
+          } catch { /* best-effort */ }
+        }
+        // Re-check. Files that are now LFS-tracked drop out of the
+        // blockers list; whatever's left genuinely can't be salvaged
+        // automatically and we surface the original error below.
+        lfsPaths = await lfsTrackedSet(blockers.map(s => s.path))
+        blockers = blockers.filter(s => !lfsPaths.has(s.path))
+      }
+
       if (blockers.length > 0) {
         const list = blockers.map(s =>
           `  - ${s.path} (${(s.size / 1024 / 1024).toFixed(0)} MB)`
         ).join('\n')
         const msg =
-          `${blockers.length} file(s) over 50 MB aren't tracked by Git LFS — ` +
-          `GitHub will reject the push for any of these over 100 MB:\n\n${list}\n\n` +
-          `Fix: either delete these files (installers and large zips usually ` +
-          `don't belong in a CAD repo), or add the extension to .gitattributes ` +
-          `and re-stage them. FrameCAD now LFS-tracks zip/rar/7z/tar/gz/exe/msi ` +
-          `out of the box, so this should auto-resolve on new projects.`
+          `${blockers.length} file(s) over 50 MB couldn't be auto-routed to ` +
+          `Git LFS — these are likely already committed as raw blobs in your ` +
+          `local history:\n\n${list}\n\n` +
+          `To fix: either delete the files (installers and large zips usually ` +
+          `don't belong in a CAD repo), or ask your admin to migrate the ` +
+          `project's LFS tracking via \`git lfs migrate import\`.`
         onProgress?.({ phase: 'error', error: msg })
         return { success: false, error: msg }
       }

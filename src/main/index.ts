@@ -158,7 +158,7 @@ ipcMain.handle('consume-pending-deep-link', () => {
   return parsed
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Cold launch from a deep link (Windows/Linux): URL arrives in argv.
   // Capture before createWindow so handleDeepLink can stash it for the
   // renderer to consume once mounted.
@@ -166,9 +166,18 @@ app.whenReady().then(() => {
     const url = process.argv.find(a => a.startsWith('framecad://'))
     if (url) pendingDeepLink = url
   }
+  // Restore any previously-saved team-server enrollment from disk so
+  // the renderer can read the snapshot synchronously on mount without
+  // waiting for a fetch. Network refresh fires after the window's up.
+  await (await import('./teamServer')).loadFromDisk().catch(() => { /* fresh install */ })
   createWindow()
   startRestServer()
   initAutoUpdater(() => mainWindow)
+  // Kick the first network refresh shortly after the window appears
+  // so the snapshot stays useful — but don't block boot on it.
+  setTimeout(() => {
+    import('./teamServer').then(m => m.refresh()).catch(() => { /* offline */ })
+  }, 1500)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

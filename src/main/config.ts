@@ -68,7 +68,18 @@ interface AppConfig {
     gitHubOrg?: string
     projectPrefix?: string
   }
-  coordinationRepoUrl?: string
+  /**
+   * Team-server enrollment. Set by `teamEnroll`; cleared by `teamSignOut`.
+   * The token here is the plain bearer string — the same one the desktop
+   * sends as `Authorization: Bearer <token>`. We don't hash it locally
+   * because we need to replay it on every request and there's no
+   * benefit to making it harder to read from disk for the user who
+   * already has full filesystem access.
+   */
+  teamServer?: {
+    serverUrl: string
+    token: string
+  }
 }
 
 function getConfigPath(): string {
@@ -160,14 +171,20 @@ export async function getCachedBrowseConfig(): Promise<{ gitHubOrg?: string; pro
   return config.cachedBrowseConfig || {}
 }
 
-export async function getCoordinationRepoUrl(): Promise<string | undefined> {
+export async function getTeamServerSettings(): Promise<{ serverUrl: string; token: string } | null> {
   const config = await readConfig()
-  return config.coordinationRepoUrl
+  return config.teamServer ?? null
 }
 
-export async function setCoordinationRepoUrl(url: string | undefined): Promise<void> {
+export async function setTeamServerSettings(
+  settings: { serverUrl: string; token: string } | null,
+): Promise<void> {
   const config = await readConfig()
-  config.coordinationRepoUrl = url || undefined
+  if (settings) {
+    config.teamServer = { serverUrl: settings.serverUrl, token: settings.token }
+  } else {
+    delete config.teamServer
+  }
   await writeConfig(config)
 }
 
@@ -203,14 +220,16 @@ export async function resetAllAppState(): Promise<void> {
   } catch { /* best effort — fall through to disk wipe */ }
 
   const userData = app.getPath('userData')
-  // Our own JSON files (recent projects, coordination URL, cached browse)
+  // Our own JSON files (recent projects, team-server enrollment, cached browse)
   await fs.rm(path.join(userData, CONFIG_FILE), { force: true })
   // Legacy app-config from the trentcad-era name — clear in case the
   // rename migration left it behind on some installs
   await fs.rm(path.join(userData, LEGACY_CONFIG_FILE), { force: true })
   // Global admin overrides (team name, GitHub org, prefix, welcome message)
   await fs.rm(path.join(userData, 'global-admin.json'), { force: true })
-  // Cloned coordination repo (members.json, team.json, projects.json + .git)
+  // Team-server snapshot cache (refreshed lazily on next enroll)
+  await fs.rm(path.join(userData, 'team-snapshot.json'), { force: true })
+  // Old GitHub coordination repo, if anyone still has it from a pre-team-server install
   await fs.rm(path.join(userData, 'coordination'), { recursive: true, force: true })
   // electron-updater cache so update banners and pending downloads reset
   await fs.rm(path.join(userData, 'pending'), { recursive: true, force: true })

@@ -20,7 +20,8 @@ import ActivityView from './components/ActivityView'
 import PartsManager from './components/PartsManager'
 import ApprovalsPanel from './components/ApprovalsPanel'
 import logoUrl from './assets/logo.png'
-import type { AdminConfig, CoordinationState, DependencyStatus, FileEntry, GlobalAdminConfig, ProjectTotals, PublishProgress, UpdateInfo } from '@shared/types'
+import type { AdminConfig, DependencyStatus, FileEntry, GlobalAdminConfig, ProjectTotals, PublishProgress, UpdateInfo } from '@shared/types'
+import { useTeam } from './hooks/useTeam'
 
 function countByState(files: FileEntry[], state: string): number {
   let count = 0
@@ -88,14 +89,11 @@ export default function App() {
   const [adminConfig, setAdminConfig] = useState<AdminConfig>({})
   const [globalAdmin, setGlobalAdmin] = useState<GlobalAdminConfig>({})
 
-  // Coordination repo state — loaded on mount, refreshed after team actions
-  const [coordState, setCoordState] = useState<CoordinationState>({ configured: false })
-  const refreshCoordState = useCallback(() => {
-    window.api.getCoordinationState()
-      .then(setCoordState)
-      .catch(() => {})
-  }, [])
-  useEffect(() => { refreshCoordState() }, [refreshCoordState])
+  // Team-server snapshot, push-subscribed from main. Replaces the old
+  // coord-repo state. `snapshot` is null until the first IPC primes the
+  // cache (sub-50ms); subsequent updates arrive via push from main.
+  const team = useTeam()
+  const teamSnapshot = team.snapshot
 
   const [localGlobalAdmin, setLocalGlobalAdmin] = useState<GlobalAdminConfig>({})
   const refreshGlobalAdmin = useCallback(() => {
@@ -104,19 +102,20 @@ export default function App() {
       .catch(() => {})
   }, [])
 
-  // Coordination repo team.json takes priority over local/build-time defaults
+  // Server-side team config takes priority over per-machine defaults
+  // once the user is enrolled with a team.
   useEffect(() => {
-    if (coordState.configured && coordState.team) {
+    if (teamSnapshot?.enrolled && teamSnapshot.team) {
       setGlobalAdmin({
-        teamName: coordState.team.teamName ?? localGlobalAdmin.teamName,
-        welcomeMessage: coordState.team.welcomeMessage ?? localGlobalAdmin.welcomeMessage,
-        gitHubOrg: coordState.team.gitHubOrg ?? localGlobalAdmin.gitHubOrg,
-        projectPrefix: coordState.team.projectPrefix ?? localGlobalAdmin.projectPrefix
+        teamName: teamSnapshot.team.name || localGlobalAdmin.teamName,
+        welcomeMessage: teamSnapshot.team.welcomeMessage || localGlobalAdmin.welcomeMessage,
+        gitHubOrg: teamSnapshot.team.gitHubOrg || localGlobalAdmin.gitHubOrg,
+        projectPrefix: teamSnapshot.team.projectPrefix || localGlobalAdmin.projectPrefix,
       })
     } else {
       setGlobalAdmin(localGlobalAdmin)
     }
-  }, [coordState, localGlobalAdmin])
+  }, [teamSnapshot, localGlobalAdmin])
 
   const [showAdmin, setShowAdmin] = useState(false)
 
@@ -167,32 +166,24 @@ export default function App() {
   // subsequent deep-link event (warm app).
   const [deepLinkJoinUrl, setDeepLinkJoinUrl] = useState<string | null>(null)
   const [deepLinkSeq, setDeepLinkSeq] = useState(0)
-  const [deepLinkTeamUrl, setDeepLinkTeamUrl] = useState<string | null>(null)
-  const [deepLinkTeamSeq, setDeepLinkTeamSeq] = useState(0)
   useEffect(() => {
+    // `team` action deep links are no-ops now that team coordination
+    // is a webserver, not a per-team GitHub URL — there's nothing to
+    // pre-fill. Only the project-join (framecad://join?url=…) survives.
     window.api.consumePendingDeepLink().then(payload => {
       if (payload?.action === 'join' && payload.url) {
         setDeepLinkJoinUrl(payload.url)
         setDeepLinkSeq(s => s + 1)
-      } else if (payload?.action === 'team' && payload.url) {
-        setDeepLinkTeamUrl(payload.url)
-        setDeepLinkTeamSeq(s => s + 1)
       }
     }).catch(() => {})
     const cleanup = window.api.onDeepLink(payload => {
       if (payload?.action === 'join' && payload.url) {
         setDeepLinkJoinUrl(payload.url)
         setDeepLinkSeq(s => s + 1)
-      } else if (payload?.action === 'team' && payload.url) {
-        setDeepLinkTeamUrl(payload.url)
-        setDeepLinkTeamSeq(s => s + 1)
       }
     })
     return cleanup
   }, [])
-
-  // Hidden Ctrl+Shift+T hotkey triggers "Create Team" flow
-  const [createTeamSeq, setCreateTeamSeq] = useState(0)
 
   const [ghLoggedIn, setGhLoggedIn] = useState(false)
   const [reportState, setReportState] = useState<'idle' | 'confirm' | 'sending' | 'sent' | 'failed'>('idle')
@@ -356,15 +347,18 @@ export default function App() {
   }, [files, project])
 
   // Role tiers — `isAdmin` ⊇ `isMentor` ⊇ student. Standalone mode
-  // (no coordination repo configured) grants full admin so solo users
-  // aren't locked out of their own app. Once a coord repo is connected
-  // the roles come from members.json.
-  const isAdmin = !coordState.configured || coordState.currentUserRole === 'admin'
-  const isMentor = isAdmin || coordState.currentUserRole === 'mentor'
+  // (not enrolled with a team server) grants full admin so solo users
+  // aren't locked out of their own app. Once enrolled, the roles come
+  // from the team server's snapshot.
+  const enrolled = !!teamSnapshot?.enrolled
+  const myRole = teamSnapshot?.me?.role ?? null
+  const isAdmin = !enrolled || myRole === 'admin'
+  const isMentor = isAdmin || myRole === 'mentor'
 
-  // If a coord-repo sync demotes the user (e.g. mentor → student) while
-  // they're sitting on the Parts section, snap them back to Files so
-  // they aren't staring at a hidden panel (Parts is mentor-gated).
+  // If a server-side demotion takes effect (e.g. admin changed our
+  // role from mentor to student) while we're sitting on the Parts
+  // section, snap back to Files so the user isn't staring at a
+  // hidden panel (Parts is mentor-gated).
   useEffect(() => {
     if (!isMentor && activeSection === 'parts') setActiveSection('files')
   }, [isMentor, activeSection])
@@ -412,12 +406,6 @@ export default function App() {
           return
         }
         openAdminOverlay()
-      }
-      // Ctrl+Shift+T: hidden "Create Team" coordination repo flow
-      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 't') {
-        e.preventDefault()
-        if (!project) setCreateTeamSeq(s => s + 1)
-        return
       }
       // Ctrl+Shift+D: toggle the OpenDyslexic UI font
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'd') {
@@ -742,11 +730,8 @@ export default function App() {
           onOpenProject={openProject}
           prefilledJoinUrl={deepLinkJoinUrl}
           prefilledJoinSeq={deepLinkSeq}
-          prefilledTeamUrl={deepLinkTeamUrl}
-          prefilledTeamSeq={deepLinkTeamSeq}
-          coordState={coordState}
-          onCoordStateChange={refreshCoordState}
-          createTeamSeq={createTeamSeq}
+          teamSnapshot={teamSnapshot}
+          onTeamRefresh={team.refresh}
           onEnterManufacturingView={async () => {
             try {
               const recents = await window.api.getRecentProjects()
@@ -781,7 +766,7 @@ export default function App() {
             onClose={() => {
               setShowAdmin(false)
               refreshGlobalAdmin()
-              refreshCoordState()
+              team.refresh().catch(() => { /* offline */ })
             }}
           />
         )}
@@ -1003,7 +988,7 @@ export default function App() {
           onClose={() => {
             setShowAdmin(false)
             refreshGlobalAdmin()
-            refreshCoordState()
+            team.refresh().catch(() => { /* offline */ })
             refreshAdminConfig()
           }}
         />

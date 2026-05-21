@@ -242,51 +242,65 @@ export interface GlobalAdminState {
   hasLocalOverride: boolean
 }
 
-// ── Coordination Repo ──
+// ── Team Server (self-hosted coordination) ──
+//
+// The desktop client talks to a small Node + SQLite server (see
+// `/server/`) instead of a coordination GitHub repo. The mental
+// model is the same — a roster, a team config, a project registry,
+// roles — but the wire protocol is HTTP + JSON and admin lives in
+// the server's browser UI, not in this app.
 
 export type MemberRole = 'admin' | 'mentor' | 'student'
-export type MemberStatus = 'active' | 'inactive'
 
 export interface TeamConfig {
-  teamName: string
-  welcomeMessage?: string
+  name: string
   gitHubOrg: string
   projectPrefix: string
+  welcomeMessage: string
 }
 
 export interface TeamMember {
-  githubUsername: string
+  id: number
   displayName: string
+  githubUsername: string | null
   role: MemberRole
-  status: MemberStatus
-  joinedAt: string
 }
 
 export interface ProjectEntry {
+  id: number
   name: string
   repoUrl: string
   description?: string
-  createdAt: string
-  archived?: boolean
+  createdAt: number
 }
 
-export interface JoinRequest {
-  issueNumber: number
-  githubUsername: string
-  displayName: string
-  requestedAt: string
+/** What the renderer reads to decide what to render. Mirrors what the
+ *  team server hands back from /api/team, /api/members, /api/projects,
+ *  /api/me — all four bundled so the UI doesn't have to juggle four
+ *  separate fetches. */
+export interface TeamSnapshot {
+  /** True once the user has successfully enrolled. */
+  enrolled: boolean
+  /** Server URL the device is talking to. */
+  serverUrl: string | null
+  /** Current user's member + role + display name. */
+  me: TeamMember | null
+  team: TeamConfig | null
+  members: TeamMember[]
+  projects: ProjectEntry[]
+  /** Epoch ms of the last successful refresh; useful so UI can
+   *  show "last synced" without firing a second call. */
+  lastSyncAt: number | null
+  /** Best-effort error string from the last fetch attempt, or null. */
+  error: string | null
 }
 
-export interface CoordinationState {
-  configured: boolean
-  repoUrl?: string
-  team?: TeamConfig
-  members?: TeamMember[]
-  projects?: ProjectEntry[]
-  isMember?: boolean
-  currentUserRole?: MemberRole
-  pendingRequests?: JoinRequest[]
-  lastSyncAt?: string
+export interface EnrollResult {
+  success: boolean
+  /** Populated only when success === true. */
+  snapshot?: TeamSnapshot
+  /** Populated only when success === false. */
+  error?: string
 }
 
 export interface GitHubRepoSummary {
@@ -419,23 +433,19 @@ export interface IpcApi {
   onPublishProgress(callback: (progress: PublishProgress) => void): () => void
   onJoinProgress(callback: (progress: PublishProgress) => void): () => void
 
-  // Coordination repo
-  getCoordinationState(): Promise<CoordinationState>
-  previewCoordinationRepo(repoUrl: string): Promise<CoordinationState>
-  setupCoordinationRepo(repoUrl: string): Promise<CoordinationState>
-  createCoordinationRepo(org: string, repoName: string): Promise<{ success: boolean; url?: string; error?: string }>
-  syncCoordinationRepo(): Promise<CoordinationState>
-  disconnectCoordinationRepo(): Promise<void>
-  requestToJoinTeam(displayName: string): Promise<{ success: boolean; issueNumber?: number; error?: string }>
-  getPendingJoinRequests(): Promise<JoinRequest[]>
-  approveJoinRequest(githubUsername: string, displayName: string, role: MemberRole, issueNumber: number): Promise<{ orgInviteFailed?: boolean }>
-  denyJoinRequest(issueNumber: number): Promise<void>
-  addTeamMember(member: Omit<TeamMember, 'joinedAt'>): Promise<void>
-  removeTeamMember(githubUsername: string): Promise<void>
-  updateTeamMember(githubUsername: string, updates: Partial<Pick<TeamMember, 'role' | 'status' | 'displayName'>>): Promise<void>
-  saveTeamConfig(config: TeamConfig): Promise<void>
-  addProjectToRegistry(project: Omit<ProjectEntry, 'createdAt'>): Promise<void>
-  removeProjectFromRegistry(repoUrl: string): Promise<void>
+  // Team server (replaces coordination repo).
+  /** Cached snapshot — never hits the network. Returns enrolled=false if no team is wired. */
+  teamGetSnapshot(): Promise<TeamSnapshot>
+  /** Force a fresh fetch from the team server. Updates the cache. */
+  teamRefresh(): Promise<TeamSnapshot>
+  /** Trade a PIN + serverUrl for a bearer token. Stores the token + role locally. */
+  teamEnroll(args: { serverUrl: string; pin: string; deviceLabel?: string }): Promise<EnrollResult>
+  /** Drop the local token + cache. Server-side audit row still records the device. */
+  teamSignOut(): Promise<void>
+  /** Returns the URL to open the admin web UI in a browser (or null when not enrolled). */
+  teamAdminUiUrl(): Promise<string | null>
+  /** Subscribe to push notifications when the cached snapshot changes. */
+  onTeamSnapshot(callback: (snapshot: TeamSnapshot) => void): () => void
 }
 
 declare global {

@@ -240,20 +240,18 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       }
 
       case 'GET /api/coord-state': {
-        // Exposes the current user's coordination-repo role so the
-        // SolidWorks add-in can match desktop's role tiers (e.g. hide
-        // released/manufactured pills for students). Returns minimal
-        // surface — never the full members.json — so we don't leak the
-        // whole roster through the localhost API. Best-effort: any
-        // failure returns { configured: false, role: null } and the
-        // add-in falls back to allowing everything.
+        // Endpoint name kept (and shape preserved) so the SolidWorks
+        // add-in's existing CoordStateDto + role-gating logic keep
+        // working without an add-in code change. Backing data source
+        // is now the team-server cache rather than the old
+        // coordination-repo clone, but the contract is the same.
         try {
-          const coord = await import('./coordination')
-          const state = await coord.getCoordinationState()
+          const team = await import('./teamServer')
+          const snap = team.currentSnapshot()
           json(res, 200, {
-            configured: !!state.configured,
-            role: state.currentUserRole ?? null,
-            isMember: state.isMember ?? false
+            configured: snap.enrolled,
+            role: snap.me?.role ?? null,
+            isMember: snap.enrolled,
           })
         } catch {
           json(res, 200, { configured: false, role: null, isMember: false })

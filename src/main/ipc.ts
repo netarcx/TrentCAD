@@ -21,7 +21,7 @@ import {
   migrateFromCachedBrowseConfig
 } from './global-admin'
 import { addRecentProject, getRecentProjects, getCachedBrowseConfig, setProjectPinned, removeRecentProject, resetAllAppState } from './config'
-import * as coordOps from './coordination'
+import * as teamServer from './teamServer'
 import { setRestProject, clearRestProject, stopRestServer, queuePendingCreate, setRestMainWindow } from './rest'
 import { getThumbnail, clearThumbnailCache } from './thumbnails'
 import type { ProjectConfig } from '@shared/types'
@@ -682,24 +682,26 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     }
   })
 
-  // ── Coordination repo ──
-  ipcMain.handle('get-coordination-state', () => coordOps.getCoordinationState())
-  ipcMain.handle('preview-coordination-repo', (_e, url: string) => coordOps.previewCoordinationRepo(url))
-  ipcMain.handle('setup-coordination-repo', (_e, url: string) => coordOps.setupCoordinationRepo(url))
-  ipcMain.handle('create-coordination-repo', (_e, org: string, name: string) => coordOps.createCoordinationRepo(org, name))
-  ipcMain.handle('sync-coordination-repo', () => coordOps.syncCoordinationRepo())
-  ipcMain.handle('disconnect-coordination-repo', () => coordOps.disconnectCoordinationRepo())
-  ipcMain.handle('request-to-join-team', (_e, displayName: string) => coordOps.requestToJoinTeam(displayName))
-  ipcMain.handle('get-pending-join-requests', () => coordOps.getPendingJoinRequests())
-  ipcMain.handle('approve-join-request', (_e, username: string, displayName: string, role: string, issueNum: number) =>
-    coordOps.approveJoinRequest(username, displayName, role as import('@shared/types').MemberRole, issueNum))
-  ipcMain.handle('deny-join-request', (_e, issueNum: number) => coordOps.denyJoinRequest(issueNum))
-  ipcMain.handle('add-team-member', (_e, member) => coordOps.addTeamMember(member))
-  ipcMain.handle('remove-team-member', (_e, username: string) => coordOps.removeTeamMember(username))
-  ipcMain.handle('update-team-member', (_e, username: string, updates) => coordOps.updateTeamMember(username, updates))
-  ipcMain.handle('save-team-config', (_e, config) => coordOps.saveTeamConfig(config))
-  ipcMain.handle('add-project-to-registry', (_e, project) => coordOps.addProjectToRegistry(project))
-  ipcMain.handle('remove-project-from-registry', (_e, url: string) => coordOps.removeProjectFromRegistry(url))
+  // ── Team server (replaces the old coordination repo) ──
+  // Every team-config / member / project mutation now lives in the
+  // browser admin UI hosted by the team server. The desktop's job is
+  // only to (a) enroll once with a PIN and (b) read snapshots.
+  ipcMain.handle('team-get-snapshot', () => teamServer.currentSnapshot())
+  ipcMain.handle('team-refresh', () => teamServer.refresh())
+  ipcMain.handle('team-enroll', (_e, args: { serverUrl: string; pin: string; deviceLabel?: string }) =>
+    teamServer.enroll(args))
+  ipcMain.handle('team-sign-out', () => teamServer.signOut())
+  ipcMain.handle('team-admin-ui-url', () => teamServer.adminUiUrl())
+
+  // Push snapshot updates to the renderer so the App-level cache
+  // stays current without polling. Each render that subscribes via
+  // onTeamSnapshot gets the same stream.
+  teamServer.onSnapshot(snapshot => {
+    const win = getMainWindow()
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('team-snapshot', snapshot)
+    }
+  })
 }
 
 export { stopWatching, stopRestServer }

@@ -7,12 +7,9 @@ import ErrorMsg from './ErrorMsg'
 import ProfileSetup from './ProfileSetup'
 import PartsManager from './PartsManager'
 import ApprovalsPanel from './ApprovalsPanel'
-import MembersPanel from './settings/MembersPanel'
-import ProjectsPanel from './settings/ProjectsPanel'
-import TeamSettings from './settings/TeamSettings'
 import ProjectSettings from './settings/ProjectSettings'
 
-type AdminTab = 'team-settings' | 'members' | 'projects' | 'project-settings' | 'parts' | 'approvals' | 'documents' | 'locks' | 'health' | 'tools' | 'export-queue' | 'profile' | 'about'
+type AdminTab = 'project-settings' | 'parts' | 'approvals' | 'documents' | 'locks' | 'health' | 'tools' | 'export-queue' | 'profile' | 'about'
 
 interface JoinedPart {
   path: string
@@ -50,26 +47,26 @@ interface SidebarGroup {
 }
 
 export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appVersion, gitName, gitEmail, onProfileUpdate }: Props) {
-  const initialTab: AdminTab = isAdmin
-    ? 'team-settings'
-    : isMentor
-      ? (hasProject ? 'parts' : 'projects')
-      : 'profile'
+  // Team-wide settings (name / members / projects) live in the team
+  // server's browser UI now, not this tab list. What remains here is
+  // project-scoped (Parts Manager, Approvals, etc.) plus Profile/About.
+  const initialTab: AdminTab = isMentor
+    ? (hasProject ? 'parts' : 'profile')
+    : 'profile'
   const [tab, setTab] = useState<AdminTab>(initialTab)
 
-  // If the user's role changes mid-session (e.g. demoted via the
-  // coordination repo refresh), the tab they're on may no longer be
-  // visible to them — snap them back to a tab they can actually see
-  // so they aren't staring at a blank content pane.
+  // If the user's role changes mid-session (e.g. team-server demoted
+  // them), the tab they're on may no longer be visible — snap to a
+  // tab they can actually see so they aren't staring at a blank panel.
   useEffect(() => {
-    const adminOnly: AdminTab[] = ['team-settings', 'members', 'project-settings']
-    const mentorOrAbove: AdminTab[] = ['projects', 'parts', 'approvals', 'documents', 'export-queue', 'locks', 'health', 'tools']
+    const adminOnly: AdminTab[] = ['project-settings']
+    const mentorOrAbove: AdminTab[] = ['parts', 'approvals', 'documents', 'export-queue', 'locks', 'health', 'tools']
     if (adminOnly.includes(tab) && !isAdmin) {
       setTab(initialTab)
     } else if (mentorOrAbove.includes(tab) && !isMentor) {
       setTab('profile')
     } else if ((tab === 'project-settings' || tab === 'parts' || tab === 'approvals' || tab === 'documents' || tab === 'export-queue' || tab === 'locks' || tab === 'health' || tab === 'tools') && !hasProject) {
-      setTab(isAdmin ? 'team-settings' : isMentor ? 'projects' : 'profile')
+      setTab('profile')
     }
   }, [tab, isAdmin, isMentor, hasProject, initialTab])
 
@@ -443,8 +440,12 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
   // Sidebar groups by role tier:
   //   student → Profile, About only
   //   mentor  → student + Project workflow (Parts/Approvals/Docs/Export),
-  //             Maintenance (Locks/Health/Tools), Project Registry
-  //   admin   → mentor + Team (Settings/Members), Project Settings
+  //             Maintenance (Locks/Health/Tools)
+  //   admin   → mentor + Project Settings
+  //
+  // Team-wide configuration (name / members / projects / PINs) lives
+  // on the team server's browser UI. The About tab carries a button
+  // that opens it in the system browser.
   const sidebarGroups: SidebarGroup[] = useMemo(() => {
     if (!isMentor) {
       return [{
@@ -456,16 +457,6 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
       }]
     }
     const groups: SidebarGroup[] = []
-
-    // Team group: admin-only (Team Settings + Members) + the shared
-    // Projects tab (registry) which mentors also see.
-    const teamItems: { id: AdminTab; label: string }[] = []
-    if (isAdmin) {
-      teamItems.push({ id: 'team-settings', label: 'Team Settings' })
-      teamItems.push({ id: 'members', label: 'Members' })
-    }
-    teamItems.push({ id: 'projects', label: 'Projects' })
-    groups.push({ label: 'Team', items: teamItems })
 
     if (hasProject) {
       const projectItems: { id: AdminTab; label: string }[] = []
@@ -523,9 +514,6 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
         </nav>
         <div className="admin-content">
 
-        {tab === 'team-settings' && isAdmin && <TeamSettings />}
-        {tab === 'members' && isAdmin && <MembersPanel isAdmin={isAdmin} />}
-        {tab === 'projects' && isMentor && <ProjectsPanel isMentor={isMentor} />}
         {tab === 'project-settings' && hasProject && isAdmin && <ProjectSettings />}
 
         {tab === 'parts' && hasProject && (
@@ -763,6 +751,51 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
               <p className="admin-hint">
                 Press Ctrl+Shift+R to check for updates manually.
               </p>
+            </div>
+            {isAdmin && (
+              <div className="admin-section">
+                <h3>Team Management</h3>
+                <p className="admin-hint">
+                  Team-wide settings, members, projects, and enrollment
+                  PINs all live in the team server's browser UI.
+                </p>
+                <button
+                  className="toolbar-btn primary"
+                  style={{ marginTop: 8 }}
+                  onClick={async () => {
+                    const url = await window.api.teamAdminUiUrl()
+                    if (!url) {
+                      setStatus(null)
+                      setError('No team server configured — enroll first from the welcome screen.')
+                      return
+                    }
+                    setError(null)
+                    setStatus('Opening team server in your browser…')
+                    await window.api.openExternal(url)
+                  }}
+                >
+                  Manage team in browser
+                </button>
+              </div>
+            )}
+            <div className="admin-section">
+              <h3>Team Membership</h3>
+              <p className="admin-hint">
+                Sign out of your team server. You'll need a fresh PIN
+                from an admin to re-enroll. Your project files and
+                local settings stay untouched.
+              </p>
+              <button
+                className="toolbar-btn"
+                style={{ marginTop: 8 }}
+                onClick={async () => {
+                  if (!window.confirm('Sign out of the team server? You\'ll need a new PIN to re-join.')) return
+                  await window.api.teamSignOut()
+                  setStatus('Signed out of team server.')
+                }}
+              >
+                Sign out of team server
+              </button>
             </div>
             <div className="admin-section">
               <h3>Preferences</h3>

@@ -3,9 +3,9 @@ import { FilePlus2, Search, Download, FolderOpen, Factory, Pin, PinOff, X, Setti
 import logoUrl from '../assets/logo.png'
 import BrowseProjects from './BrowseProjects'
 import TeamProjects from './TeamProjects'
-import TeamSetup from './TeamSetup'
+import TeamEnroll from './TeamEnroll'
 import { prepareSlamSnapshot, triggerWaterSlam } from '../lib/water-slam'
-import type { CoordinationState, GitHubAuthStatus, GlobalAdminConfig, ProjectConfig } from '@shared/types'
+import type { GitHubAuthStatus, GlobalAdminConfig, ProjectConfig, TeamSnapshot } from '@shared/types'
 
 interface Props {
   onCreateProject: (name: string, path: string, remote: string, isCotsProject?: boolean) => Promise<void>
@@ -30,18 +30,14 @@ interface Props {
    *  URL can re-trigger the prefill (e.g. user backs out then clicks
    *  the link again). */
   prefilledJoinSeq?: number
-  /** Team coordination repo deep link URL */
-  prefilledTeamUrl?: string | null
-  prefilledTeamSeq?: number
-  /** Coordination repo state from App-level */
-  coordState?: CoordinationState
-  /** Called after team setup completes to refresh coordination state */
-  onCoordStateChange?: () => void
-  /** Bumped by Ctrl+Shift+T to trigger hidden "Create Team" flow */
-  createTeamSeq?: number
+  /** Team-server snapshot from App level — drives the welcome-screen
+   *  enrollment prompt and the Team Projects browser. */
+  teamSnapshot: TeamSnapshot | null
+  /** Force a fresh fetch from the team server (e.g. after enrollment). */
+  onTeamRefresh?: () => Promise<void>
 }
 
-type Mode = 'select' | 'create' | 'join' | 'open' | 'team-join' | 'team-create'
+type Mode = 'select' | 'create' | 'join' | 'open' | 'enroll'
 
 // Module-scoped so the once-per-session welcome-logo intro animation
 // only plays the first time the welcome screen mounts in this process.
@@ -86,7 +82,7 @@ function installClickWaves(): void {
   )
 }
 
-export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenProject, onEnterManufacturingView, onOpenAdmin, isLoading, globalAdmin, prefilledJoinUrl, prefilledJoinSeq, prefilledTeamUrl, prefilledTeamSeq, coordState, onCoordStateChange, createTeamSeq }: Props) {
+export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenProject, onEnterManufacturingView, onOpenAdmin, isLoading, globalAdmin, prefilledJoinUrl, prefilledJoinSeq, teamSnapshot, onTeamRefresh }: Props) {
   const [mode, setMode] = useState<Mode>('select')
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
@@ -102,16 +98,6 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefilledJoinSeq, prefilledJoinUrl])
-  useEffect(() => {
-    if (prefilledTeamUrl) {
-      setMode('team-join')
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prefilledTeamSeq, prefilledTeamUrl])
-  useEffect(() => {
-    if (createTeamSeq) setMode('team-create')
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [createTeamSeq])
   const [showTeamProjects, setShowTeamProjects] = useState(false)
   const [isCotsProject, setIsCotsProject] = useState(false)
   const [recentProjects, setRecentProjects] = useState<ProjectConfig[]>([])
@@ -691,14 +677,15 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
     }, 280)
   }
 
-  if (mode === 'team-join' || mode === 'team-create') {
+  if (mode === 'enroll') {
     return (
-      <TeamSetup
-        flow={mode === 'team-join' ? 'join' : 'create'}
-        prefilledUrl={mode === 'team-join' ? prefilledTeamUrl : undefined}
+      <TeamEnroll
         onBack={() => setMode('select')}
-        onComplete={() => {
-          onCoordStateChange?.()
+        onEnrolled={() => {
+          // Push will refresh the snapshot, but force a fetch too so
+          // the rest of the welcome screen (team projects panel) sees
+          // the new state on the very next render.
+          onTeamRefresh?.().catch(() => { /* offline */ })
           setMode('select')
         }}
       />
@@ -774,14 +761,14 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
             ))}
           </div>
         )}
-        {(!coordState?.configured || (coordState.configured && !coordState.isMember)) && (
+        {!teamSnapshot?.enrolled && (
           <div className="setup-cards setup-cards-team">
-            <button className="setup-card" onClick={() => setMode('team-join')}>
+            <button className="setup-card" onClick={() => setMode('enroll')}>
               <span className="card-icon"><UserPlus size={32} strokeWidth={1.5} /></span>
-              <span className="card-title">Join Team</span>
-              <span className="card-desc">{coordState?.configured
-                ? <>Request to join<br />{coordState.team?.teamName || 'this team'}</>
-                : <>Connect to your<br />team's coordination repo</>}</span>
+              <span className="card-title">Enroll with Team</span>
+              <span className="card-desc">
+                Enter a PIN from your<br />team's admin
+              </span>
             </button>
           </div>
         )}
@@ -792,18 +779,18 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
             <span className="card-title">Create Project</span>
             <span className="card-desc">Start a new CAD project<br />with version control</span>
           </button>
-          {coordState?.configured && coordState.isMember ? (
+          {teamSnapshot?.enrolled ? (
             <button
               className="setup-card"
               onClick={() => setShowTeamProjects(true)}
-              disabled={!coordState.projects?.length}
-              title={coordState.projects?.length
-                ? 'Browse projects from your team hub'
-                : 'No projects registered in the team hub yet'}
+              disabled={!teamSnapshot.projects?.length}
+              title={teamSnapshot.projects?.length
+                ? 'Browse projects registered in your team server'
+                : 'No projects registered yet — ask your admin'}
             >
               <span className="card-icon"><Users size={32} strokeWidth={1.5} /></span>
               <span className="card-title">Team Projects</span>
-              <span className="card-desc">Browse projects from<br />the team hub</span>
+              <span className="card-desc">Browse projects from<br />the team server</span>
             </button>
           ) : (
             <button
@@ -846,9 +833,9 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
           </button>
         </div>
 
-        {showTeamProjects && coordState?.projects && (
+        {showTeamProjects && teamSnapshot?.projects && (
           <TeamProjects
-            projects={coordState.projects}
+            projects={teamSnapshot.projects}
             onPick={(repoUrl, suggestedName) => {
               setShowTeamProjects(false)
               setUrl(repoUrl)

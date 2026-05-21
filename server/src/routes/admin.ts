@@ -16,6 +16,7 @@ import {
   logAudit,
   parseCapabilities,
   parseAllowedProjectIds,
+  DEFAULT_PROJECT_QUOTA_BYTES,
   type Role,
   type MemberCapabilities,
 } from '../db.js'
@@ -277,7 +278,25 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
   // ── Projects ───────────────────────────────────────────────────────
 
-  app.post<{ Body: { name?: string; repoUrl?: string; description?: string } }>(
+  app.get('/api/admin/projects', async () => {
+    // The client-facing /api/projects strips quota info (students
+    // don't need it); this admin variant returns the full row so
+    // the Projects page can render usage indicators and quota inputs.
+    const rows = getDb().prepare(
+      `SELECT id, name, repoUrl, description, archived, createdAt,
+              quotaBytes, storageBytes, storageScannedAt
+         FROM projects
+        ORDER BY archived ASC, createdAt DESC`
+    ).all()
+    return { projects: rows }
+  })
+
+  app.post<{ Body: {
+    name?: string
+    repoUrl?: string
+    description?: string
+    quotaBytes?: number | null
+  } }>(
     '/api/admin/projects',
     async (req, reply) => {
       const name = (req.body?.name ?? '').trim()
@@ -285,11 +304,19 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       if (!name || !repoUrl) {
         return reply.code(400).send({ error: 'name and repoUrl are required' })
       }
+      // Quota: explicit number wins; explicit null means "unlimited";
+      // missing means "use the default" (admin didn't have to think).
+      const quota =
+        req.body?.quotaBytes === null
+          ? null
+          : typeof req.body?.quotaBytes === 'number' && Number.isFinite(req.body.quotaBytes)
+            ? Math.max(0, Math.floor(req.body.quotaBytes))
+            : DEFAULT_PROJECT_QUOTA_BYTES
       try {
         const result = getDb().prepare(
-          `INSERT INTO projects (name, repoUrl, description, createdAt)
-           VALUES (?, ?, ?, ?)`
-        ).run(name, repoUrl, (req.body?.description ?? '').trim(), Date.now())
+          `INSERT INTO projects (name, repoUrl, description, createdAt, quotaBytes)
+           VALUES (?, ?, ?, ?, ?)`
+        ).run(name, repoUrl, (req.body?.description ?? '').trim(), Date.now(), quota)
         logAudit({
           actorId: req.member!.id,
           actorLabel: req.member!.displayName,
@@ -304,6 +331,53 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         }
         throw err
       }
+    },
+  )
+
+  // Edit project metadata — currently only the quota is mutable from
+  // the admin UI. (name / repoUrl could be added here later; for now
+  // the operator deletes + recreates if they got those wrong, which
+  // is fine since the desktop hasn't memorised the project id yet.)
+  app.patch<{ Params: { id: string }; Body: { quotaBytes?: number | null } }>(
+    '/api/admin/projects/:id',
+    async (req, reply) => {
+      const id = Number.parseInt(req.params.id, 10)
+      if (!Number.isFinite(id)) {
+        return reply.code(400).send({ error: 'Invalid project id' })
+      }
+      const updates: string[] = []
+      const values: Array<number | null> = []
+      if ('quotaBytes' in (req.body ?? {})) {
+        const q = req.body!.quotaBytes
+        const next = q === null
+          ? null
+          : typeof q === 'number' && Number.isFinite(q)
+            ? Math.max(0, Math.floor(q))
+            : undefined
+        if (next === undefined) {
+          return reply.code(400).send({ error: 'quotaBytes must be a number or null' })
+        }
+        updates.push('quotaBytes = ?')
+        values.push(next)
+      }
+      if (updates.length === 0) {
+        return reply.code(400).send({ error: 'No mutable fields supplied' })
+      }
+      values.push(id)
+      const result = getDb().prepare(
+        `UPDATE projects SET ${updates.join(', ')} WHERE id = ?`
+      ).run(...values)
+      if (result.changes === 0) {
+        return reply.code(404).send({ error: 'Project not found' })
+      }
+      logAudit({
+        actorId: req.member!.id,
+        actorLabel: req.member!.displayName,
+        action: 'project.update',
+        target: `project:${id}`,
+        detail: Object.keys(req.body ?? {}).join(','),
+      })
+      return { success: true }
     },
   )
 

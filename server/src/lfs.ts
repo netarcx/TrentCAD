@@ -43,14 +43,21 @@ function base64Url(buf: Buffer): string {
 }
 
 /**
- * Mint a JWT for the given member to talk to the LFS server.
+ * Mint a JWT for the given member to talk to the LFS server, scoped
+ * to a single project. The desktop calls this once per project it
+ * touches; a token issued for project 7 cannot read or write
+ * project 12's objects (giftless validates the URL against the
+ * scopes claim).
  *
- * Claims follow Giftless's expected shape (subject, name, scopes):
- *   - `sub`  member id, useful for the LFS server's audit log
- *   - `name` display name, same reason
- *   - `scopes` array — `obj:verify`, `obj:read`, `obj:write`. We
- *     hand out all three; per-project read-only access is gated at
- *     the team-server level (the project allowlist), not here.
+ * Claims follow Giftless's expected shape:
+ *   - `sub`     member id (giftless's audit trail)
+ *   - `name`    display name
+ *   - `scopes`  list of `<action>:<org>/<repo>` strings. We always
+ *               grant `obj:verify` + `obj:read` for the requested
+ *               project; `obj:write` is dropped when `writable` is
+ *               false (quota exceeded), which is how the read-only
+ *               degraded mode works — clients can still pull, just
+ *               can't push.
  *
  * Throws if LFS isn't configured — the caller (the route) should
  * have already returned 503 in that case.
@@ -58,6 +65,8 @@ function base64Url(buf: Buffer): string {
 export function mintLfsToken(args: {
   memberId: number
   displayName: string
+  projectId: number
+  writable: boolean
 }): { token: string; expiresAt: number } {
   if (!config.lfsJwtSecret) {
     throw new Error('LFS_JWT_SECRET is not configured')
@@ -65,13 +74,23 @@ export function mintLfsToken(args: {
   const now = Math.floor(Date.now() / 1000)
   const exp = now + TOKEN_TTL_SECONDS
 
+  // Project scope must match the URL prefix the desktop will hit on
+  // giftless: <lfs-url>/framecad/<id>/... Giftless reads the path as
+  // `org/repo` and checks the scopes claim contains a matching entry.
+  const scopeTarget = `framecad/${args.projectId}`
+  const scopes = [
+    `obj:verify:${scopeTarget}`,
+    `obj:read:${scopeTarget}`,
+    ...(args.writable ? [`obj:write:${scopeTarget}`] : []),
+  ]
+
   const header = { alg: 'HS256', typ: 'JWT' }
   const payload = {
     sub: String(args.memberId),
     name: args.displayName,
     iat: now,
     exp,
-    scopes: ['obj:verify', 'obj:read', 'obj:write'],
+    scopes,
   }
   const h = base64Url(Buffer.from(JSON.stringify(header)))
   const p = base64Url(Buffer.from(JSON.stringify(payload)))

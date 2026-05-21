@@ -176,7 +176,28 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE devices ADD COLUMN clientVersion TEXT;
   `,
+  // v4: per-project storage quota for the self-hosted LFS server.
+  // quotaBytes is the hard cap (NULL = unlimited; we set a 10GB
+  // default at insert time so the admin doesn't have to think about
+  // it upfront). storageBytes is the most-recently-scanned disk
+  // usage under that project's LFS prefix; updated lazily on every
+  // /api/lfs/token call and shown in the admin Projects page.
+  // setupComplete on the team row gates the first-launch wizard —
+  // flipped to 1 once the admin walks through team info + first
+  // project + first member.
+  `
+  ALTER TABLE projects ADD COLUMN quotaBytes   INTEGER;
+  ALTER TABLE projects ADD COLUMN storageBytes INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE projects ADD COLUMN storageScannedAt INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE team     ADD COLUMN setupComplete INTEGER NOT NULL DEFAULT 0;
+  `,
 ]
+
+/** Default quota applied when an admin creates a project without an
+ *  explicit cap. 10 GiB — enough headroom for a robot's CAD without
+ *  needing to think about it on day one. Admin can change it any
+ *  time, or set it to NULL for unlimited. */
+export const DEFAULT_PROJECT_QUOTA_BYTES = 10 * 1024 * 1024 * 1024
 
 function ensureDb(): Db {
   if (db) return db

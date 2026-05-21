@@ -46,6 +46,14 @@ export const config = {
    *  default docker-compose layout this is `http://<host>:42131`.
    *  Set via env: LFS_SERVER_URL. */
   lfsServerUrl: process.env.LFS_SERVER_URL || null,
+
+  /** Path inside the team-server container to the LFS object store
+   *  (the SAME bind-mount giftless writes to, but mounted read-only
+   *  here so we can scan disk usage for quota enforcement). When
+   *  null the scanner returns 0 for every project — quotas still
+   *  display in the admin UI but aren't enforced. The compose file
+   *  mounts this at `/lfs-storage`. Set via env: LFS_STORAGE_DIR. */
+  lfsStorageDir: process.env.LFS_STORAGE_DIR || null,
 } as const
 
 export type AppConfig = typeof config

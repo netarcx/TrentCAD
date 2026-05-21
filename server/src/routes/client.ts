@@ -12,6 +12,7 @@ import { getDb, type Role, type MemberStatus } from '../db.js'
 import { requireDevice } from '../auth.js'
 import { config } from '../config.js'
 import { lfsEnabled, mintLfsToken } from '../lfs.js'
+import { scanProjectStorage } from '../storage.js'
 
 interface TeamRow {
   name: string
@@ -116,27 +117,89 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
   // ── Self-hosted LFS ────────────────────────────────────────────────
 
   // Mint a short-lived JWT for the calling member to use against the
-  // self-hosted LFS server (Giftless). Giftless validates the signature
-  // with the same shared secret this server uses to sign — neither end
-  // talks to the other directly. Returns 503 when LFS isn't configured
-  // on this deployment so the caller can fall back gracefully.
-  app.post('/api/lfs/token', async (req, reply) => {
-    if (!lfsEnabled()) {
-      return reply.code(503).send({
-        error: 'Self-hosted LFS is not configured on this server',
+  // self-hosted LFS server (Giftless). The token is scoped to ONE
+  // project, identified by `projectId` in the body — giftless will
+  // reject any request whose URL doesn't match the scope, so a token
+  // for project 7 can never read or write project 12's objects.
+  //
+  // Quota enforcement happens here on the way in: we rescan the
+  // project's on-disk footprint, update the cached value, and if
+  // we're over the configured cap we mint a READ-ONLY token. The
+  // desktop sees a 403 from giftless on push but pulls still work,
+  // so existing work isn't stranded.
+  app.post<{ Body: { projectId?: unknown } }>(
+    '/api/lfs/token',
+    async (req, reply) => {
+      if (!lfsEnabled()) {
+        return reply.code(503).send({
+          error: 'Self-hosted LFS is not configured on this server',
+        })
+      }
+      const projectIdRaw = req.body?.projectId
+      const projectId =
+        typeof projectIdRaw === 'number' && Number.isFinite(projectIdRaw)
+          ? projectIdRaw
+          : Number.parseInt(String(projectIdRaw ?? ''), 10)
+      if (!Number.isFinite(projectId) || projectId <= 0) {
+        return reply.code(400).send({ error: 'projectId is required' })
+      }
+
+      const project = getDb().prepare(
+        `SELECT id, name, quotaBytes, storageBytes FROM projects WHERE id = ?`
+      ).get(projectId) as {
+        id: number
+        name: string
+        quotaBytes: number | null
+        storageBytes: number
+      } | undefined
+      if (!project) {
+        return reply.code(404).send({ error: 'Project not found' })
+      }
+
+      // Enforce per-member project allowlist — if a student has a
+      // non-empty allowlist and this project isn't on it, no token.
+      // (Admins/mentors aren't allowlisted; they can always push.)
+      const m = req.member!
+      if (m.role === 'student' && m.allowedProjectIds.length > 0
+          && !m.allowedProjectIds.includes(projectId)) {
+        return reply.code(403).send({ error: 'Project not in your allowlist' })
+      }
+
+      // Re-scan disk usage; cache back into the projects row so the
+      // admin Projects page shows fresh numbers without a separate
+      // scheduler. Best-effort: on scan failure, fall back to the
+      // cached value rather than blocking the token issue.
+      let currentBytes = project.storageBytes
+      try {
+        currentBytes = await scanProjectStorage(projectId)
+        getDb().prepare(
+          `UPDATE projects SET storageBytes = ?, storageScannedAt = ? WHERE id = ?`
+        ).run(currentBytes, Date.now(), projectId)
+      } catch { /* keep cached value */ }
+
+      const overQuota = project.quotaBytes !== null
+        && currentBytes >= project.quotaBytes
+
+      const { token, expiresAt } = mintLfsToken({
+        memberId: m.id,
+        displayName: m.displayName,
+        projectId,
+        writable: !overQuota,
       })
-    }
-    const m = req.member!
-    const { token, expiresAt } = mintLfsToken({
-      memberId: m.id,
-      displayName: m.displayName,
-    })
-    return {
-      token,
-      expiresAt,
-      url: config.lfsServerUrl,
-    }
-  })
+
+      return {
+        token,
+        expiresAt,
+        url: config.lfsServerUrl,
+        projectId,
+        writable: !overQuota,
+        quota: {
+          used: currentBytes,
+          limit: project.quotaBytes,  // null = unlimited
+        },
+      }
+    },
+  )
 
   app.get('/api/members', async req => {
     const member = req.member!

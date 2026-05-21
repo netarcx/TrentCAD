@@ -62,6 +62,11 @@ services:
     # if you'd rather Docker manage it.
     volumes:
       - ./data:/data
+      # Read-only mount of the LFS object store so the team server
+      # can scan per-project disk usage for quota enforcement. ONLY
+      # the giftless container should ever write here; this `:ro`
+      # flag makes that explicit and survives a misconfiguration.
+      - ./data/lfs-objects:/lfs-storage:ro
 
     environment:
       <<: *shared-env
@@ -77,6 +82,11 @@ services:
       # their network — `localhost` only works for the operator's own
       # machine. Override in .env (LFS_SERVER_URL).
       LFS_SERVER_URL: ${LFS_SERVER_URL:-http://localhost:42131}
+      # Path where the LFS object store is mounted INSIDE this
+      # container — must match the right-hand side of the volume
+      # binding above. The team server reads this dir to compute
+      # per-project usage for quota enforcement.
+      LFS_STORAGE_DIR: /lfs-storage
 
     # `compose` doesn't need the Dockerfile's HEALTHCHECK to be
     # redeclared, but we surface a label for the user so `docker ps`

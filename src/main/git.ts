@@ -1151,6 +1151,35 @@ function randomCommitMessage(): string {
   return `${pick()}-${pick()}-${pick()}`
 }
 
+// Ask git which of the given paths currently resolve to the LFS
+// filter via .gitattributes. Returns a Set of LFS-tracked paths.
+//
+// Batched because `git check-attr filter -- <path> <path> ...` puts
+// every path on the argv, and Windows' CreateProcess caps the whole
+// command line near 32 KB. A big SolidWorks assembly import (several
+// hundred deep-nested COTS files) blew past that limit and produced
+// `spawn ENAMETOOLONG`. Path lengths in CAD repos average ~100 chars
+// with the deep `COTS/<vendor>/<family>/...` hierarchy, so we hold
+// each batch to 100 paths — comfortably under the limit with room
+// for the git binary path and other argv overhead.
+async function checkAttrLfsBatched(
+  g: SimpleGit,
+  paths: string[],
+): Promise<Set<string>> {
+  const set = new Set<string>()
+  if (paths.length === 0) return set
+  const BATCH = 100
+  for (let i = 0; i < paths.length; i += BATCH) {
+    const batch = paths.slice(i, i + BATCH)
+    const out = await g.raw(['check-attr', 'filter', '--', ...batch])
+    for (const line of out.split('\n')) {
+      const m = line.match(/^(.+):\s*filter:\s*lfs\s*$/)
+      if (m) set.add(m[1].trim())
+    }
+  }
+  return set
+}
+
 export async function publish(
   message: string,
   onProgress?: (p: PublishProgress) => void
@@ -1302,19 +1331,7 @@ export async function publish(
     )
     const largeCandidates = sizes.filter(s => s.size > WARN_BYTES)
     if (largeCandidates.length > 0) {
-      // Helper: ask git which paths currently resolve to the LFS filter
-      // via .gitattributes. Returns a Set of paths that are LFS-tracked.
-      async function lfsTrackedSet(paths: string[]): Promise<Set<string>> {
-        const out = await g.raw(['check-attr', 'filter', '--', ...paths])
-        const set = new Set<string>()
-        for (const line of out.split('\n')) {
-          const m = line.match(/^(.+):\s*filter:\s*lfs\s*$/)
-          if (m) set.add(m[1].trim())
-        }
-        return set
-      }
-
-      let lfsPaths = await lfsTrackedSet(largeCandidates.map(s => s.path))
+      let lfsPaths = await checkAttrLfsBatched(g, largeCandidates.map(s => s.path))
       let blockers = largeCandidates.filter(s => !lfsPaths.has(s.path))
 
       // SELF-HEAL pass. The end-user shouldn't have to understand LFS
@@ -1368,7 +1385,7 @@ export async function publish(
         // Re-check. Files that are now LFS-tracked drop out of the
         // blockers list; whatever's left genuinely can't be salvaged
         // automatically and we surface the original error below.
-        lfsPaths = await lfsTrackedSet(blockers.map(s => s.path))
+        lfsPaths = await checkAttrLfsBatched(g, blockers.map(s => s.path))
         blockers = blockers.filter(s => !lfsPaths.has(s.path))
       }
 
@@ -1465,14 +1482,7 @@ export async function publish(
     // self-hosted Giftless endpoint. We auto-write `.lfsconfig` when
     // we can; we refuse the publish when we can't (project not
     // registered → admin task, not a thing the user can self-serve).
-    const stagedAttrs = files.length > 0
-      ? await g.raw(['check-attr', 'filter', '--', ...files])
-      : ''
-    const stagedLfsFiles: string[] = []
-    for (const line of stagedAttrs.split('\n')) {
-      const m = line.match(/^(.+):\s*filter:\s*lfs\s*$/)
-      if (m) stagedLfsFiles.push(m[1].trim())
-    }
+    const stagedLfsFiles = [...await checkAttrLfsBatched(g, files)]
     if (stagedLfsFiles.length > 0) {
       const remotes = await g.getRemotes(true)
       const origin = remotes.find(r => r.name === 'origin')

@@ -350,10 +350,15 @@ export default function App() {
   // (not enrolled with a team server) grants full admin so solo users
   // aren't locked out of their own app. Once enrolled, the roles come
   // from the team server's snapshot.
-  const enrolled = !!teamSnapshot?.enrolled
+  // While the team snapshot is still priming (snapshot===null right
+  // after window mount), treat the user as enrolled / lowest-privilege
+  // so we don't briefly flash the standalone-admin UI to someone who
+  // has a persisted enrollment. Once the snapshot lands, the real
+  // values take over via the next render.
+  const enrolled = team.loading ? true : !!teamSnapshot?.enrolled
   const myRole = teamSnapshot?.me?.role ?? null
-  const isAdmin = !enrolled || myRole === 'admin'
-  const isMentor = isAdmin || myRole === 'mentor'
+  const isAdmin = team.loading ? false : (!enrolled || myRole === 'admin')
+  const isMentor = team.loading ? false : (isAdmin || myRole === 'mentor')
 
   // If a server-side demotion takes effect (e.g. admin changed our
   // role from mentor to student) while we're sitting on the Parts

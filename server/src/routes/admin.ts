@@ -196,13 +196,13 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
   app.patch<{ Body: {
     name?: string
-    githubOrg?: string
+    gitHubOrg?: string
     projectPrefix?: string
     welcomeMessage?: string
   } }>('/api/admin/team', async req => {
     const updates: string[] = []
     const values: string[] = []
-    for (const field of ['name', 'githubOrg', 'projectPrefix', 'welcomeMessage'] as const) {
+    for (const field of ['name', 'gitHubOrg', 'projectPrefix', 'welcomeMessage'] as const) {
       if (typeof req.body?.[field] === 'string') {
         updates.push(`${field} = ?`)
         values.push(req.body[field]!.trim())

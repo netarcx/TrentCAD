@@ -33,7 +33,7 @@ export default function TeamProjects({ projects, onPick, onClose }: Props) {
       <div className="modal browse-modal" onClick={e => e.stopPropagation()}>
         <h2>Team Projects</h2>
         <p className="admin-hint">
-          Projects registered in the team coordination repo.
+          Projects your admin has registered with the team server.
           Click <em>Join</em> to clone one locally.
         </p>
 

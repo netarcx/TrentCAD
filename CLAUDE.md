@@ -16,8 +16,15 @@ npm run package    # Build + create installer (outputs to dist/)
 
 ## Architecture
 
-**Electron app** with three processes:
-- **Main process** (`src/main/`) — Git operations, file locking, file watching, IPC handlers
+The repo holds three deliverables side by side:
+1. **FrameCAD desktop** — the Electron app the user lives in (`src/`)
+2. **FrameCAD team server** — a self-hosted Node + SQLite service that coordinates desktop clients (`server/`)
+3. **FrameCAD SolidWorks add-in** — a COM-registered C# add-in (`solidworks-addin/`)
+
+### Desktop (Electron, `src/`)
+
+Three processes:
+- **Main process** (`src/main/`) — Git operations, file locking, file watching, IPC handlers, team-server client
 - **Preload** (`src/preload.ts`) — Bridges main ↔ renderer via `contextBridge`
 - **Renderer** (`src/renderer/`) — React UI
 
@@ -25,15 +32,32 @@ npm run package    # Build + create installer (outputs to dist/)
 - `git.ts` — All Git/LFS operations (create, clone, sync, publish, status, history). Uses `simple-git` npm package.
 - `locking.ts` — Check-out/check-in via `git lfs lock`/`unlock`
 - `parts.ts` — Part numbering system (`parts.json` manifest, auto-assign, create new part/assembly)
+- `teamServer.ts` — Talks to the team server (enroll, refresh, sign out). Owns the in-memory snapshot + persists `serverUrl + token` to `framecad-app.json`.
 - `rest.ts` — Local REST API server on port 42129 for SolidWorks add-in communication
 - `ipc.ts` — All `ipcMain.handle()` registrations + chokidar file watcher
-- `config.ts` — App config (recent projects) persisted in Electron userData
+- `config.ts` — App config (recent projects, team-server enrollment) persisted in Electron userData
 
 **Renderer:**
-- `hooks/useGit.ts` — Single hook managing all project state and IPC calls
-- Components: `ProjectSetup` (create/join/open wizard), `ProjectBrowser` (full-width file table with Name/Part #/Status/Checked Out By columns), `Toolbar` (sync/publish/check-out/check-in/new part/new assembly), `ActivityFeed` (collapsible bottom panel), `DetailsPanel` (right sidebar for selected file info)
+- `hooks/useGit.ts` — Single hook managing project state and IPC calls
+- `hooks/useTeam.ts` — Push-subscribed accessor for the team snapshot (replaces the old `useCoordState`)
+- Components: `ProjectSetup` (welcome screen), `ProjectBrowser`, `Toolbar`, `ActivityFeed`, `DetailsPanel`, `AdminPage` (Settings overlay), `TeamEnroll` (server-URL + PIN screen)
 
-**SolidWorks add-in** (`solidworks-addin/`) — C# add-in (.NET Framework 4.8) that integrates with SolidWorks via COM. Communicates with FrameCAD's REST API to show part numbers, file status, and enable check-out/check-in/sync/publish from within SolidWorks.
+### Team server (`server/`)
+
+Self-hosted Node + Fastify + SQLite (via `better-sqlite3`). Replaces the old GitHub coordination-repo. Single team per server instance.
+
+- `src/index.ts` — entry, migrations, bootstrap PIN
+- `src/db.ts` — SQLite schema (`team`, `members`, `devices`, `pins`, `projects`, `audit_events`)
+- `src/auth.ts` — PIN gen (6-char alphanum), token gen, argon2id hashing, bearer middleware
+- `src/routes/{public,client,admin}.ts` — `/api/enroll`, `/api/me`, `/api/team`, `/api/members`, `/api/projects`, `/api/admin/*`
+- `src/bootstrap.ts` — first-launch admin PIN to `data/SETUP_PIN.txt`
+- `ui/` — React admin web UI served at `GET /` (built bundle lands in `dist/ui/`)
+
+Ships as a Docker image (`server/Dockerfile` + `server/docker-compose.yml`); operators self-host on Unraid / Pi / school server.
+
+### SolidWorks add-in (`solidworks-addin/`)
+
+C# .NET Framework 4.8, COM-registered, talks to the desktop's REST API on `127.0.0.1:42129`. Same `/api/coord-state` shape as before — backing data now comes from `teamServer.ts` instead of the old coord-repo clone, so no add-in code changes were needed.
 
 **Shared types** in `src/shared/types.ts` — used by both main and renderer.
 

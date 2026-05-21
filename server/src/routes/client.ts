@@ -13,7 +13,7 @@ import { requireDevice } from '../auth.js'
 
 interface TeamRow {
   name: string
-  githubOrg: string
+  gitHubOrg: string
   projectPrefix: string
   welcomeMessage: string
   updatedAt: number
@@ -57,11 +57,35 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     }
   })
 
+  /**
+   * Self-revoke the calling device. Used by FrameCAD desktop's
+   * `teamSignOut` so a sign-out cleans up the device row on the
+   * server instead of leaving an orphan record + a still-valid
+   * token in the audit trail.
+   *
+   * Returns 200 even if the device was already gone (idempotent —
+   * the desktop calls this best-effort and shouldn't fail to
+   * sign-out locally just because the network blipped).
+   */
+  app.delete('/api/me/device', async req => {
+    const deviceId = req.device?.id
+    if (!deviceId) return { success: true }
+    const { getDb, logAudit } = await import('../db.js')
+    getDb().prepare(`DELETE FROM devices WHERE id = ?`).run(deviceId)
+    logAudit({
+      actorId: req.member?.id ?? null,
+      actorLabel: req.member?.displayName ?? 'unknown',
+      action: 'device.self-revoke',
+      target: `device:${deviceId}`,
+    })
+    return { success: true }
+  })
+
   app.get('/api/team', async () => {
     const team = getDb().prepare(`SELECT * FROM team WHERE id = 1`).get() as TeamRow
     return {
       name: team.name,
-      githubOrg: team.githubOrg,
+      gitHubOrg: team.gitHubOrg,
       projectPrefix: team.projectPrefix,
       welcomeMessage: team.welcomeMessage,
       updatedAt: team.updatedAt,

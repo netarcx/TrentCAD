@@ -14,17 +14,22 @@ let mainWindow: BrowserWindow | null = null
 // once it has mounted.
 let pendingDeepLink: string | null = null
 
-function parseFrameCADUrl(rawUrl: string): { action: 'join' | 'team'; url: string } | null {
+function parseFrameCADUrl(rawUrl: string): { action: 'join'; url: string } | null {
   try {
     const u = new URL(rawUrl)
     if (u.protocol !== 'framecad:') return null
     // Both `framecad://join?url=...` (host=join) and `framecad:join?url=...`
     // (pathname=join) are valid depending on the platform's URL parser.
+    //
+    // Only `join` is supported today — `team?url=...` from the
+    // coordination-repo era is intentionally ignored (silently). If
+    // someone clicks an old README link, the app focuses to the
+    // welcome screen and they enroll with a PIN like normal.
     const action = u.hostname || u.pathname.replace(/^\/+/, '').split('/')[0]
-    if (action === 'join' || action === 'team') {
+    if (action === 'join') {
       const target = u.searchParams.get('url')
       if (!target) return null
-      return { action, url: target }
+      return { action: 'join', url: target }
     }
     return null
   } catch {

@@ -25,7 +25,7 @@ interface EnrollBody {
 interface TeamRow {
   id: number
   name: string
-  githubOrg: string
+  gitHubOrg: string
   projectPrefix: string
   welcomeMessage: string
   updatedAt: number
@@ -136,7 +136,7 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
       },
       team: {
         name: team.name,
-        githubOrg: team.githubOrg,
+        gitHubOrg: team.gitHubOrg,
         projectPrefix: team.projectPrefix,
         welcomeMessage: team.welcomeMessage,
       },

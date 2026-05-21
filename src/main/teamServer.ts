@@ -250,12 +250,20 @@ export async function refresh(): Promise<TeamSnapshot> {
   } catch (err) {
     const e = err as Error & { status?: number }
     // 401 means our token's no good — the admin probably revoked our
-    // device. Clear everything so the next render shows the enroll
-    // screen instead of a forever-broken cached state.
+    // device. Clear EVERY snapshot field so the welcome screen flips
+    // cleanly back to the enroll card instead of carrying stale
+    // member / project data across the role transition for one render.
     if (e.status === 401) {
       state.token = null
       state.me = null
+      state.team = null
+      state.members = []
+      state.projects = []
+      state.lastSyncAt = null
+      // Keep state.serverUrl so the enroll form can default to the
+      // last server they used.
       void persistEnrollment()
+      void fs.rm(snapshotCachePath(), { force: true })
       state.error = 'Your device was removed from the team. Re-enroll to continue.'
     } else {
       state.error = e.message
@@ -266,6 +274,16 @@ export async function refresh(): Promise<TeamSnapshot> {
 }
 
 export async function signOut(): Promise<void> {
+  // Best-effort: tell the server to revoke our device row before we
+  // throw away the token locally. If the network's down or the server
+  // already revoked us, swallow the error — the local sign-out has to
+  // succeed either way. Done BEFORE clearing local state so we still
+  // have the token to authenticate the DELETE.
+  if (state.token && state.serverUrl) {
+    try {
+      await fetchTeamApi('/api/me/device', { method: 'DELETE', timeoutMs: 3000 })
+    } catch { /* nothing actionable */ }
+  }
   state.serverUrl = null
   state.token = null
   state.me = null

@@ -38,7 +38,7 @@ const MIGRATIONS: string[] = [
   CREATE TABLE team (
     id              INTEGER PRIMARY KEY CHECK (id = 1),
     name            TEXT NOT NULL DEFAULT 'My Team',
-    githubOrg       TEXT NOT NULL DEFAULT '',
+    gitHubOrg       TEXT NOT NULL DEFAULT '',
     projectPrefix   TEXT NOT NULL DEFAULT '',
     welcomeMessage  TEXT NOT NULL DEFAULT '',
     updatedAt       INTEGER NOT NULL
@@ -126,7 +126,7 @@ export function migrate(): void {
   if (teamCount.n === 0) {
     const now = Date.now()
     conn.prepare(
-      `INSERT INTO team (id, name, githubOrg, projectPrefix, welcomeMessage, updatedAt)
+      `INSERT INTO team (id, name, gitHubOrg, projectPrefix, welcomeMessage, updatedAt)
        VALUES (1, ?, '', '', '', ?)`
     ).run('My Team', now)
   }

@@ -137,7 +137,7 @@ src/
     parts.ts                    # Part numbering engine + manifest management
     meta.ts                     # Per-part metadata (.framecad/parts-meta.json)
     admin.ts                    # Per-project admin config (.framecad/admin.json)
-    coordination.ts             # Coordination repo (members.json, team.json, projects.json)
+    teamServer.ts               # Team-server client (enroll, refresh, snapshot cache)
     global-admin.ts             # Install-wide admin settings + defaults from GH secrets
     rest.ts                     # Local REST API server
     documents.ts                # Build-season doc generation (CSV + MD + PDF)
@@ -160,13 +160,30 @@ src/
         ActivityFeed.tsx        # Collapsible commit history
         DetailsPanel.tsx        # Selected file info sidebar with per-part metadata
         AdminPage.tsx           # Settings panel (Ctrl+Shift+A); role-gated tabs
-        TeamSetup.tsx           # Coordination repo onboarding (create / join team)
-        settings/               # Self-contained sub-panels (TeamSettings, MembersPanel, etc.)
+        TeamEnroll.tsx          # Team-server enrollment (server URL + 6-char PIN)
+        settings/               # Per-project settings sub-panel
         BrowseProjects.tsx      # Org-scoped repo browser
         ManufacturingQueue.tsx  # Tabbed shop view
         OnboardingTour.tsx      # First-launch tour
+      hooks/
+        useTeam.ts              # Push-subscribed accessor for the team snapshot
       styles/
         global.css              # All styles
+
+server/                         # Self-hosted FrameCAD team server (Docker)
+  src/
+    index.ts                    # Fastify entry, bootstrap, route registration
+    db.ts                       # SQLite schema + migrations
+    auth.ts                     # PIN gen, token gen, argon2id, bearer middleware
+    bootstrap.ts                # First-launch admin PIN
+    routes/
+      public.ts                 # /api/health, /api/enroll
+      client.ts                 # /api/me, /api/team, /api/members, /api/projects
+      admin.ts                  # /api/admin/* (CRUD on PINs, members, projects, team)
+  ui/                           # React admin web UI served at GET /
+    src/                        # Vite + React, builds to ../dist/ui/
+  Dockerfile
+  docker-compose.yml
 
 solidworks-addin/               # C# SolidWorks add-in (separate project, Windows-only)
   FrameCAD.SolidWorksAddin/
@@ -259,13 +276,13 @@ The add-in requires FrameCAD (the Electron app) to be running with a project ope
 
 ## Settings page
 
-Access via **Ctrl+Shift+A** from anywhere in the app, or click the Settings gear in the sidebar. What you see depends on your role in the coordination repo:
+Access via **Ctrl+Shift+A** from anywhere in the app, or click the Settings gear in the sidebar. What you see depends on your role from the team server (or full admin if you haven't enrolled — standalone mode):
 
 - **Student**: Profile + About + per-user preferences (screensaver toggle).
 - **Mentor**: above + Project workflow (Parts Manager, Approvals, Documents, Export Queue), Maintenance (Locks, Health, Tools), Project Registry.
 - **Admin**: above + Team Settings, Member roster, per-project Settings (part numbering, COTS, LFS, weekly tags), factory reset.
 
-Standalone mode (no coordination repo configured) grants full admin so solo users aren't locked out. Enforcement is UI-only — the real security boundary is GitHub org write access (push fails without it).
+Standalone mode (not enrolled with a team server) grants full admin so solo users aren't locked out. Enforcement is UI-only — the real security boundary is GitHub org write access (push fails without it).
 
 ### Build-time secrets
 

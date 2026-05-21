@@ -3,13 +3,13 @@ import { api, ApiError } from '../api'
 
 interface Team {
   name: string
-  githubOrg: string
+  gitHubOrg: string
   projectPrefix: string
   welcomeMessage: string
 }
 
 export default function TeamSettings() {
-  const [team, setTeam] = useState<Team>({ name: '', githubOrg: '', projectPrefix: '', welcomeMessage: '' })
+  const [team, setTeam] = useState<Team>({ name: '', gitHubOrg: '', projectPrefix: '', welcomeMessage: '' })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
@@ -64,7 +64,7 @@ export default function TeamSettings() {
           projects use the prefix automatically.
         </div>
         <label>GitHub organization</label>
-        <input value={team.githubOrg} onChange={e => setTeam({ ...team, githubOrg: e.target.value })} placeholder="netarcx" />
+        <input value={team.gitHubOrg} onChange={e => setTeam({ ...team, gitHubOrg: e.target.value })} placeholder="netarcx" />
 
         <label>Project name prefix</label>
         <input value={team.projectPrefix} onChange={e => setTeam({ ...team, projectPrefix: e.target.value })} placeholder="framecad-" />

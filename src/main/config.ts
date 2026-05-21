@@ -173,7 +173,17 @@ export async function getCachedBrowseConfig(): Promise<{ gitHubOrg?: string; pro
 
 export async function getTeamServerSettings(): Promise<{ serverUrl: string; token: string } | null> {
   const config = await readConfig()
-  return config.teamServer ?? null
+  const ts = config.teamServer
+  // Defensive shape check — a hand-edited or partially-written JSON
+  // could land us with a non-string here, which downstream
+  // `state.serverUrl.replace(...)` would explode on. Treat any
+  // malformed payload as "not enrolled" so the user is asked to
+  // re-enroll instead of crashing the main process.
+  if (!ts || typeof ts.serverUrl !== 'string' || typeof ts.token !== 'string'
+      || !ts.serverUrl.trim() || !ts.token.trim()) {
+    return null
+  }
+  return { serverUrl: ts.serverUrl, token: ts.token }
 }
 
 export async function setTeamServerSettings(

@@ -29,7 +29,7 @@ export interface PartReleaseInfo {
 export type ManufacturingMethod = 'print' | 'cnc' | 'manual' | 'other'
 
 export interface DeepLinkPayload {
-  action: 'join' | 'team'
+  action: 'join'
   url: string
 }
 

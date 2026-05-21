@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 
-interface Team { name: string; githubOrg: string; projectPrefix: string; welcomeMessage: string }
+interface Team { name: string; gitHubOrg: string; projectPrefix: string; welcomeMessage: string }
 interface Member { id: number; displayName: string; role: string }
 interface Project { id: number; name: string; repoUrl: string }
 interface Device { id: number; label: string; lastSeenAt: number; displayName: string; role: string }
@@ -31,8 +31,8 @@ export default function Dashboard() {
     <>
       <h1>{team?.name ?? 'Loading…'}</h1>
       <div className="sub">
-        {team?.githubOrg
-          ? `GitHub: ${team.githubOrg}${team.projectPrefix ? ` · prefix ${team.projectPrefix}` : ''}`
+        {team?.gitHubOrg
+          ? `GitHub: ${team.gitHubOrg}${team.projectPrefix ? ` · prefix ${team.projectPrefix}` : ''}`
           : 'Configure your team in Settings to get started.'}
       </div>
 

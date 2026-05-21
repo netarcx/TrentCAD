@@ -7,7 +7,9 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc -p .",
+    "dev:ui": "npm --prefix ui run dev",
+    "build": "npm run build:ui && tsc -p .",
+    "build:ui": "npm --prefix ui install --no-audit --no-fund && npm --prefix ui run build",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

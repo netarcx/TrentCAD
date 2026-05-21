@@ -4,6 +4,24 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- Apply saved/system theme BEFORE CSS loads so we don't flash the
+         wrong palette for a frame. Mirrors the logic in theme.ts but
+         inline + minimal — must run synchronously. The full module
+         (with the prefers-color-scheme live-update listener) takes
+         over inside main.tsx. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('framecad-admin-theme');
+          if (t !== 'light' && t !== 'dark') {
+            t = matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+          }
+          document.documentElement.setAttribute('data-theme', t);
+        } catch (_) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
     <title>FrameCAD Team Server</title>
   </head>
   <body>

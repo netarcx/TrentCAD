@@ -226,7 +226,7 @@ export default function Wizard() {
   // ── Render ─────────────────────────────────────────────────────────
 
   if (!state) {
-    return <div style={{ padding: 30, color: '#737373' }}>Loading…</div>
+    return <div style={{ padding: 30, color: 'var(--text-muted)' }}>Loading…</div>
   }
 
   // If somehow we end up here after setup has already been marked

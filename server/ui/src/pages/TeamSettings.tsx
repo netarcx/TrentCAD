@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, ApiError } from '../api'
 import { clearSession } from '../auth'
+import { getStoredTheme, setStoredTheme, type ThemeChoice } from '../theme'
 
 interface Team {
   name: string
@@ -25,6 +26,9 @@ export default function TeamSettings() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
+  // Theme picker — client-only setting, persisted to localStorage.
+  // The choice 'system' follows the OS prefers-color-scheme.
+  const [theme, setThemeState] = useState<ThemeChoice>(getStoredTheme())
   // Reset flow has three stages: closed → confirm-1 → confirm-2 →
   // post-reset (showing the new PIN before kicking back to sign-in).
   const [resetStage, setResetStage] = useState<'closed' | 'confirm1' | 'confirm2' | 'done'>('closed')
@@ -127,6 +131,28 @@ export default function TeamSettings() {
         <button className="primary" onClick={save} disabled={busy}>
           {busy ? 'Saving…' : 'Save changes'}
         </button>
+      </div>
+
+      <div className="card">
+        <h3>Appearance</h3>
+        <div className="hint">
+          Theme is a per-browser preference — not stored on the team server.
+          "System" follows the OS's light/dark setting and updates live when
+          you flip it (e.g. macOS auto-dark at sunset).
+        </div>
+        <label>Theme</label>
+        <select
+          value={theme}
+          onChange={e => {
+            const next = e.target.value as ThemeChoice
+            setThemeState(next)
+            setStoredTheme(next)
+          }}
+        >
+          <option value="system">System (follow OS)</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
       </div>
 
       {/* ── Danger zone ─────────────────────────────────────────────

@@ -1,5 +1,12 @@
 /* FrameCAD palette — kept in lockstep with the desktop client's
-   global.css so the two surfaces feel like one product. */
+   global.css so the two surfaces feel like one product.
+   The `:root` defaults are DARK; a `data-theme="light"` attribute
+   on <html> swaps the surface + text vars to a light palette. The
+   accent purple is the brand colour and stays put on both themes —
+   it just shifts slightly darker on light mode so it has enough
+   contrast against white surfaces. JS at theme.ts:initTheme() sets
+   the attribute based on localStorage + the OS's prefers-color-
+   scheme on app start, and re-applies on changes. */
 :root {
   --bg-primary: #1d1d1d;
   --bg-secondary: #181818;
@@ -20,6 +27,33 @@
   --border: #353535;
   --radius: 6px;
   --mono: 'SF Mono', Consolas, Monaco, monospace;
+  /* Shadow used by elevated cards. Stronger on dark so the
+     surface separation reads; lighter on light to avoid muddy
+     halos. */
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --bg-primary: #fafafa;
+  --bg-secondary: #f4f4f5;
+  --bg-surface: #ffffff;
+  --bg-hover: #f4f4f5;
+  --bg-selected: #ede9fe;        /* light accent tint */
+  --bg-input: #ffffff;
+  --text-primary: #18181b;
+  --text-secondary: #52525b;
+  --text-muted: #71717a;
+  --accent: #7c3aed;             /* darker purple for AA contrast on white */
+  --accent-hover: #6d28d9;
+  --accent-tint: rgba(124, 58, 237, 0.08);
+  --green: #15803d;
+  --yellow: #a16207;
+  --red: #be123c;
+  --red-tint: rgba(190, 18, 60, 0.08);
+  --border: #e4e4e7;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06);
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }

@@ -126,7 +126,7 @@ function AdminShell() {
   }
 
   if (checking) {
-    return <div style={{ padding: 30, color: '#737373' }}>Loading…</div>
+    return <div style={{ padding: 30, color: 'var(--text-muted)' }}>Loading…</div>
   }
 
   return (

@@ -1,5 +1,18 @@
+# What NOT to send to the Docker daemon during build.
+#
+# Crucially this excludes node_modules — they're host-specific (native
+# .node files compiled against the host's libc) and the image
+# rebuilds its own. Same for dist/ and any local DB.
 node_modules
+**/node_modules
 dist
+**/dist
 data
 *.log
 .DS_Store
+
+# Files only useful outside the build (compose, docs, dotignore).
+docker-compose.yml
+docker-compose.*.yml
+README.md
+.gitignore

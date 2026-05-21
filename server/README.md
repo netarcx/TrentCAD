@@ -3,20 +3,54 @@
 Self-hosted coordination server for FrameCAD desktop clients. Replaces
 the old GitHub coordination-repo with a small Node + SQLite service.
 
-## Quick start
+## Quick start (recommended: docker compose)
+
+From this directory (`server/`):
+
+```bash
+docker compose up -d
+```
+
+That builds the image locally, starts the container, exposes the API +
+admin web UI on port 42130, and bind-mounts `./data` for the database
+and setup-PIN file.
+
+Look up the first-launch admin PIN — it's printed in the logs and also
+saved to disk:
+
+```bash
+docker compose logs framecad-server | grep PIN
+# or
+cat ./data/SETUP_PIN.txt
+```
+
+Paste that PIN into FrameCAD desktop's "Enroll with Team" screen along
+with your server URL (e.g. `http://localhost:42130`) to claim admin.
+Open the admin web UI in any browser at the same URL.
+
+To stop:
+
+```bash
+docker compose down
+```
+
+To wipe and start over (delete the database):
+
+```bash
+docker compose down
+rm -rf ./data
+docker compose up -d
+```
+
+## Plain docker run (if you'd rather not use compose)
 
 ```bash
 docker run -d \
   --name framecad-server \
   -p 42130:42130 \
-  -v framecad-data:/data \
-  ghcr.io/netarcx/framecad-server:latest
+  -v "$(pwd)/data:/data" \
+  $(docker build -q .)
 ```
-
-Look at the container logs (`docker logs framecad-server`) or the
-file at `/data/SETUP_PIN.txt` for the first-launch admin PIN. Paste it
-into FrameCAD desktop's "Enroll with team server" screen along with
-your server URL (e.g. `http://localhost:42130`) to claim admin.
 
 ## Local dev
 

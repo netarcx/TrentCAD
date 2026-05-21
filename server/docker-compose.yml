@@ -1,0 +1,59 @@
+# docker compose up
+#
+# Self-hosted FrameCAD team server. One container, one volume for the
+# SQLite DB, no external services. Tested with Docker 24+ / Compose v2.
+#
+# After `docker compose up -d`:
+#   - the server is reachable at http://<host>:42130
+#   - the first-launch admin PIN appears in `docker compose logs -f`
+#     AND in ./data/SETUP_PIN.txt (bind-mounted from the host)
+#   - paste that PIN into FrameCAD desktop's "Enroll with Team" screen
+#
+# Persistence: SQLite + the setup-PIN file live under ./data on the
+# host (bind mount, not a named volume) so the team admin can grep
+# the PIN file directly — `cat ./data/SETUP_PIN.txt` — without
+# needing `docker exec`. Wipe ./data to start over from scratch.
+
+services:
+  framecad-server:
+    # Build locally from the Dockerfile in this directory. Once we
+    # publish to a registry, uncomment `image:` and remove `build:` to
+    # pull the prebuilt image instead.
+    build: .
+    # image: ghcr.io/netarcx/framecad-server:latest
+    container_name: framecad-server
+    restart: unless-stopped
+
+    # Expose the API + admin web UI on the host's port 42130. Change
+    # the left-hand number to remap, e.g. "8080:42130" to expose on 8080.
+    ports:
+      - "42130:42130"
+
+    # Bind mount the data directory so the operator can read
+    # SETUP_PIN.txt and back up framecad.db without `docker exec`.
+    # Swap to a named volume (see the `volumes:` block at the bottom)
+    # if you'd rather Docker manage it.
+    volumes:
+      - ./data:/data
+
+    environment:
+      # Override any of these from the host environment or a .env file;
+      # values here are the documented defaults for clarity.
+      PORT: 42130
+      HOST: 0.0.0.0
+      DATA_DIR: /data
+      LOG_LEVEL: info
+
+    # `compose` doesn't need the Dockerfile's HEALTHCHECK to be
+    # redeclared, but we surface a label for the user so `docker ps`
+    # shows what the service is.
+    labels:
+      org.opencontainers.image.title: FrameCAD Team Server
+      org.opencontainers.image.description: Self-hosted coordination server for FrameCAD desktop clients
+
+# Uncomment to switch from bind mount to a Docker-managed named volume.
+# In that mode you'd `docker compose exec framecad-server cat /data/SETUP_PIN.txt`
+# to read the bootstrap PIN.
+#
+# volumes:
+#   framecad-data:

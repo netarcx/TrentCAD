@@ -168,6 +168,17 @@ export interface PublishProgress {
   percent?: number
   detail?: string
   error?: string
+  /** Per-file detail for the LFS transfer that's currently active.
+   *  Populated during `phase === 'uploading'` when the git-lfs
+   *  GIT_LFS_PROGRESS hook is wired up. The renderer shows this
+   *  as a second progress line below the overall bar. Reads from
+   *  whichever object git-lfs reported most recently — concurrent
+   *  transfers (up to 12 at a time) all share this single field. */
+  currentFile?: {
+    path: string
+    bytesTransferred: number
+    totalBytes: number
+  }
 }
 
 export interface DependencyStatus {

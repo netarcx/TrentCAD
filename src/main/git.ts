@@ -1,5 +1,7 @@
 import simpleGit, { SimpleGit } from 'simple-git'
 import path from 'path'
+import os from 'os'
+import { createReadStream } from 'fs'
 import fs from 'fs/promises'
 import type { FileEntry, FileState, HistoryEntry, PartsManifest, PublishProgress, PublishResult, SyncResult } from '@shared/types'
 import { getLocks, verifyLocks } from './locking'
@@ -311,6 +313,67 @@ export async function refreshLfsAuth(
 }
 
 /**
+ * Tail a git-lfs progress file (the path passed to GIT_LFS_PROGRESS)
+ * and emit each new line as a structured per-file event.
+ *
+ * git-lfs writes one line per transfer tick in the format:
+ *   <direction> <files-done> <files-total> <bytes-done> <bytes-total> <name>
+ *
+ * Lines are LF-terminated; the file grows monotonically (no truncation
+ * mid-push) so we just remember the byte offset we last read up to
+ * and grab everything new each poll. Concurrent transfers (git-lfs
+ * runs up to 12 in parallel) interleave their lines — we forward the
+ * MOST-RECENT line each tick, which gives the user a "current file"
+ * impression in their mental model even though multiple are in flight.
+ *
+ * Returns a `stop()` cleanup that cancels the watcher; the caller is
+ * responsible for `fs.rm`-ing the progress file afterwards.
+ */
+function tailLfsProgress(
+  file: string,
+  onLine: (cf: NonNullable<PublishProgress['currentFile']>) => void,
+): () => void {
+  let offset = 0
+  let stopped = false
+
+  function drain(): void {
+    if (stopped) return
+    const stream = createReadStream(file, { start: offset, encoding: 'utf-8' })
+    let buf = ''
+    stream.on('data', chunk => { buf += chunk })
+    stream.on('end', () => {
+      if (buf.length === 0) return
+      offset += Buffer.byteLength(buf, 'utf-8')
+      // Use only the last complete line — partial line at the end (if
+      // any) gets dropped, which is fine because git-lfs writes
+      // overlapping/redundant progress ticks; the next drain catches
+      // the next complete one.
+      const lines = buf.split('\n').filter(l => l.length > 0)
+      const last = lines[lines.length - 1]
+      if (!last) return
+      // Split on whitespace, max 6 chunks so the filename (which can
+      // contain spaces) stays intact as the trailing field.
+      const m = last.match(/^(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/)
+      if (!m) return
+      onLine({
+        path: m[6],
+        bytesTransferred: Number.parseInt(m[4], 10),
+        totalBytes: Number.parseInt(m[5], 10),
+      })
+    })
+    stream.on('error', () => { /* file might not exist yet — fine */ })
+  }
+
+  // 200 ms poll is fast enough that the UI feels live without
+  // saturating the disk on a fast push.
+  const id = setInterval(drain, 200)
+  return () => {
+    stopped = true
+    clearInterval(id)
+  }
+}
+
+/**
  * Ensure every CAD-related pattern FrameCAD knows about is present in
  * .gitattributes. Adds missing lines without rewriting any custom rules
  * the user added. Returns true if the file was modified.
@@ -458,8 +521,21 @@ export async function joinProject(
   await addSafeDirectory(path.dirname(dirPath))
   onProgress?.({ phase: 'preparing', files: [], detail: 'Starting clone…' })
 
+  // Mirror the publish() tail setup so a clone's LFS smudge phase
+  // also surfaces per-file bytes to the renderer. Created/cleaned
+  // around the whole clone so we don't lose any of the smudge events.
+  const lfsProgressFile = path.join(
+    os.tmpdir(),
+    `framecad-lfs-progress-${Date.now()}-${process.pid}-join.log`,
+  )
+  let stopLfsTail: (() => void) | null = null
+  try { await fs.writeFile(lfsProgressFile, '') } catch { /* ignore */ }
+  stopLfsTail = tailLfsProgress(lfsProgressFile, cf => {
+    onProgress?.({ phase: 'uploading', currentFile: cf })
+  })
+
   try {
-    await runJoinClone(url, dirPath, onProgress)
+    await runJoinClone(url, dirPath, onProgress, lfsProgressFile)
     onProgress?.({ phase: 'done', files: [], percent: 100, detail: 'Project ready' })
   } catch (err) {
     // Without this, the renderer's progress modal sits in "Downloading"
@@ -467,13 +543,17 @@ export async function joinProject(
     // outer catch returns an error but the modal doesn't know.
     onProgress?.({ phase: 'error', error: (err as Error).message })
     throw err
+  } finally {
+    stopLfsTail?.()
+    await fs.rm(lfsProgressFile, { force: true }).catch(() => null)
   }
 }
 
 async function runJoinClone(
   url: string,
   dirPath: string,
-  onProgress?: (p: PublishProgress) => void
+  onProgress?: (p: PublishProgress) => void,
+  lfsProgressFile?: string,
 ): Promise<void> {
   await withDubiousOwnershipRecovery(async () => {
     // simple-git surfaces git's --progress lines through this callback
@@ -494,6 +574,11 @@ async function runJoinClone(
       }
     })
     cloneGit.env('GIT_CLONE_PROTECTION_ACTIVE', 'false')
+    if (lfsProgressFile) {
+      // Hook git-lfs's progress file so the tail watcher in
+      // joinProject() can surface per-file smudge bytes to the UI.
+      cloneGit.env('GIT_LFS_PROGRESS', lfsProgressFile)
+    }
 
     // Inject the GitHub token directly into the clone URL. Packaged
     // Linux builds launched from a .desktop file can't reliably reach
@@ -969,6 +1054,21 @@ export async function publish(
   onProgress?: (p: PublishProgress) => void
 ): Promise<PublishResult> {
   const g = getGit()
+  // GIT_LFS_PROGRESS file + tail watcher live for the whole publish so
+  // multiple push phases all stream into the same progress signal.
+  // Created upfront, cleaned up unconditionally in the outer finally.
+  const lfsProgressFile = path.join(
+    os.tmpdir(),
+    `framecad-lfs-progress-${Date.now()}-${process.pid}.log`,
+  )
+  let stopLfsTail: (() => void) | null = null
+  try {
+    await fs.writeFile(lfsProgressFile, '')
+    stopLfsTail = tailLfsProgress(lfsProgressFile, cf => {
+      onProgress?.({ phase: 'uploading', currentFile: cf })
+    })
+  } catch { /* fall through — progress just won't have per-file detail */ }
+
   try {
     // Refresh LFS auth header up front so git-lfs's pre-push hook
     // (and any verify/upload calls during this publish) talk to the
@@ -1204,6 +1304,10 @@ export async function publish(
           }
         }
       })
+      // Hook git-lfs's progress file so the tail watcher above can
+      // surface per-file transfer bytes to the renderer. No-op when
+      // the file failed to initialise; we just lose per-file detail.
+      pushGit.env('GIT_LFS_PROGRESS', lfsProgressFile)
       pushGit.outputHandler((_bin, _stdout, stderr) => {
         stderr.on('data', (chunk: Buffer) => {
           const text = chunk.toString()
@@ -1363,6 +1467,12 @@ export async function publish(
       error: remoteGone ?? errMsg,
       remoteGone: remoteGone !== null,
     }
+  } finally {
+    // Always tear down the tail watcher + remove the progress file,
+    // even on uncaught errors. Cleanup is best-effort — a leaked temp
+    // file isn't a correctness issue (os.tmpdir() gets nuked on reboot).
+    stopLfsTail?.()
+    await fs.rm(lfsProgressFile, { force: true }).catch(() => null)
   }
 }
 

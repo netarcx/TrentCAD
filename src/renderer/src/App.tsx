@@ -753,6 +753,41 @@ export default function App() {
             <span className="publish-progress-pct">{publishProgress.percent}%</span>
           </div>
         )}
+        {/* Per-file detail — populated by the GIT_LFS_PROGRESS tail.
+            Renders below the overall bar so the user sees "X out of Y
+            files done, currently uploading Z at 30%" at a glance. The
+            minimized mini-bar (when the modal is hidden) deliberately
+            omits this; it's only useful when the user is actually
+            watching the modal. */}
+        {publishProgress.currentFile && publishProgress.currentFile.totalBytes > 0 && (() => {
+          const cf = publishProgress.currentFile
+          const filePct = Math.min(100, Math.round(
+            (cf.bytesTransferred / cf.totalBytes) * 100,
+          ))
+          const fileName = cf.path.split(/[/\\]/).pop() || cf.path
+          const fmt = (n: number): string => {
+            if (n < 1024) return `${n} B`
+            if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+            if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
+            return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
+          }
+          return (
+            <div className="publish-current-file">
+              <div className="publish-current-file-label" title={cf.path}>
+                <span className="publish-current-file-name">{fileName}</span>
+                <span className="publish-current-file-bytes">
+                  {fmt(cf.bytesTransferred)} / {fmt(cf.totalBytes)}
+                </span>
+              </div>
+              <div className="publish-current-file-bar">
+                <div
+                  className="publish-current-file-fill"
+                  style={{ width: `${filePct}%` }}
+                />
+              </div>
+            </div>
+          )
+        })()}
         {publishProgress.files && publishProgress.files.length > 0 && (
           <div className="publish-file-list">
             <div className="publish-file-list-header">
@@ -822,7 +857,6 @@ export default function App() {
         {updateBanner}
         {errorBanner}
         <ProjectSetup
-          onCreateProject={createProject}
           onJoinProject={joinProject}
           onOpenProject={openProject}
           prefilledJoinUrl={deepLinkJoinUrl}

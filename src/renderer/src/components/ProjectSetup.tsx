@@ -1,25 +1,22 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { FilePlus2, Search, Download, FolderOpen, Factory, Pin, PinOff, X, Settings, Users, UserPlus } from 'lucide-react'
+import { Factory, Settings, UserPlus } from 'lucide-react'
 import logoUrl from '../assets/logo.png'
-import BrowseProjects from './BrowseProjects'
-import TeamProjects from './TeamProjects'
 import TeamEnroll from './TeamEnroll'
 import { prepareSlamSnapshot, triggerWaterSlam } from '../lib/water-slam'
-import type { GitHubAuthStatus, GlobalAdminConfig, ProjectConfig, TeamSnapshot } from '@shared/types'
+import type { GlobalAdminConfig, ProjectConfig, TeamSnapshot } from '@shared/types'
 
 interface Props {
-  onCreateProject: (name: string, path: string, remote: string, isCotsProject?: boolean) => Promise<void>
   onJoinProject: (url: string, path: string) => Promise<void>
   onOpenProject: (path: string) => Promise<void>
-  /** Open the most recently used project and jump straight into the
-   *  Manufacturing View (shop-floor mode). Disabled when there are no
-   *  recent projects to open. */
+  /** Open a project and jump straight into the Manufacturing View
+   *  (shop-floor mode). Disabled when there are no recent projects to
+   *  open. */
   onEnterManufacturingView?: () => void
   onOpenAdmin?: () => void
   isLoading: boolean
   /**
-   * Install-wide admin settings (Team + Browse). Used to enable the
-   * welcome-screen Browse button and the org-aware Create flow.
+   * Install-wide admin settings. Used by the join form for the
+   * default save-path suggestion + the team name in the header.
    */
   globalAdmin?: GlobalAdminConfig
   /** When set, jump straight into the Join Project flow with this URL
@@ -31,13 +28,22 @@ interface Props {
    *  the link again). */
   prefilledJoinSeq?: number
   /** Team-server snapshot from App level — drives the welcome-screen
-   *  enrollment prompt and the Team Projects browser. */
+   *  enrollment prompt and the project list. */
   teamSnapshot: TeamSnapshot | null
   /** Force a fresh fetch from the team server (e.g. after enrollment). */
   onTeamRefresh?: () => Promise<void>
 }
 
-type Mode = 'select' | 'create' | 'join' | 'open' | 'enroll'
+/**
+ * Three modes left after the v3.x welcome-screen rewrite:
+ *  - `select`: the home view. Unenrolled → Sync-with-Team card. Enrolled
+ *    → the list of accessible projects + a small Manufacturing View
+ *    button. Project creation has moved entirely to the server admin UI.
+ *  - `enroll`: paste server URL + PIN via TeamEnroll component.
+ *  - `join`: triggered when the user clicks an uncloned project in the
+ *    list. Pre-fills URL + name, asks for save path, then clones.
+ */
+type Mode = 'select' | 'join' | 'enroll'
 
 // Module-scoped so the once-per-session welcome-logo intro animation
 // only plays the first time the welcome screen mounts in this process.
@@ -82,11 +88,13 @@ function installClickWaves(): void {
   )
 }
 
-export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenProject, onEnterManufacturingView, onOpenAdmin, isLoading, globalAdmin, prefilledJoinUrl, prefilledJoinSeq, teamSnapshot, onTeamRefresh }: Props) {
+export default function ProjectSetup({ onJoinProject, onOpenProject, onEnterManufacturingView, onOpenAdmin, isLoading, globalAdmin, prefilledJoinUrl, prefilledJoinSeq, teamSnapshot, onTeamRefresh }: Props) {
   const [mode, setMode] = useState<Mode>('select')
+  // Form state used by the join screen (still alive — triggered when
+  // the user clicks an uncloned project in the list). `name` is
+  // informational only at this point; `path` is the local save dir.
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
-  const [remote, setRemote] = useState('')
   const [url, setUrl] = useState('')
   // React to deep-link arrivals: prefill the join URL field and snap to
   // the join mode. Keyed on the seq counter so re-clicking the same
@@ -98,114 +106,19 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefilledJoinSeq, prefilledJoinUrl])
-  const [showTeamProjects, setShowTeamProjects] = useState(false)
-  const [isCotsProject, setIsCotsProject] = useState(false)
+  // Local clones — used to mark each team-registered project in the
+  // home list as `✓ Local` vs `Not cloned`, and to enable the
+  // Manufacturing View button (which needs at least one local project).
   const [recentProjects, setRecentProjects] = useState<ProjectConfig[]>([])
-  const [authStatus, setAuthStatus] = useState<GitHubAuthStatus | null>(null)
-  const [resetupMsg, setResetupMsg] = useState<string | null>(null)
-  const [loggingIn, setLoggingIn] = useState(false)
-  // True between clicking "Sign in" and seeing the gh CLI flip to
-  // logged-in. While true we auto-poll status every 3 s so most users
-  // never need to click anything to confirm sign-in landed.
-  const [signInPending, setSignInPending] = useState(false)
-  const [showBrowse, setShowBrowse] = useState(false)
-  const [creatingOnGitHub, setCreatingOnGitHub] = useState(false)
-  const [createMsg, setCreateMsg] = useState<string | null>(null)
-
-  const orgConfigured = (globalAdmin?.gitHubOrg || '').trim()
-  const projectPrefix = (globalAdmin?.projectPrefix || '').trim()
-  const canBrowse = !!orgConfigured && !!authStatus?.loggedIn
-
-  const refreshAuth = useCallback(() => {
-    window.api.githubAuthStatus().then(setAuthStatus).catch(() => {})
-  }, [])
 
   useEffect(() => {
     window.api.getRecentProjects().then(setRecentProjects).catch(() => {})
-    refreshAuth()
-  }, [refreshAuth])
-
-  const handleGitHubLogin = async () => {
-    setLoggingIn(true)
-    setResetupMsg(null)
-    try {
-      const result = await window.api.githubLogin()
-      if (result.launched) {
-        setSignInPending(true)
-        setResetupMsg('Sign-in opened in a new window. Finish there — FrameCAD will detect it automatically.')
-      } else if (result.error?.startsWith('MANUAL_SIGNIN_REQUIRED:')) {
-        // Mac/Linux: we can't reliably spawn a terminal, so we tell the
-        // user to run the command themselves. Strip the sentinel prefix.
-        setSignInPending(true)
-        setResetupMsg(result.error.slice('MANUAL_SIGNIN_REQUIRED:'.length))
-      } else {
-        setResetupMsg(result.error || 'Could not launch GitHub login')
-      }
-    } finally {
-      setLoggingIn(false)
-    }
-  }
-
-  // While sign-in is pending, poll auth status every 3 s so we can
-  // auto-detect when the user completes sign-in in the other window.
-  // Stops itself once we see loggedIn=true; bounded at ~2 minutes so we
-  // don't poll forever if the user abandons sign-in.
-  useEffect(() => {
-    if (!signInPending) return
-    let cancelled = false
-    const start = Date.now()
-    const interval = setInterval(async () => {
-      if (cancelled || Date.now() - start > 120000) {
-        setSignInPending(false)
-        return
-      }
-      try {
-        const status = await window.api.githubAuthStatus()
-        if (cancelled) return
-        setAuthStatus(status)
-        if (status.loggedIn) {
-          setSignInPending(false)
-          setResetupMsg(`✓ Signed in as ${status.username}`)
-        }
-      } catch { /* ignore — try again next tick */ }
-    }, 3000)
-    return () => { cancelled = true; clearInterval(interval) }
-  }, [signInPending])
+  }, [])
 
   const handleBrowse = async () => {
     const dir = await window.api.selectDirectory()
     if (dir) setPath(dir)
   }
-
-  const refreshRecents = useCallback(() => {
-    window.api.getRecentProjects().then(setRecentProjects).catch(() => {})
-  }, [])
-
-  const handleBrowseAndOpen = async () => {
-    const dir = await window.api.selectDirectory()
-    if (dir) onOpenProject(dir)
-  }
-
-  const togglePin = useCallback(async (p: ProjectConfig) => {
-    try {
-      await window.api.setProjectPinned(p.path, !p.pinned)
-      refreshRecents()
-    } catch (err) {
-      setResetupMsg(`Could not ${p.pinned ? 'unpin' : 'pin'} project: ${(err as Error).message}`)
-    }
-  }, [refreshRecents])
-
-  const removeFromRecent = useCallback(async (p: ProjectConfig) => {
-    try {
-      await window.api.removeRecentProject(p.path)
-      refreshRecents()
-    } catch (err) {
-      setResetupMsg(`Could not remove project: ${(err as Error).message}`)
-    }
-  }, [refreshRecents])
-
-  const pinnedProjects = recentProjects.filter(p => p.pinned)
-  const unpinnedProjects = recentProjects.filter(p => !p.pinned)
 
   // Logo double-click easter egg
   const logoRef = useRef<HTMLDivElement | null>(null)
@@ -734,45 +647,14 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
             <p className="subtitle subtitle-team">for {globalAdmin.teamName}</p>
           )}
         </div>
-        {/* Until the user is enrolled with a team, the welcome screen
-            is intentionally minimal — just the logo, the Enroll card,
-            and the Settings button in the corner. Everything else
-            (pinned/recent projects, GitHub auth, the create / browse /
-            open / mfg actions) is gated behind enrollment so a fresh
-            install can't be used in a state where the team can't see
-            who's making changes. */}
-        {teamSnapshot?.enrolled && pinnedProjects.length > 0 && (
-          <div className="pinned-projects">
-            {pinnedProjects.map(p => (
-              <div key={p.path} className="pinned-project-card" title={p.path}>
-                <button
-                  type="button"
-                  className="pinned-project-open"
-                  onClick={() => onOpenProject(p.path)}
-                  disabled={isLoading}
-                >
-                  <Pin size={18} strokeWidth={1.75} className="pinned-project-pin" />
-                  <span className="pinned-project-name">{p.name}</span>
-                  <span className="pinned-project-path">{p.path}</span>
-                </button>
-                <button
-                  type="button"
-                  className="pinned-project-unpin"
-                  onClick={() => togglePin(p)}
-                  title="Unpin from welcome screen"
-                  aria-label="Unpin"
-                >
-                  <PinOff size={14} strokeWidth={1.75} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+        {/* Unenrolled: a single Sync-with-Team card. Project creation
+            and listing are server-owned now; nothing else makes sense
+            before the device is paired with a team. */}
         {!teamSnapshot?.enrolled && (
           <div className="setup-cards setup-cards-team">
             <button className="setup-card" onClick={() => setMode('enroll')}>
               <span className="card-icon"><UserPlus size={32} strokeWidth={1.5} /></span>
-              <span className="card-title">Enroll with Team</span>
+              <span className="card-title">Sync with Team</span>
               <span className="card-desc">
                 Enter a PIN from your<br />team's admin
               </span>
@@ -780,283 +662,124 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
           </div>
         )}
 
-        {/* Each home-screen card is gated on its own capability flag,
-            set by the admin at PIN-issue time and editable later from
-            the team-server web UI. The set of cards a student sees is
-            exactly what the admin curated — nothing more. */}
+        {/* Enrolled: render the list of projects the team server has
+            granted this member access to. Click a row → if it's
+            already cloned locally (matched on remote URL), open it
+            directly. Otherwise drop into the join form prefilled with
+            this project's URL + name, so the user only has to pick a
+            save folder before the clone begins.
+            The team server already enforces the per-member project
+            allowlist server-side (see server/src/routes/client.ts
+            `/api/projects`), so we don't filter again here. */}
         {teamSnapshot?.enrolled && (() => {
-          const caps = teamSnapshot.me?.capabilities
-          const visibleCards: React.ReactNode[] = []
-          if (caps?.createProject) {
-            visibleCards.push(
-              <button key="create" className="setup-card" onClick={() => setMode('create')}>
-                <span className="card-icon"><FilePlus2 size={32} strokeWidth={1.5} /></span>
-                <span className="card-title">Create Project</span>
-                <span className="card-desc">Start a new CAD project<br />with version control</span>
-              </button>,
-            )
+          const projects = teamSnapshot.projects ?? []
+          // Build a remote → local-clone map once per render so each
+          // row's lookup is O(1). URL normalisation strips trailing
+          // `.git` and lowercases so https://x/repo and
+          // https://x/repo.git collapse to the same key.
+          const normRemote = (s: string): string =>
+            s.trim().replace(/\.git$/i, '').toLowerCase()
+          const localByRemote = new Map<string, ProjectConfig>()
+          for (const r of recentProjects) {
+            if (r.remote) localByRemote.set(normRemote(r.remote), r)
           }
-          if (caps?.browseTeamProjects) {
-            visibleCards.push(
-              <button
-                key="browse-team"
-                className="setup-card"
-                onClick={() => setShowTeamProjects(true)}
-                disabled={!teamSnapshot.projects?.length}
-                title={teamSnapshot.projects?.length
-                  ? 'Browse projects registered in your team server'
-                  : 'No projects registered yet — ask your admin'}
-              >
-                <span className="card-icon"><Users size={32} strokeWidth={1.5} /></span>
-                <span className="card-title">Team Projects</span>
-                <span className="card-desc">Browse projects from<br />the team server</span>
-              </button>,
-            )
-          }
-          if (caps?.openProject) {
-            visibleCards.push(
-              <button key="open" className="setup-card" onClick={() => setMode('open')}>
-                <span className="card-icon"><FolderOpen size={32} strokeWidth={1.5} /></span>
-                <span className="card-title">Open Project</span>
-                <span className="card-desc">Open an existing<br />project folder</span>
-              </button>,
-            )
-          }
-          if (caps?.manufacturingView) {
-            visibleCards.push(
-              <button
-                key="mfg"
-                className="setup-card"
-                onClick={() => onEnterManufacturingView?.()}
-                disabled={!onEnterManufacturingView || recentProjects.length === 0}
-                title={recentProjects.length === 0
-                  ? 'Open or create a project first — the manufacturing queue lives inside a project'
-                  : 'Shop-floor view: just what needs to be made'}
-              >
-                <span className="card-icon"><Factory size={32} strokeWidth={1.5} /></span>
-                <span className="card-title">Manufacturing View</span>
-                <span className="card-desc">Shop-floor queue<br />grouped by method</span>
-              </button>,
-            )
-          }
-          if (visibleCards.length === 0) {
+          if (projects.length === 0) {
             return (
-              <div className="setup-cards-empty hint" style={{ textAlign: 'center', marginTop: 24, opacity: 0.8 }}>
-                You're enrolled, but your admin hasn't granted access to any
-                home-screen actions yet. Ask them to add capabilities for you
-                in the team server.
+              <div
+                className="setup-cards-empty hint"
+                style={{ textAlign: 'center', marginTop: 24, opacity: 0.8 }}
+              >
+                Your admin hasn't given you access to any projects yet.
+                Ask them to add you to a project on the team server.
               </div>
             )
           }
-          return <div className="setup-cards">{visibleCards}</div>
+          return (
+            <div className="project-list">
+              {projects.map(p => {
+                const local = localByRemote.get(normRemote(p.repoUrl))
+                const isMissing = p.remoteStatus === 'missing'
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className="project-list-row"
+                    disabled={isLoading || isMissing}
+                    title={p.repoUrl}
+                    onClick={() => {
+                      if (local) {
+                        onOpenProject(local.path)
+                      } else {
+                        // Mirror the legacy TeamProjects → join-form
+                        // handoff so the join screen comes up with the
+                        // URL + name baked in.
+                        setUrl(p.repoUrl)
+                        setName(p.name)
+                        setPath('')
+                        setMode('join')
+                      }
+                    }}
+                  >
+                    <div className="project-list-row-main">
+                      <div className="project-list-row-name">{p.name}</div>
+                      {p.description && (
+                        <div className="project-list-row-desc">{p.description}</div>
+                      )}
+                    </div>
+                    <div className="project-list-row-status">
+                      {isMissing ? (
+                        <span
+                          className="pill"
+                          style={{ color: 'var(--cad-red, #fb7185)', background: 'rgba(251, 113, 133, 0.15)' }}
+                        >
+                          DELETED
+                        </span>
+                      ) : local ? (
+                        <span
+                          className="pill"
+                          style={{ color: 'var(--cad-green, #86efac)', background: 'rgba(134, 239, 172, 0.15)' }}
+                        >
+                          ✓ Local
+                        </span>
+                      ) : (
+                        <span
+                          className="pill"
+                          style={{ color: 'var(--text-muted, #737373)', background: 'rgba(115, 115, 115, 0.15)' }}
+                        >
+                          Not cloned
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          )
         })()}
 
-        {showTeamProjects && teamSnapshot?.projects && (
-          <TeamProjects
-            projects={teamSnapshot.projects}
-            onPick={(repoUrl, suggestedName) => {
-              setShowTeamProjects(false)
-              setUrl(repoUrl)
-              setName(suggestedName)
-              setMode('join')
-            }}
-            onClose={() => setShowTeamProjects(false)}
-          />
-        )}
-        {showBrowse && orgConfigured && (
-          <BrowseProjects
-            org={orgConfigured}
-            prefix={projectPrefix || undefined}
-            onPick={(url, suggestedName) => {
-              setShowBrowse(false)
-              setUrl(url)
-              setName(suggestedName)
-              setMode('join')
-            }}
-            onClose={() => setShowBrowse(false)}
-          />
-        )}
-        {/* GitHub auth row is only relevant when the user can create a
-            project (which needs a GitHub identity to publish to). If
-            their only caps are openProject / manufacturingView, hide
-            the row — they don't need to think about GitHub auth. The
-            recent-projects section below stays so they can re-enter
-            already-cloned projects. */}
-        {teamSnapshot?.enrolled && (
-        <div className="setup-footer">
-        {teamSnapshot.me?.capabilities?.createProject && (
-        <div className="setup-toolbar">
-          <div className="setup-auth">
-            {authStatus?.loggedIn ? (
-              <>
-                <span className="setup-auth-status">
-                  ✓ Signed in to GitHub as <strong>{authStatus.username}</strong>
-                </span>
-                <button
-                  className="toolbar-btn"
-                  onClick={async () => {
-                    setResetupMsg(null)
-                    const r = await window.api.githubLogout()
-                    if (r.success) {
-                      setResetupMsg('Signed out of GitHub.')
-                      refreshAuth()
-                    } else {
-                      setResetupMsg(r.error || 'Could not sign out.')
-                    }
-                  }}
-                  title="Sign out of GitHub on this computer"
-                >
-                  Sign out
-                </button>
-              </>
-            ) : signInPending ? (
-              // Sign-in launched, waiting for the user to finish in the
-              // browser/terminal. We auto-poll every 3s; the manual refresh
-              // button is here as a fallback if polling misses.
-              <>
-                <span className="setup-auth-status muted">
-                  Waiting for sign-in to complete…
-                </span>
-                <button
-                  className="toolbar-btn"
-                  onClick={refreshAuth}
-                >
-                  I signed in — refresh
-                </button>
-              </>
-            ) : (
-              <>
-                <span className="setup-auth-status muted">
-                  {authStatus?.ghCliAvailable === false
-                    ? 'GitHub CLI not detected — install to enable sign-in'
-                    : 'Not signed in to GitHub'}
-                </span>
-                <button
-                  className="toolbar-btn primary"
-                  onClick={handleGitHubLogin}
-                  disabled={loggingIn || authStatus?.ghCliAvailable === false}
-                >
-                  {loggingIn ? 'Opening…' : 'Sign in with GitHub'}
-                </button>
-              </>
-            )}
-          </div>
-          {resetupMsg && <div className="setup-toolbar-msg">{resetupMsg}</div>}
-        </div>
-        )}
-
-        {recentProjects.length > 0 && (
-          <div className="recent-projects">
-            <h3>Recent Projects</h3>
-            <div className="recent-list">
-              {recentProjects.slice(0, 3).map(p => (
-                <button
-                  key={p.path}
-                  className="recent-item"
-                  onClick={() => onOpenProject(p.path)}
-                  disabled={isLoading}
-                >
-                  <span className="recent-name">{p.name}</span>
-                  <span className="recent-path">{p.path}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        </div>
-        )}
-      </div>
-    )
-  }
-
-  if (mode === 'create') {
-    return (
-      <div className="setup-screen">
-        <h1>Create Project</h1>
-        <div className="setup-form">
-          <div className="form-group">
-            <label>Project Name</label>
-            <input
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder="2026-Robot"
-              autoFocus
-            />
-          </div>
-          <div className="form-group">
-            <label>Location</label>
-            <div className="path-input">
-              <input value={path} onChange={e => setPath(e.target.value)} placeholder="C:\Users\team2129\Documents" />
-              <button className="browse-btn" onClick={handleBrowse}>Browse</button>
-            </div>
-          </div>
-          <div className="form-group">
-            <label>GitHub URL (optional)</label>
-            <input
-              value={remote}
-              onChange={e => setRemote(e.target.value)}
-              placeholder="https://github.com/frc2129/2026-robot.git"
-            />
-            {orgConfigured && projectPrefix && name && authStatus?.loggedIn && (
-              <p className="admin-hint">
-                Or click <strong>Create on GitHub</strong> to auto-create
-                <code> {orgConfigured}/{projectPrefix}{name.replace(/[^a-zA-Z0-9._-]/g, '-')}</code>
-                so other team members can find it via Browse.
-              </p>
-            )}
-          </div>
-          <label className="checkbox-row">
-            <input
-              type="checkbox"
-              checked={isCotsProject}
-              onChange={e => setIsCotsProject(e.target.checked)}
-            />
-            <span>
-              <strong>COTS library project</strong>
-              <span className="checkbox-hint">Holds shared off-the-shelf parts. No part numbers will be assigned.</span>
-            </span>
-          </label>
-          {createMsg && <div className="setup-toolbar-msg">{createMsg}</div>}
-          <div className="form-actions">
-            <button className="toolbar-btn" onClick={() => setMode('select')}>Back</button>
-            {orgConfigured && projectPrefix && authStatus?.loggedIn && (
-              <button
-                className="toolbar-btn"
-                disabled={!name || !path || isLoading || creatingOnGitHub}
-                onClick={async () => {
-                  setCreatingOnGitHub(true)
-                  setCreateMsg(null)
-                  const safeName = name.replace(/[^a-zA-Z0-9._-]/g, '-')
-                  const repoName = `${projectPrefix}${safeName}`
-                  try {
-                    const result = await window.api.createGitHubRepo(
-                      orgConfigured, repoName, true, `FrameCAD project — ${name}`
-                    )
-                    if (!result.success || !result.url) {
-                      setCreateMsg('✗ ' + (result.error || 'Could not create repo on GitHub'))
-                      return
-                    }
-                    setCreateMsg(`✓ Created ${orgConfigured}/${repoName} — pushing local project...`)
-                    await onCreateProject(name, `${path}/${name}`, result.url, isCotsProject)
-                  } catch (err) {
-                    setCreateMsg('✗ ' + (err as Error).message)
-                  } finally {
-                    setCreatingOnGitHub(false)
-                  }
-                }}
-              >
-                {creatingOnGitHub ? 'Creating on GitHub...' : 'Create on GitHub'}
-              </button>
-            )}
+        {/* Manufacturing View — secondary action. Quieter outline
+            button under the project list so it doesn't compete with
+            the projects themselves. Capability-gated (same flag as
+            before). Disabled when there are no local clones — the
+            shop-floor view lives INSIDE a project. */}
+        {teamSnapshot?.enrolled
+          && teamSnapshot.me?.capabilities?.manufacturingView
+          && onEnterManufacturingView && (
+          <div className="setup-mfg-row">
             <button
-              className="toolbar-btn primary"
-              disabled={!name || !path || isLoading}
-              onClick={() => onCreateProject(name, `${path}/${name}`, remote, isCotsProject)}
+              type="button"
+              className="setup-mfg-button"
+              onClick={() => onEnterManufacturingView?.()}
+              disabled={recentProjects.length === 0}
+              title={recentProjects.length === 0
+                ? 'Open a project first — the manufacturing queue lives inside a project'
+                : 'Shop-floor view: just what needs to be made'}
             >
-              {isLoading ? <span className="loading-spinner" /> : 'Create'}
+              <Factory size={14} strokeWidth={1.75} />
+              <span>Manufacturing View</span>
             </button>
           </div>
-        </div>
+        )}
       </div>
     )
   }
@@ -1097,98 +820,8 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
     )
   }
 
-  return (
-    <div className="setup-screen">
-      <h1>Open Project</h1>
-      <p className="subtitle">Pick a recent project, or browse for a folder.</p>
-      <div className="open-projects">
-        {pinnedProjects.length > 0 && (
-          <div className="open-projects-section">
-            <div className="open-projects-section-label">Pinned</div>
-            {pinnedProjects.map(p => (
-              <ProjectRow
-                key={p.path}
-                project={p}
-                disabled={isLoading}
-                onOpen={() => onOpenProject(p.path)}
-                onTogglePin={() => togglePin(p)}
-                onRemove={() => removeFromRecent(p)}
-              />
-            ))}
-          </div>
-        )}
-        {unpinnedProjects.length > 0 && (
-          <div className="open-projects-section">
-            <div className="open-projects-section-label">Recent</div>
-            {unpinnedProjects.map(p => (
-              <ProjectRow
-                key={p.path}
-                project={p}
-                disabled={isLoading}
-                onOpen={() => onOpenProject(p.path)}
-                onTogglePin={() => togglePin(p)}
-                onRemove={() => removeFromRecent(p)}
-              />
-            ))}
-          </div>
-        )}
-        {recentProjects.length === 0 && (
-          <div className="open-projects-empty">
-            No recent projects yet. Browse for a folder below to open one.
-          </div>
-        )}
-        <button
-          className="open-projects-browse"
-          onClick={handleBrowseAndOpen}
-          disabled={isLoading}
-        >
-          <FolderOpen size={18} strokeWidth={1.75} />
-          <span>Browse for a project folder…</span>
-        </button>
-      </div>
-      <div className="form-actions">
-        <button className="toolbar-btn" onClick={() => setMode('select')}>Back</button>
-      </div>
-    </div>
-  )
-}
-
-interface ProjectRowProps {
-  project: ProjectConfig
-  disabled: boolean
-  onOpen: () => void
-  onTogglePin: () => void
-  onRemove: () => void
-}
-
-function ProjectRow({ project, disabled, onOpen, onTogglePin, onRemove }: ProjectRowProps) {
-  return (
-    <div className="open-project-row">
-      <button
-        className="open-project-main"
-        onClick={onOpen}
-        disabled={disabled}
-        title={project.path}
-      >
-        <span className="open-project-name">{project.name}</span>
-        <span className="open-project-path">{project.path}</span>
-      </button>
-      <button
-        className="open-project-action"
-        onClick={onTogglePin}
-        title={project.pinned ? 'Unpin' : 'Pin to top'}
-      >
-        {project.pinned
-          ? <PinOff size={14} strokeWidth={1.75} />
-          : <Pin size={14} strokeWidth={1.75} />}
-      </button>
-      <button
-        className="open-project-action"
-        onClick={onRemove}
-        title="Remove from list"
-      >
-        <X size={14} strokeWidth={1.75} />
-      </button>
-    </div>
-  )
+  // No other modes are reachable — `Mode` is narrowed to the three
+  // cases handled above. This unreachable return keeps the function
+  // total without firing a runtime branch.
+  return null
 }

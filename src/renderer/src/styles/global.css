@@ -634,6 +634,56 @@ body.slam-shake {
   mix-blend-mode: difference;
 }
 
+/* Per-file progress detail (currentFile from GIT_LFS_PROGRESS).
+   Sits below the overall bar — slimmer, monospace bytes, separate
+   accent so the eye can follow both bars without conflation. */
+.publish-current-file {
+  margin-top: -8px;
+  margin-bottom: 14px;
+}
+
+.publish-current-file-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.publish-current-file-name {
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.publish-current-file-bytes {
+  font-family: var(--mono, 'SF Mono', Consolas, monospace);
+  font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.publish-current-file-bar {
+  position: relative;
+  height: 6px;
+  background: var(--bg-primary);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.publish-current-file-fill {
+  position: absolute;
+  inset: 0;
+  width: 0;
+  background: var(--accent-hover, var(--accent));
+  transition: width 0.15s;
+}
+
 .publish-file-list {
   background: var(--bg-primary);
   border: 1px solid var(--border);
@@ -2843,6 +2893,105 @@ body.slam-shake {
   opacity: 0.4;
   cursor: not-allowed;
   pointer-events: none;
+}
+
+/* ───── Project list (v3.x welcome screen) ─────
+   Renders one row per project the team server has granted access
+   to. Replaces the four-card grid + pinned/recent footer with a
+   single canonical list driven by `teamSnapshot.projects`. */
+.project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.project-list-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 18px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+  font: inherit;
+  color: inherit;
+}
+
+.project-list-row:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+}
+
+.project-list-row:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.project-list-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.project-list-row-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.project-list-row-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  /* Two-line truncation keeps each row a predictable height even when
+     the admin writes a long description. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.project-list-row-status {
+  flex: 0 0 auto;
+}
+
+/* Manufacturing View — quieter outline button under the list. Sized
+   smaller than the cards-era so it reads as a secondary action, not
+   competition with the project rows above. */
+.setup-mfg-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 4px;
+}
+
+.setup-mfg-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.setup-mfg-button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.setup-mfg-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* Welcome-mode footer: groups the auth toolbar + recent projects so

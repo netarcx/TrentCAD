@@ -45,8 +45,11 @@ export default function Wizard() {
   const [gitHubOrg, setGitHubOrg] = useState('')
   const [projectPrefix, setProjectPrefix] = useState('')
 
+  const [lfsUrl, setLfsUrl] = useState('')
   const [lfsReachable, setLfsReachable] = useState<boolean | null>(null)
   const [lfsChecking, setLfsChecking] = useState(false)
+  const [lfsSaving, setLfsSaving] = useState(false)
+  const [lfsTestDetail, setLfsTestDetail] = useState<string | null>(null)
 
   const [projectName, setProjectName] = useState('')
   const [projectRepoUrl, setProjectRepoUrl] = useState('')
@@ -63,6 +66,7 @@ export default function Wizard() {
     api<SetupState>('GET', '/api/admin/setup-state')
       .then(s => {
         setState(s)
+        setLfsUrl(s.lfsUrl ?? '')
         // Prefill team fields from existing values so re-entering the
         // wizard doesn't wipe out what the admin already typed.
         // (Empty server defaults will just leave the inputs blank.)
@@ -110,21 +114,52 @@ export default function Wizard() {
     }
   }
 
+  async function saveLfsUrl(): Promise<void> {
+    if (lfsUrl.trim() === (state?.lfsUrl ?? '')) return
+    setLfsSaving(true)
+    setError(null)
+    try {
+      await api('PATCH', '/api/admin/team', { lfsUrl: lfsUrl.trim() })
+      // Optimistically update local snapshot so re-testing reads the
+      // new value without a full setup-state refetch.
+      setState(s => s ? { ...s, lfsUrl: lfsUrl.trim() } : s)
+    } catch (err) {
+      setError((err as ApiError).message)
+    } finally {
+      setLfsSaving(false)
+    }
+  }
+
   async function checkLfs(): Promise<void> {
-    if (!state?.lfsUrl) {
+    // Save any pending edit first so the test runs against the value
+    // the admin sees (and what other clients will use). This also
+    // means clicking Test after editing implicitly persists the URL.
+    if (lfsUrl.trim() !== (state?.lfsUrl ?? '')) {
+      await saveLfsUrl()
+    }
+    if (!lfsUrl.trim()) {
       setLfsReachable(false)
+      setLfsTestDetail('No URL configured')
       return
     }
     setLfsChecking(true)
+    setLfsTestDetail(null)
     try {
-      // Giftless exposes `<base>/objects/batch` for the LFS protocol;
-      // the root path returns a small JSON payload on `GET /`. A 200
-      // (or even 4xx auth-ish response) confirms the server is up;
-      // we don't care about the body, just that the network reaches it.
-      const res = await fetch(state.lfsUrl, { method: 'GET' })
-      setLfsReachable(res.status < 500)
-    } catch {
+      // Server-side reachability check — the team server can hit the
+      // LFS URL even when the admin's browser can't (different
+      // network, CORS-blocked, etc.).
+      const res = await api<{ reachable: boolean; status?: number; error?: string }>(
+        'POST', '/api/admin/lfs/test', { url: lfsUrl.trim() }
+      )
+      setLfsReachable(res.reachable)
+      setLfsTestDetail(
+        res.reachable
+          ? `HTTP ${res.status ?? '?'} — server is responding`
+          : (res.error || 'No HTTP response')
+      )
+    } catch (err) {
       setLfsReachable(false)
+      setLfsTestDetail((err as ApiError).message)
     } finally {
       setLfsChecking(false)
     }
@@ -271,25 +306,27 @@ export default function Wizard() {
             <h2>Self-hosted file storage</h2>
             <div className="hint">
               FrameCAD ships with its own Git-LFS server so CAD files don't
-              hit GitHub's metered storage. We need to make sure clients on
-              your network can actually reach it.
+              hit GitHub's metered storage. Set the URL clients on your
+              network will use to reach it, then verify it's responding.
             </div>
             <label>LFS server URL</label>
             <input
-              value={state.lfsUrl}
-              readOnly
-              style={{ background: 'var(--bg-input)' }}
+              value={lfsUrl}
+              onChange={e => setLfsUrl(e.target.value)}
+              onBlur={saveLfsUrl}
+              placeholder="http://framecad.school.local:42131"
+              autoFocus
             />
             <div className="hint" style={{ marginTop: 4 }}>
-              {state.lfsConfigured
-                ? `Configured via LFS_SERVER_URL. To change, edit your .env file and restart the team server.`
-                : `Not configured. Add LFS_SERVER_URL to .env and restart, or skip this step to use GitHub LFS instead.`}
+              {lfsSaving
+                ? 'Saving…'
+                : `Use the hostname or LAN IP your students can hit from their laptops. \`localhost\` only works for an admin running everything on one machine.`}
             </div>
             <div style={{ marginTop: 14 }}>
               <button
                 className="secondary"
                 onClick={checkLfs}
-                disabled={!state.lfsConfigured || lfsChecking}
+                disabled={!lfsUrl.trim() || lfsChecking || lfsSaving}
               >
                 {lfsChecking ? 'Checking…' : 'Test connection'}
               </button>
@@ -297,14 +334,22 @@ export default function Wizard() {
                 <span className="success-inline">✓ Reachable</span>
               )}
               {lfsReachable === false && (
-                <span className="error-inline">✗ Could not reach the LFS server</span>
+                <span className="error-inline">✗ Could not reach</span>
+              )}
+              {lfsTestDetail && (
+                <div className="hint" style={{ marginTop: 6 }}>
+                  {lfsTestDetail}
+                </div>
               )}
             </div>
             <div className="wizard-nav">
               <button className="link" onClick={() => setStep('team')}>
                 Back
               </button>
-              <button className="primary" onClick={() => setStep('project')}>
+              <button className="primary" onClick={async () => {
+                await saveLfsUrl()
+                setStep('project')
+              }}>
                 Continue
               </button>
             </div>

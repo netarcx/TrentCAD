@@ -191,6 +191,15 @@ const MIGRATIONS: string[] = [
   ALTER TABLE projects ADD COLUMN storageScannedAt INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE team     ADD COLUMN setupComplete INTEGER NOT NULL DEFAULT 0;
   `,
+  // v5: editable LFS URL on the team row. The LFS_SERVER_URL env var
+  // becomes a *default* — used on fresh installs (or when the column
+  // is still NULL/empty) — but once the admin edits it through the
+  // setup wizard or Team Settings, the DB value wins. NULL/empty
+  // means "not configured" → /api/team returns the env default,
+  // letting operators who haven't visited the UI still ship.
+  `
+  ALTER TABLE team ADD COLUMN lfsUrl TEXT;
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

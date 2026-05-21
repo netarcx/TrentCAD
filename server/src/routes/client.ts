@@ -19,7 +19,25 @@ interface TeamRow {
   gitHubOrg: string
   projectPrefix: string
   welcomeMessage: string
+  lfsUrl: string | null
   updatedAt: number
+}
+
+/**
+ * Effective LFS URL for the running server. The team row is the
+ * source of truth (admin can edit via the UI); the LFS_SERVER_URL
+ * env var is the fallback for fresh installs / operators who never
+ * visit the wizard. Empty string when neither side has a value —
+ * the desktop client treats that as "no self-hosted LFS, use the
+ * project's default (GitHub LFS)".
+ */
+export function effectiveLfsUrl(): string {
+  const row = getDb().prepare(
+    `SELECT lfsUrl FROM team WHERE id = 1`
+  ).get() as { lfsUrl: string | null } | undefined
+  const dbVal = (row?.lfsUrl ?? '').trim()
+  if (dbVal) return dbVal
+  return config.lfsServerUrl ?? ''
 }
 
 interface MemberRow {
@@ -106,11 +124,11 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
       projectPrefix: team.projectPrefix,
       welcomeMessage: team.welcomeMessage,
       updatedAt: team.updatedAt,
-      // Empty string when LFS isn't configured on this server — clients
-      // detect that and fall back to whatever LFS URL the project's
-      // `.lfsconfig` already specifies (i.e. GitHub LFS for the few
-      // projects that were created before self-hosting).
-      lfsUrl: config.lfsServerUrl ?? '',
+      // Empty string when LFS isn't configured on this server (neither
+      // the team row nor the env var has a value). Clients detect that
+      // and fall back to whatever LFS URL the project's `.lfsconfig`
+      // already specifies (i.e. GitHub LFS).
+      lfsUrl: effectiveLfsUrl(),
     }
   })
 

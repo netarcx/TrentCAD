@@ -23,6 +23,7 @@ import {
 import { requireAdmin, issuePin, revokePin } from '../auth.js'
 import { serverVersion, getLatestReleaseVersion, isOutdated } from '../version.js'
 import { config } from '../config.js'
+import { effectiveLfsUrl } from './client.js'
 
 const VALID_ROLES: Role[] = ['admin', 'mentor', 'student']
 
@@ -414,11 +415,12 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     const memberCount = (getDb().prepare(
       `SELECT COUNT(*) AS n FROM members WHERE id != ?`
     ).get(req.member!.id) as { n: number }).n
+    const lfsUrl = effectiveLfsUrl()
     return {
       setupComplete: team.setupComplete === 1,
       teamInfoSet: team.name.trim().length > 0 && team.gitHubOrg.trim().length > 0,
-      lfsConfigured: !!config.lfsServerUrl,
-      lfsUrl: config.lfsServerUrl ?? '',
+      lfsConfigured: !!lfsUrl,
+      lfsUrl,
       projectCount,
       memberCount,
     }
@@ -438,6 +440,48 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     return { success: true }
   })
 
+  // Test reachability of the LFS server from the *team server's*
+  // network position, not the browser's. The wizard previously did
+  // a browser-side fetch, which fails for two reasons in any real
+  // deployment: the URL is usually only reachable from the LAN where
+  // the team server lives (not the admin's laptop), and Giftless
+  // doesn't return CORS headers anyway. Server-side fetch is correct.
+  app.post<{ Body: { url?: string } }>(
+    '/api/admin/lfs/test',
+    async (req, reply) => {
+      const url = (req.body?.url ?? '').trim().replace(/\/+$/, '')
+      if (!url) {
+        return reply.code(400).send({ error: 'url is required' })
+      }
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 4000)
+      try {
+        // Hit `<url>/objects/batch` with a minimal POST — Giftless
+        // responds 400 (bad body) or 401 (no auth) when it's alive
+        // and 5xx / network-error when it's not. We treat anything
+        // < 500 as "reachable" because it proves the HTTP server is
+        // there and serving the LFS protocol.
+        const res = await fetch(`${url}/objects/batch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/vnd.git-lfs+json' },
+          body: '{}',
+          signal: controller.signal,
+        })
+        return {
+          reachable: res.status < 500,
+          status: res.status,
+        }
+      } catch (err) {
+        return {
+          reachable: false,
+          error: (err as Error).message || 'Network error',
+        }
+      } finally {
+        clearTimeout(timer)
+      }
+    },
+  )
+
   // ── Team config ────────────────────────────────────────────────────
 
   app.patch<{ Body: {
@@ -445,13 +489,19 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     gitHubOrg?: string
     projectPrefix?: string
     welcomeMessage?: string
+    lfsUrl?: string
   } }>('/api/admin/team', async req => {
     const updates: string[] = []
     const values: string[] = []
-    for (const field of ['name', 'gitHubOrg', 'projectPrefix', 'welcomeMessage'] as const) {
+    for (const field of [
+      'name', 'gitHubOrg', 'projectPrefix', 'welcomeMessage', 'lfsUrl',
+    ] as const) {
       if (typeof req.body?.[field] === 'string') {
         updates.push(`${field} = ?`)
-        values.push(req.body[field]!.trim())
+        // Strip trailing slashes on lfsUrl so giftless's `/objects/...`
+        // resolves correctly regardless of how the admin typed it.
+        const raw = req.body[field]!.trim()
+        values.push(field === 'lfsUrl' ? raw.replace(/\/+$/, '') : raw)
       }
     }
     if (updates.length === 0) return { success: true }

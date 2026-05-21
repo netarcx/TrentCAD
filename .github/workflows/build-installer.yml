@@ -15,29 +15,21 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # Compute which platforms to build for this run. Windows on every
-  # push; mac/linux only when the workflow is manually dispatched.
-  # GitHub Actions doesn't allow `matrix` in job-level `if:`, so we
-  # compute the matrix dynamically here and let `release` consume it
-  # via `fromJSON`.
+  # Compute which platforms to build for this run. All three (Windows,
+  # macOS, Linux) on every push and on manual dispatch — Trent's
+  # production install base spans all three (Windows for the CAD
+  # workflow, Mac for design review, Linux for the team server admin
+  # box). GitHub Actions doesn't allow `matrix` in job-level `if:`, so
+  # we compute it dynamically here and let `release` consume it via
+  # `fromJSON`.
   prepare-matrix:
-    # DISABLED 2026-05-21 — desktop installer builds paused while the
-    # team-server side (LFS, quotas, wizard) lands. Re-enable by
-    # deleting this `if:` line; nothing else needs to change. The
-    # server-image job below still runs on every push so Docker users
-    # keep getting fresh team-server images.
-    if: false
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.compute.outputs.matrix }}
     steps:
       - id: compute
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo 'matrix={"include":[{"os":"windows-2022","platform":"win"},{"os":"macos-latest","platform":"mac"},{"os":"ubuntu-latest","platform":"linux"}]}' >> "$GITHUB_OUTPUT"
-          else
-            echo 'matrix={"include":[{"os":"windows-2022","platform":"win"},{"os":"ubuntu-latest","platform":"linux"}]}' >> "$GITHUB_OUTPUT"
-          fi
+          echo 'matrix={"include":[{"os":"windows-2022","platform":"win"},{"os":"macos-latest","platform":"mac"},{"os":"ubuntu-latest","platform":"linux"}]}' >> "$GITHUB_OUTPUT"
 
   # Pre-create the GitHub Release (idempotent) BEFORE the matrix runs.
   # Without this, all three matrix jobs race to POST /releases and two
@@ -46,8 +38,6 @@ jobs:
   # before any matrix job starts, electron-builder's GET succeeds on
   # every job and they all happily upload assets to the same release.
   prepare-release:
-    # DISABLED 2026-05-21 — see prepare-matrix above.
-    if: false
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -72,8 +62,6 @@ jobs:
           fi
 
   release:
-    # DISABLED 2026-05-21 — see prepare-matrix above.
-    if: false
     needs: [prepare-matrix, prepare-release]
     strategy:
       fail-fast: false

@@ -2956,6 +2956,21 @@ body.slam-shake {
   overflow: hidden;
 }
 
+/* Local filesystem path, shown only when the project has a local
+   clone (i.e. the status pill is "✓ Local"). Smaller + monospace +
+   muted so it reads as ancillary detail without competing with the
+   project name. Single-line truncation with the full path in
+   `title` for the rare deeply-nested case. */
+.project-list-row-path {
+  font-size: 11px;
+  font-family: 'SF Mono', Consolas, Monaco, monospace;
+  color: var(--text-muted);
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .project-list-row-status {
   flex: 0 0 auto;
 }

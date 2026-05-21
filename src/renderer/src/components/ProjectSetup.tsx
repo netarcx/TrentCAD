@@ -722,6 +722,11 @@ export default function ProjectSetup({ onJoinProject, onOpenProject, onEnterManu
                       {p.description && (
                         <div className="project-list-row-desc">{p.description}</div>
                       )}
+                      {local && (
+                        <div className="project-list-row-path" title={local.path}>
+                          {local.path}
+                        </div>
+                      )}
                     </div>
                     <div className="project-list-row-status">
                       {isMissing ? (

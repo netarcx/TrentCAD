@@ -41,7 +41,17 @@ export default function CapabilityControls(props: Props) {
     onChange({ ...value, allowedProjectIds: Array.from(next).sort((a, b) => a - b) })
   }
   function setAutoOpen(id: number | null): void {
-    onChange({ ...value, autoOpenProjectId: id })
+    // Switching auto-open off implicitly cancels kiosk mode — locking
+    // to nothing makes no sense. Switching it back on doesn't auto-
+    // enable kiosk; the admin opts in explicitly.
+    onChange({
+      ...value,
+      autoOpenProjectId: id,
+      kioskMode: id === null ? false : value.kioskMode,
+    })
+  }
+  function toggleKiosk(): void {
+    onChange({ ...value, kioskMode: !value.kioskMode })
   }
 
   return (
@@ -101,7 +111,7 @@ export default function CapabilityControls(props: Props) {
           <label style={{ display: 'block', marginBottom: 4 }}>
             Auto-open on launch
             <span className="hint" style={{ marginLeft: 6 }}>
-              (For kiosk-style installs that only ever see one project.)
+              (For installs that should land in one project on every launch.)
             </span>
           </label>
           <select
@@ -114,6 +124,31 @@ export default function CapabilityControls(props: Props) {
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
+
+          {/* Kiosk mode only makes sense when an auto-open project is
+              picked — there's nothing to lock the user into otherwise.
+              Hide the checkbox in that state so it can't be ticked into
+              a no-op config. */}
+          {value.autoOpenProjectId !== null && (
+            <label
+              title="Lock the desktop into the auto-open project: no welcome screen, no way to switch projects, auto-reopen on close."
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6, marginTop: 8,
+                opacity: disabled ? 0.5 : 1, cursor: disabled ? 'default' : 'pointer',
+                textTransform: 'none', letterSpacing: 0, fontWeight: 400,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={value.kioskMode}
+                disabled={disabled}
+                onChange={toggleKiosk}
+              />
+              <span>
+                Kiosk mode — lock the user into this project (no escape to welcome screen)
+              </span>
+            </label>
+          )}
         </div>
       )}
     </div>

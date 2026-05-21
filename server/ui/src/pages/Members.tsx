@@ -18,6 +18,7 @@ interface Member {
   capabilities?: MemberCapabilities
   allowedProjectIds?: number[]
   autoOpenProjectId?: number | null
+  kioskMode?: boolean
 }
 
 /** /api/members only returns the lean shape (no caps). For the admin
@@ -26,6 +27,7 @@ interface MemberFull extends Member {
   capabilities: MemberCapabilities
   allowedProjectIds: number[]
   autoOpenProjectId: number | null
+  kioskMode: boolean
 }
 
 export default function Members() {
@@ -50,6 +52,7 @@ export default function Members() {
           capabilities: m.capabilities ?? EMPTY_CAPABILITY_VALUE.capabilities,
           allowedProjectIds: m.allowedProjectIds ?? [],
           autoOpenProjectId: m.autoOpenProjectId ?? null,
+          kioskMode: !!m.kioskMode,
         })),
       )
       setProjects(projectsRes.projects)
@@ -92,6 +95,7 @@ export default function Members() {
       capabilities: next.capabilities,
       allowedProjectIds: next.allowedProjectIds,
       autoOpenProjectId: next.autoOpenProjectId,
+      kioskMode: next.kioskMode,
     })
     setEditingId(null)
   }
@@ -142,6 +146,15 @@ export default function Members() {
                     {m.allowedProjectIds.length > 0 && (
                       <span className="hint" style={{ marginLeft: 6 }}>
                         ({m.allowedProjectIds.length} proj)
+                      </span>
+                    )}
+                    {m.kioskMode && (
+                      <span
+                        className="pill"
+                        style={{ marginLeft: 6, color: 'var(--accent)', background: 'var(--accent-tint)' }}
+                        title="Kiosk mode — desktop locked to the auto-open project"
+                      >
+                        KIOSK
                       </span>
                     )}
                   </td>
@@ -195,6 +208,7 @@ function MemberCapsEditor(props: {
     capabilities: member.capabilities,
     allowedProjectIds: member.allowedProjectIds,
     autoOpenProjectId: member.autoOpenProjectId,
+    kioskMode: member.kioskMode,
   })
   return (
     <div style={{ padding: '12px 4px' }}>

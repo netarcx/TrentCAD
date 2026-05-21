@@ -19,6 +19,7 @@ interface PinRow {
   capabilities: MemberCapabilities
   allowedProjectIds: number[]
   autoOpenProjectId: number | null
+  kioskMode: boolean
 }
 
 interface IssuedPin {
@@ -74,6 +75,7 @@ export default function Pins() {
         capabilities: caps.capabilities,
         allowedProjectIds: caps.allowedProjectIds,
         autoOpenProjectId: caps.autoOpenProjectId,
+        kioskMode: caps.kioskMode,
       })
       setJustIssued(res)
       setDisplayName('')
@@ -243,6 +245,15 @@ export default function Pins() {
                     {p.allowedProjectIds.length > 0 && (
                       <span className="hint" style={{ marginLeft: 6 }}>
                         ({p.allowedProjectIds.length} proj)
+                      </span>
+                    )}
+                    {p.kioskMode && (
+                      <span
+                        className="pill"
+                        style={{ marginLeft: 6, color: 'var(--accent)', background: 'var(--accent-tint)' }}
+                        title="Kiosk PIN — enrollee will be locked into the auto-open project"
+                      >
+                        KIOSK
                       </span>
                     )}
                   </td>

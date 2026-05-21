@@ -44,7 +44,8 @@ export async function maybeBootstrapAdminPin(log: FastifyBaseLogger): Promise<Is
   // Maybe a setup PIN from a previous boot is still hanging around.
   // Reuse it so a restart doesn't constantly print new PINs at the operator.
   const pendingAdminPin = db.prepare(
-    `SELECT code, role, expiresAt, capabilities, allowedProjectIds, autoOpenProjectId
+    `SELECT code, role, expiresAt, capabilities, allowedProjectIds,
+            autoOpenProjectId, kioskMode
        FROM pins
       WHERE role = 'admin' AND consumedAt IS NULL
         AND (expiresAt IS NULL OR expiresAt > ?)
@@ -57,6 +58,7 @@ export async function maybeBootstrapAdminPin(log: FastifyBaseLogger): Promise<Is
     capabilities: string | null
     allowedProjectIds: string | null
     autoOpenProjectId: number | null
+    kioskMode: number
   } | undefined
 
   const pin: IssuedPin = pendingAdminPin
@@ -67,6 +69,7 @@ export async function maybeBootstrapAdminPin(log: FastifyBaseLogger): Promise<Is
         capabilities: parseCapabilities(pendingAdminPin.capabilities),
         allowedProjectIds: parseAllowedProjectIds(pendingAdminPin.allowedProjectIds),
         autoOpenProjectId: pendingAdminPin.autoOpenProjectId,
+        kioskMode: pendingAdminPin.kioskMode === 1 && pendingAdminPin.autoOpenProjectId !== null,
       }
     : issuePin({ role: 'admin', createdBy: null, ttlMs: null })
 

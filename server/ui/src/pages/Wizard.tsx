@@ -201,6 +201,7 @@ export default function Wizard() {
         capabilities: pinCaps.capabilities,
         allowedProjectIds: pinCaps.allowedProjectIds,
         autoOpenProjectId: pinCaps.autoOpenProjectId,
+        kioskMode: pinCaps.kioskMode,
       })
       setIssuedPinCode(pin.code)
     } catch (err) {

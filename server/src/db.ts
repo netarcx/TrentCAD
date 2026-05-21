@@ -168,6 +168,14 @@ const MIGRATIONS: string[] = [
   ALTER TABLE pins ADD COLUMN allowedProjectIds   TEXT;
   ALTER TABLE pins ADD COLUMN autoOpenProjectId   INTEGER REFERENCES projects(id) ON DELETE SET NULL;
   `,
+  // v3: record each device's running FrameCAD version. Populated on
+  // enroll (body) and on every authed request (X-Client-Version
+  // header) so the admin UI can flag desktops that are running an
+  // outdated build. NULL means the device hasn't reported a version
+  // yet — treated as "unknown" in the UI, not "outdated".
+  `
+  ALTER TABLE devices ADD COLUMN clientVersion TEXT;
+  `,
 ]
 
 function ensureDb(): Db {

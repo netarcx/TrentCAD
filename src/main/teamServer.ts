@@ -145,6 +145,11 @@ async function fetchTeamApi<T>(
   const headers: Record<string, string> = {}
   if (state.token) headers.Authorization = `Bearer ${state.token}`
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json'
+  // Send our running version on every request so the team server can
+  // surface outdated desktops in the admin UI. Free piggyback — the
+  // server reads this in `requireDevice` and persists it on the
+  // device row alongside lastSeenAt.
+  headers['X-Client-Version'] = app.getVersion()
 
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? 8000)
@@ -201,6 +206,7 @@ export async function enroll(args: {
       body: {
         pin: cleanPin,
         deviceLabel: args.deviceLabel?.trim() || undefined,
+        clientVersion: app.getVersion(),
       },
     })
     state.token = data.token

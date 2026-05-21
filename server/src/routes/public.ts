@@ -28,6 +28,10 @@ interface EnrollBody {
   deviceLabel?: string
   /** Optional GitHub username; falls back to the PIN's pre-bind value. */
   githubUsername?: string
+  /** Desktop's running FrameCAD version (e.g. "3.0.3"). Stored on the
+   *  device row so the admin UI can flag outdated clients without
+   *  waiting for the first authed heartbeat. */
+  clientVersion?: string
 }
 
 interface TeamRow {
@@ -165,10 +169,12 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
     const token = generateToken()
     const tokenHash = await hashToken(token)
     const deviceLabel = (body.deviceLabel ?? '').trim() || 'device'
+    const clientVersion =
+      ((body.clientVersion ?? '').replace(/^v/i, '').slice(0, 32).trim()) || null
     const deviceResult = db.prepare(
-      `INSERT INTO devices (memberId, label, tokenHash, createdAt, lastSeenAt)
-       VALUES (?, ?, ?, ?, ?)`
-    ).run(member.id, deviceLabel, tokenHash, now, now)
+      `INSERT INTO devices (memberId, label, tokenHash, createdAt, lastSeenAt, clientVersion)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(member.id, deviceLabel, tokenHash, now, now, clientVersion)
 
     const team = db.prepare(`SELECT * FROM team WHERE id = 1`).get() as TeamRow
 

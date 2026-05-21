@@ -20,6 +20,7 @@ import {
   type MemberCapabilities,
 } from '../db.js'
 import { requireAdmin, issuePin, revokePin } from '../auth.js'
+import { serverVersion, getLatestReleaseVersion, isOutdated } from '../version.js'
 
 const VALID_ROLES: Role[] = ['admin', 'mentor', 'student']
 
@@ -379,6 +380,59 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       target: `device:${id}`,
     })
     return { success: true }
+  })
+
+  // ── Version status ─────────────────────────────────────────────────
+
+  // What's the server running, what's the latest released build, and
+  // which of our connected desktops are behind? The admin UI renders
+  // a banner off this so the team can stay on a current build without
+  // anyone having to remember to check GitHub manually.
+  app.get('/api/admin/version-status', async () => {
+    const latest = await getLatestReleaseVersion()
+    const serverOutdated = isOutdated(serverVersion, latest)
+
+    // Pull every device with a known clientVersion. NULLs mean the
+    // device hasn't reported one yet (legacy enrolls before this
+    // feature shipped); they show up as "unknown" in the UI rather
+    // than getting flagged as outdated.
+    const devices = getDb().prepare(
+      `SELECT d.id        AS deviceId,
+              d.label     AS deviceLabel,
+              d.clientVersion,
+              d.lastSeenAt,
+              m.id        AS memberId,
+              m.displayName,
+              m.role
+         FROM devices d
+         JOIN members m ON m.id = d.memberId
+        ORDER BY d.lastSeenAt DESC`
+    ).all() as Array<{
+      deviceId: number
+      deviceLabel: string
+      clientVersion: string | null
+      lastSeenAt: number
+      memberId: number
+      displayName: string
+      role: Role
+    }>
+
+    const outdatedClients = latest
+      ? devices.filter(d => d.clientVersion && isOutdated(d.clientVersion, latest))
+      : []
+
+    return {
+      server: {
+        current: serverVersion,
+        latest,
+        outdated: serverOutdated,
+      },
+      clients: {
+        latest,
+        total: devices.length,
+        outdated: outdatedClients,
+      },
+    }
   })
 
   // ── Audit log ──────────────────────────────────────────────────────

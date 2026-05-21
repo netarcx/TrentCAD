@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import UpdateBanner from '../components/UpdateBanner'
 
 interface Team { name: string; gitHubOrg: string; projectPrefix: string; welcomeMessage: string }
 interface Member { id: number; displayName: string; role: string }
@@ -29,6 +30,7 @@ export default function Dashboard() {
 
   return (
     <>
+      <UpdateBanner />
       <h1>{team?.name ?? 'Loading…'}</h1>
       <div className="sub">
         {team?.gitHubOrg

@@ -344,8 +344,25 @@ export async function requireDevice(
   }
   req.member = hit.member
   req.device = hit.device
-  getDb().prepare(`UPDATE devices SET lastSeenAt = ? WHERE id = ?`)
-    .run(Date.now(), hit.device.id)
+
+  // Pull the desktop's running version off the request header (if it
+  // sent one) so the admin UI's "outdated clients" list stays current
+  // without needing a separate heartbeat endpoint. Strip the leading
+  // `v` and clamp to a reasonable length to keep the column tidy.
+  const versionHeader = req.headers['x-client-version']
+  const reported =
+    typeof versionHeader === 'string'
+      ? versionHeader.replace(/^v/i, '').slice(0, 32).trim() || null
+      : null
+
+  if (reported) {
+    getDb().prepare(
+      `UPDATE devices SET lastSeenAt = ?, clientVersion = ? WHERE id = ?`
+    ).run(Date.now(), reported, hit.device.id)
+  } else {
+    getDb().prepare(`UPDATE devices SET lastSeenAt = ? WHERE id = ?`)
+      .run(Date.now(), hit.device.id)
+  }
 }
 
 /**

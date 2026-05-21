@@ -231,6 +231,25 @@ button.link {
   margin-top: 12px;
 }
 
+.update-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: rgba(252, 211, 77, 0.10);
+  color: var(--yellow);
+  border: 1px solid rgba(252, 211, 77, 0.30);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+.update-banner .ub-icon { font-size: 16px; line-height: 1.2; }
+.update-banner .ub-body { flex: 1; color: var(--text-primary); }
+.update-banner .ub-body strong { color: var(--yellow); }
+.update-banner .ub-body ul { margin-top: 6px; padding-left: 18px; }
+.update-banner .ub-body a { color: var(--accent); text-decoration: none; }
+.update-banner .ub-body a:hover { text-decoration: underline; }
+
 /* ─── Tables ─── */
 
 table {

@@ -65,7 +65,7 @@ Ships as two Docker images under `server/docker-compose.yml`:
 - **`framecad-server`** (`server/Dockerfile`) — the Node app on port 42130
 - **`framecad-lfs`** (`datopian/giftless`) — LFS object store on port 42131, validates JWTs signed by `framecad-server` using a shared `LFS_JWT_SECRET` env var. Object storage is a host bind-mount at `./data/lfs-objects` (so backups are plain rsync/borg).
 
-Operators self-host on Unraid / Pi / school server. `.env` (next to compose file) must set `LFS_JWT_SECRET`; see `server/.env.example`.
+Operators self-host on Unraid / Pi / school server. **`.env` (next to compose file) MUST set `LFS_JWT_SECRET`** — compose's `:?` marker refuses to start without it. Generate with `openssl rand -hex 32` (Linux/macOS/WSL/Git Bash) or `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` (PowerShell). See `server/README.md` for the full setup walkthrough and `server/.env.example` for the env template.
 
 ### SolidWorks add-in (`solidworks-addin/`)
 

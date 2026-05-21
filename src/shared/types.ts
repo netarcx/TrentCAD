@@ -257,6 +257,11 @@ export interface TeamConfig {
   gitHubOrg: string
   projectPrefix: string
   welcomeMessage: string
+  /** Base URL of the self-hosted Git-LFS server (Giftless) when the
+   *  team server is configured for it; empty string otherwise. The
+   *  desktop writes this into each project's `.lfsconfig` so all LFS
+   *  traffic skips GitHub and lands on the team's own storage. */
+  lfsUrl?: string
 }
 
 /**

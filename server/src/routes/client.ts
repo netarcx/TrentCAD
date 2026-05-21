@@ -10,6 +10,8 @@
 import type { FastifyInstance } from 'fastify'
 import { getDb, type Role, type MemberStatus } from '../db.js'
 import { requireDevice } from '../auth.js'
+import { config } from '../config.js'
+import { lfsEnabled, mintLfsToken } from '../lfs.js'
 
 interface TeamRow {
   name: string
@@ -46,7 +48,8 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     if (!req.url.startsWith('/api/me') &&
         !req.url.startsWith('/api/team') &&
         !req.url.startsWith('/api/members') &&
-        !req.url.startsWith('/api/projects')) return
+        !req.url.startsWith('/api/projects') &&
+        !req.url.startsWith('/api/lfs/')) return
     await requireDevice(req, reply)
   })
 
@@ -102,6 +105,36 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
       projectPrefix: team.projectPrefix,
       welcomeMessage: team.welcomeMessage,
       updatedAt: team.updatedAt,
+      // Empty string when LFS isn't configured on this server — clients
+      // detect that and fall back to whatever LFS URL the project's
+      // `.lfsconfig` already specifies (i.e. GitHub LFS for the few
+      // projects that were created before self-hosting).
+      lfsUrl: config.lfsServerUrl ?? '',
+    }
+  })
+
+  // ── Self-hosted LFS ────────────────────────────────────────────────
+
+  // Mint a short-lived JWT for the calling member to use against the
+  // self-hosted LFS server (Giftless). Giftless validates the signature
+  // with the same shared secret this server uses to sign — neither end
+  // talks to the other directly. Returns 503 when LFS isn't configured
+  // on this deployment so the caller can fall back gracefully.
+  app.post('/api/lfs/token', async (req, reply) => {
+    if (!lfsEnabled()) {
+      return reply.code(503).send({
+        error: 'Self-hosted LFS is not configured on this server',
+      })
+    }
+    const m = req.member!
+    const { token, expiresAt } = mintLfsToken({
+      memberId: m.id,
+      displayName: m.displayName,
+    })
+    return {
+      token,
+      expiresAt,
+      url: config.lfsServerUrl,
     }
   })
 

@@ -1,18 +1,37 @@
 # docker compose up
 #
-# Self-hosted FrameCAD team server. One container, one volume for the
-# SQLite DB, no external services. Tested with Docker 24+ / Compose v2.
+# Self-hosted FrameCAD team server. Two containers:
+#   - `framecad-server` — the Node/Fastify admin + client API
+#   - `framecad-lfs`    — Giftless, the self-hosted Git-LFS object store
+#                         (replaces GitHub LFS so the team isn't billed
+#                         per GB / per bandwidth)
+#
+# Both share `./data` on the host and a single HMAC secret
+# (`LFS_JWT_SECRET`) so the team server can sign LFS auth tokens that
+# Giftless trusts. Operators set that secret + the public LFS URL in
+# `.env` next to this file — see `.env.example` for a starter.
 #
 # After `docker compose up -d`:
-#   - the server is reachable at http://<host>:42130
-#   - the first-launch admin PIN appears in `docker compose logs -f`
+#   - team server reachable at http://<host>:42130
+#   - LFS server reachable at http://<host>:42131
+#   - first-launch admin PIN appears in `docker compose logs -f`
 #     AND in ./data/SETUP_PIN.txt (bind-mounted from the host)
 #   - paste that PIN into FrameCAD desktop's "Enroll with Team" screen
 #
 # Persistence: SQLite + the setup-PIN file live under ./data on the
-# host (bind mount, not a named volume) so the team admin can grep
-# the PIN file directly — `cat ./data/SETUP_PIN.txt` — without
-# needing `docker exec`. Wipe ./data to start over from scratch.
+# host; LFS objects under ./data/lfs-objects. Both bind mounts, not
+# named volumes, so the operator can rsync / borg without `docker exec`.
+# Wipe ./data to start over from scratch.
+
+x-shared-env: &shared-env
+  # Symmetric HMAC secret shared between the team server (which signs
+  # LFS auth tokens) and giftless (which verifies them). MUST be the
+  # same on both services. Anything random and long enough is fine —
+  # operators set this in `.env` next to docker-compose.yml. When
+  # missing, /api/lfs/* returns 503 instead of pretending to work, and
+  # giftless rejects every request. Generate one with e.g.
+  #   openssl rand -hex 32
+  LFS_JWT_SECRET: ${LFS_JWT_SECRET:?LFS_JWT_SECRET must be set in .env}
 
 services:
   framecad-server:
@@ -45,12 +64,19 @@ services:
       - ./data:/data
 
     environment:
+      <<: *shared-env
       # Override any of these from the host environment or a .env file;
       # values here are the documented defaults for clarity.
       PORT: 42130
       HOST: 0.0.0.0
       DATA_DIR: /data
       LOG_LEVEL: info
+      # Public-facing URL of the LFS server (giftless). Handed to the
+      # desktop client over /api/team so it knows where to point each
+      # project's .lfsconfig. Use a hostname clients can reach from
+      # their network — `localhost` only works for the operator's own
+      # machine. Override in .env (LFS_SERVER_URL).
+      LFS_SERVER_URL: ${LFS_SERVER_URL:-http://localhost:42131}
 
     # `compose` doesn't need the Dockerfile's HEALTHCHECK to be
     # redeclared, but we surface a label for the user so `docker ps`
@@ -59,9 +85,50 @@ services:
       org.opencontainers.image.title: FrameCAD Team Server
       org.opencontainers.image.description: Self-hosted coordination server for FrameCAD desktop clients
 
+  # ── Self-hosted Git-LFS ────────────────────────────────────────────
+  # Giftless serves the LFS object store for every project the team
+  # creates through FrameCAD, so CAD binaries never touch GitHub LFS
+  # (which charges per GB / per bandwidth). Auth is JWT signed by the
+  # framecad-server above; both sides share LFS_JWT_SECRET from .env.
+  framecad-lfs:
+    image: datopian/giftless:latest
+    container_name: framecad-lfs
+    restart: unless-stopped
+
+    # Same default port pattern as the team server's 42130. Operators
+    # can remap the left side (`"42131:5000"`) without touching
+    # giftless's internals — the right side is what giftless binds
+    # inside the container.
+    ports:
+      - "42131:5000"
+
+    volumes:
+      # Object store. Survives container restarts because it's a host
+      # bind mount, not a Docker-managed volume. `du -sh ./data/lfs-objects`
+      # tells the operator how much GitHub-LFS quota they're saving.
+      - ./data/lfs-objects:/lfs-storage
+      # Read-only mount of the config file. Edit it on the host, then
+      # `docker compose restart framecad-lfs` to pick up changes.
+      - ./giftless-config.yaml:/etc/giftless/giftless.yaml:ro
+
+    environment:
+      <<: *shared-env
+      GIFTLESS_CONFIG_FILE: /etc/giftless/giftless.yaml
+      # Bind on every interface inside the container — Docker handles
+      # the rest via the `ports:` mapping.
+      GIFTLESS_HTTP_HOST: 0.0.0.0
+      GIFTLESS_HTTP_PORT: "5000"
+      # Quiet by default; flip to "true" when chasing a 401.
+      GIFTLESS_DEBUG: "false"
+
+    labels:
+      org.opencontainers.image.title: FrameCAD LFS Server
+      org.opencontainers.image.description: Self-hosted Git-LFS object store (Giftless) for FrameCAD projects
+
 # Uncomment to switch from bind mount to a Docker-managed named volume.
 # In that mode you'd `docker compose exec framecad-server cat /data/SETUP_PIN.txt`
 # to read the bootstrap PIN.
 #
 # volumes:
 #   framecad-data:
+#

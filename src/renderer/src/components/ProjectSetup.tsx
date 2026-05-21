@@ -884,7 +884,7 @@ export default function ProjectSetup({ onCreateProject, onJoinProject, onOpenPro
             already-cloned projects. */}
         {teamSnapshot?.enrolled && (
         <div className="setup-footer">
-        {teamSnapshot.me?.capabilities.createProject && (
+        {teamSnapshot.me?.capabilities?.createProject && (
         <div className="setup-toolbar">
           <div className="setup-auth">
             {authStatus?.loggedIn ? (

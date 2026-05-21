@@ -240,7 +240,21 @@ export async function refresh(): Promise<TeamSnapshot> {
       fetchTeamApi<{ members: TeamMember[] }>('/api/members').then(d => d.members),
       fetchTeamApi<{ projects: ProjectEntry[] }>('/api/projects').then(d => d.projects),
     ])
-    state.me = me
+    // Legacy team servers (pre-caps) omit `capabilities`/`allowedProjectIds`/
+    // `autoOpenProjectId`. Default to full access so existing deployments
+    // keep working until the server is upgraded — fail-open is correct
+    // here because the server is the source of truth for restrictions.
+    state.me = {
+      ...me,
+      capabilities: me.capabilities ?? {
+        createProject: true,
+        browseTeamProjects: true,
+        openProject: true,
+        manufacturingView: true,
+      },
+      allowedProjectIds: me.allowedProjectIds ?? [],
+      autoOpenProjectId: me.autoOpenProjectId ?? null,
+    }
     state.team = team
     state.members = members
     state.projects = projects

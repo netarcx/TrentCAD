@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.6
+#
 # Multi-stage so the runtime image doesn't ship build tools.
 #
 # Stage 1 (`build`): full node:22-alpine + the native-build toolchain
@@ -10,26 +12,40 @@
 # node_modules + compiled JS. SQLite + the bootstrap SETUP_PIN.txt
 # live under `/data`, exposed as a named VOLUME so the database
 # survives container replacements.
+#
+# The `# syntax=` directive at the top enables BuildKit cache mounts
+# (the `--mount=type=cache` lines below). Without it those lines are
+# silently ignored and the build falls back to the slow path that
+# re-downloads every tarball / re-fetches every apk index on each
+# cache-busting rebuild. Docker 23+ has BuildKit on by default; with
+# older docker run `DOCKER_BUILDKIT=1 docker build ...` to opt in.
 
 FROM node:22-alpine AS build
 WORKDIR /app
 
-# Native-build deps for argon2 / better-sqlite3. python3+make+g++ is
-# the standard prebuild-install fallback; libc-dev + linux-headers
-# cover edge cases where the prebuilt binaries don't match the
-# Alpine musl ABI.
-RUN apk add --no-cache python3 make g++ libc-dev linux-headers
+# Native-build deps for argon2 / better-sqlite3. Cache the apk index
+# across builds so the (rare) rebuild of this layer doesn't re-fetch
+# from upstream. python3+make+g++ is the standard prebuild-install
+# fallback; libc-dev + linux-headers cover edge cases where the
+# prebuilt binaries don't match the Alpine musl ABI.
+RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
+    apk add python3 make g++ libc-dev linux-headers
 
-# 1. Install server deps. Cached unless package.json / lockfile
-#    change. `npm ci` instead of `install` so the build fails fast
-#    if the lockfile is out of sync with package.json (which is what
-#    you want from a reproducible image build).
+# 1. Install server deps. The cache mount keeps npm's tarball store
+#    across builds, so a package.json change re-resolves the lockfile
+#    but doesn't re-download anything that hasn't actually changed.
+#    `--prefer-offline` makes npm consult the cache before the network.
+#    `npm ci` (vs install) so the build fails fast if package-lock.json
+#    is out of sync with package.json.
 COPY package.json package-lock.json* ./
-RUN npm ci --no-audit --no-fund
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --no-audit --no-fund --prefer-offline
 
-# 2. Install UI deps the same way.
+# 2. Install UI deps the same way. Separate from server deps so a
+#    UI-only change doesn't invalidate the server install layer.
 COPY ui/package.json ui/package-lock.json* ./ui/
-RUN npm --prefix ui ci --no-audit --no-fund
+RUN --mount=type=cache,target=/root/.npm \
+    npm --prefix ui ci --no-audit --no-fund --prefer-offline
 
 # 3. Bring in source. Any change here busts the build cache below.
 COPY tsconfig.json ./
@@ -45,7 +61,8 @@ RUN npx tsc -p .
 
 # 5. Drop dev deps to shrink the runtime image. Native `.node` files
 #    in argon2 / better-sqlite3 are prod deps, so they survive.
-RUN npm prune --omit=dev
+RUN --mount=type=cache,target=/root/.npm \
+    npm prune --omit=dev
 
 FROM node:22-alpine AS runtime
 WORKDIR /app

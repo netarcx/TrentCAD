@@ -14,6 +14,7 @@ import Members from './pages/Members'
 import Pins from './pages/Pins'
 import Projects from './pages/Projects'
 import TeamSettings from './pages/TeamSettings'
+import Wizard from './pages/Wizard'
 import { api, ApiError } from './api'
 import { clearSession, getMember, getToken } from './auth'
 
@@ -33,6 +34,11 @@ export default function App() {
     <HashRouter>
       <Routes>
         <Route path="/sign-in" element={<SignIn />} />
+        {/* Wizard is auth-gated but renders without the side-nav
+            shell — it's a focused first-launch flow. AdminShell
+            redirects to it when /api/admin/setup-state says we're
+            not done. */}
+        <Route path="/setup" element={<WizardGate />} />
         <Route element={<AdminShell />}>
           <Route index element={<Dashboard />} />
           <Route path="members" element={<Members />} />
@@ -44,6 +50,29 @@ export default function App() {
       </Routes>
     </HashRouter>
   )
+}
+
+/**
+ * Thin wrapper around the Wizard page — same auth gate as
+ * AdminShell, but renders without the side-nav so the wizard is
+ * focused and full-screen. Bouncing here when the user lands on
+ * /setup directly while not signed in.
+ */
+function WizardGate() {
+  const navigate = useNavigate()
+  const [ok, setOk] = useState(false)
+  useEffect(() => {
+    const token = getToken()
+    const m = getMember()
+    if (!token || !m || m.role !== 'admin') {
+      navigate('/sign-in', { replace: true })
+      return
+    }
+    setOk(true)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  if (!ok) return null
+  return <Wizard />
 }
 
 function AdminShell() {
@@ -63,7 +92,23 @@ function AdminShell() {
     // kicks back to sign-in. Network errors fall through silently;
     // the cached member info is enough to render the shell.
     api('GET', '/api/me')
-      .then(() => setChecking(false))
+      .then(async () => {
+        // Once we know the token is good, see whether the first-launch
+        // wizard still wants attention. If so, hop over to /setup —
+        // the wizard itself decides which step to start on. Bail
+        // silently on error (a transient blip shouldn't trap the
+        // admin in a loading screen).
+        try {
+          const s = await api<{ setupComplete: boolean }>(
+            'GET', '/api/admin/setup-state'
+          )
+          if (!s.setupComplete) {
+            navigate('/setup', { replace: true })
+            return
+          }
+        } catch { /* ignore — show the dashboard */ }
+        setChecking(false)
+      })
       .catch(err => {
         if (err instanceof ApiError && err.status === 401) {
           clearSession()

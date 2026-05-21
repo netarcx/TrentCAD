@@ -7,6 +7,7 @@ import { loadManifest, syncManifest, annotatePartNumbers } from './parts'
 import { loadAllMeta, annotateMeta } from './meta'
 import { getGitHubToken } from './auth'
 import { getBuildDefaultPrefix, getBuildDefaultTeamName, getBuildDefaultIssueRepo } from './branding'
+import { lookupProjectByRemote, getLfsToken } from './teamServer'
 
 // Large binary or text-based CAD files that go through Git LFS. `-text` keeps
 // git from running line-ending conversion on the file; `merge=lfs` uses the
@@ -179,6 +180,102 @@ function buildGitAttributes(): string {
 }
 
 /**
+ * Compose the per-project LFS endpoint URL. Our team server tells us
+ * the base (e.g. `http://lfs.school.local:42131`) and we append the
+ * fixed `framecad/<projectId>` path that giftless storage uses. Same
+ * shape the JWT scopes are issued for, so giftless will accept ops
+ * the desktop sends to this URL.
+ */
+function lfsEndpointForProject(lfsBaseUrl: string, projectId: number): string {
+  return `${lfsBaseUrl.replace(/\/+$/, '')}/framecad/${projectId}`
+}
+
+/**
+ * Write (or refresh) `.lfsconfig` at the project root so git-lfs
+ * points at the team's self-hosted server instead of GitHub LFS.
+ * Committed: every clone of this repo picks up the same target
+ * automatically without each user having to configure it.
+ *
+ * Idempotent — overwrites in-place every time so the URL stays
+ * current even if the operator migrates the LFS server. If the team
+ * server doesn't have LFS configured (no lfsUrl in the snapshot),
+ * this is a no-op and the project keeps using GitHub LFS via the
+ * implicit default.
+ */
+export async function writeLfsConfig(
+  dirPath: string,
+  remote: string,
+): Promise<{ projectId: number; lfsUrl: string } | null> {
+  const cfg = lookupProjectByRemote(remote)
+  if (!cfg) return null
+  const endpoint = lfsEndpointForProject(cfg.lfsUrl, cfg.projectId)
+  const body =
+    '# Managed by FrameCAD — routes LFS traffic to the team\'s self-hosted\n' +
+    '# Giftless server instead of GitHub LFS. Re-written on project open.\n' +
+    '[lfs]\n' +
+    `\turl = ${endpoint}\n`
+  await fs.writeFile(path.join(dirPath, '.lfsconfig'), body)
+  return cfg
+}
+
+/**
+ * Convenience: refresh LFS auth for the CURRENTLY-OPEN project by
+ * reading origin's URL from the local git config. Used by publish/
+ * sync where we don't otherwise need the remote string. Safe to
+ * call on any project — silently no-ops when the project isn't on
+ * the team server's registry or has no origin remote configured.
+ */
+async function refreshLfsAuthForOpenProject(): Promise<void> {
+  try {
+    const g = getGit()
+    const remotes = await g.getRemotes(true)
+    const origin = remotes.find(r => r.name === 'origin')
+    if (!origin?.refs?.fetch) return
+    await refreshLfsAuth(getProjectPath(), origin.refs.fetch)
+  } catch { /* best-effort */ }
+}
+
+/**
+ * Refresh the local git config with a freshly-minted LFS auth
+ * header. Run this immediately before any git operation that might
+ * push/pull LFS objects (publish, sync, joinProject) so the JWT is
+ * fresh when git-lfs's pre-push hook fires.
+ *
+ * The header lives in `.git/config` locally — never in the project
+ * tree, never committed. 15-minute TTL means even a leaked
+ * `.git/config` value is useless within a class period.
+ *
+ * Returns the quota info from the mint call so the caller can warn
+ * the user before an upload starts if they're already over cap.
+ * Null when LFS isn't configured (the operation falls through to
+ * GitHub LFS as before).
+ */
+export async function refreshLfsAuth(
+  dirPath: string,
+  remote: string,
+): Promise<{ writable: boolean; used: number; limit: number | null } | null> {
+  const cfg = lookupProjectByRemote(remote)
+  if (!cfg) return null
+  const tok = await getLfsToken(cfg.projectId)
+  if (!tok) return null
+  const endpoint = lfsEndpointForProject(cfg.lfsUrl, cfg.projectId)
+  const g = simpleGit(dirPath)
+  // The extraheader key needs the URL with the trailing slash —
+  // matches what git-lfs's batch endpoint resolves to and ensures
+  // git uses the header for every sub-path under our LFS server.
+  await g.raw([
+    'config', '--local',
+    `http.${endpoint}/.extraheader`,
+    `Authorization: Bearer ${tok.token}`,
+  ])
+  return {
+    writable: tok.writable,
+    used: tok.quota.used,
+    limit: tok.quota.limit,
+  }
+}
+
+/**
  * Ensure every CAD-related pattern FrameCAD knows about is present in
  * .gitattributes. Adds missing lines without rewriting any custom rules
  * the user added. Returns true if the file was modified.
@@ -233,6 +330,12 @@ export async function createProject(name: string, dirPath: string, remote: strin
 
   await fs.writeFile(path.join(dirPath, '.gitattributes'), buildGitAttributes())
 
+  // Point LFS at the team's self-hosted server if one's configured.
+  // No-op when the project isn't on the team server snapshot yet —
+  // in that case the file isn't written at all, so the repo falls
+  // through to GitHub LFS until the admin registers it.
+  await writeLfsConfig(dirPath, remote)
+
   const gitignore = [
     '~$*',
     '*.swp',
@@ -273,7 +376,16 @@ export async function createProject(name: string, dirPath: string, remote: strin
   }
 
   await withDubiousOwnershipRecovery(async () => {
-    await git.add(['.gitattributes', '.gitignore', 'parts.json', 'README.md'])
+    // `.lfsconfig` is only present when the project is on the team
+    // server's registry (otherwise writeLfsConfig was a no-op above).
+    // git.add tolerates missing paths via the spread + a precheck —
+    // simpler than testing fs.stat here.
+    const initialFiles = ['.gitattributes', '.gitignore', 'parts.json', 'README.md']
+    try {
+      await fs.stat(path.join(dirPath, '.lfsconfig'))
+      initialFiles.push('.lfsconfig')
+    } catch { /* not present, skip */ }
+    await git.add(initialFiles)
     // Commit may throw "nothing to commit" if create-project is re-run on an
     // already-initialised repo — treat that as success
     try {
@@ -291,6 +403,12 @@ export async function createProject(name: string, dirPath: string, remote: strin
       } else if (origin.refs.push !== remote && origin.refs.fetch !== remote) {
         await git.remote(['set-url', 'origin', remote])
       }
+      // If this project is on the team server's registry, refresh
+      // the LFS auth header before the initial push so git-lfs's
+      // pre-push hook talks to the self-hosted server with a valid
+      // bearer token. No-op when LFS isn't configured — git-lfs then
+      // falls through to GitHub LFS as before.
+      await refreshLfsAuth(dirPath, remote).catch(() => null)
       await git.push(['--set-upstream', 'origin', 'main'])
     }
   })
@@ -414,13 +532,34 @@ async function runJoinClone(
     // every release tag, which cuts the git-side of the clone for repos
     // with active history. We undo the narrowed refspec right after so
     // future syncs still see teammates' new branches.
+    // Mint an LFS JWT BEFORE the clone if this project's on the
+    // team registry — git-lfs's smudge filter fires during clone and
+    // needs auth to fetch the actual binaries. We inject the auth
+    // header via `--config` so it lands in the new clone's local
+    // config; subsequent operations (sync/publish) refresh it again
+    // via refreshLfsAuth(). No-op fall-through when the project
+    // isn't registered (it just uses GitHub LFS like before).
+    const lfsConfigForClone: string[] = []
+    const lfsCfg = lookupProjectByRemote(url)
+    if (lfsCfg) {
+      const tok = await getLfsToken(lfsCfg.projectId).catch(() => null)
+      if (tok) {
+        const endpoint = lfsEndpointForProject(lfsCfg.lfsUrl, lfsCfg.projectId)
+        lfsConfigForClone.push(
+          '--config',
+          `http.${endpoint}/.extraheader=Authorization: Bearer ${tok.token}`,
+        )
+      }
+    }
+
     await cloneGit.clone(cloneUrl, dirPath, [
       '--single-branch',
       '--no-tags',
       '--config', 'lfs.concurrenttransfers=12',
       '--config', 'http.postBuffer=524288000',
       '--config', 'lfs.activitytimeout=600',
-      '--config', 'lfs.dialtimeout=30'
+      '--config', 'lfs.dialtimeout=30',
+      ...lfsConfigForClone,
     ])
     git = simpleGit(dirPath)
     projectPath = dirPath
@@ -659,6 +798,12 @@ export async function createProgressTag(
 export async function sync(): Promise<SyncResult> {
   const g = getGit()
   try {
+    // Mint a fresh LFS auth header before pulling — git-lfs's smudge
+    // filter runs during the pull and needs a valid token to fetch
+    // any new objects from the self-hosted server. No-op when LFS
+    // isn't configured for this project.
+    await refreshLfsAuthForOpenProject()
+
     const before = await g.log({ maxCount: 1 })
 
     // CAD students often have unsaved or just-saved local changes when
@@ -771,6 +916,13 @@ export async function publish(
 ): Promise<PublishResult> {
   const g = getGit()
   try {
+    // Refresh LFS auth header up front so git-lfs's pre-push hook
+    // (and any verify/upload calls during this publish) talk to the
+    // self-hosted server with a valid bearer token. The header sits
+    // in `.git/config` for the duration of this invocation. No-op
+    // when LFS isn't configured for this project.
+    await refreshLfsAuthForOpenProject()
+
     await syncManifest()
 
     // BEFORE we look at status, clean up any local-ahead commits from

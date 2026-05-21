@@ -250,6 +250,137 @@ button.link {
 .update-banner .ub-body a { color: var(--accent); text-decoration: none; }
 .update-banner .ub-body a:hover { text-decoration: underline; }
 
+/* ─── First-launch wizard ─── */
+
+.wizard {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  background: var(--bg-primary);
+}
+
+.wizard-card {
+  width: 560px;
+  max-width: 100%;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 32px 36px 28px;
+}
+
+.wizard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.wizard-brand {
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 0.4px;
+  color: var(--accent);
+}
+
+.wizard-progress {
+  display: flex;
+  gap: 8px;
+}
+
+.wizard-dot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  opacity: 0.4;
+  transition: opacity 0.2s;
+}
+.wizard-dot.active, .wizard-dot.done { opacity: 1; }
+.wizard-dot span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.wizard-dot.active span {
+  background: var(--accent);
+  color: var(--bg-primary);
+  border-color: var(--accent);
+}
+.wizard-dot.done span {
+  background: var(--bg-surface);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.wizard-dot small {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.wizard-dot.active small, .wizard-dot.done small { color: var(--text-secondary); }
+
+.wizard-card h2 {
+  font-size: 20px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.wizard-card .hint {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+  line-height: 1.5;
+}
+
+.wizard-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.wizard-nav .primary { padding: 9px 22px; }
+
+.success-inline {
+  margin-left: 10px;
+  color: var(--green);
+  font-size: 13px;
+}
+.error-inline {
+  margin-left: 10px;
+  color: var(--red);
+  font-size: 13px;
+}
+
+/* ─── Storage quota indicator ─── */
+.quota-bar {
+  width: 100%;
+  max-width: 220px;
+  height: 6px;
+  background: var(--bg-input);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.quota-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.25s ease-out;
+}
+.quota-fill.warn { background: var(--yellow); }
+.quota-fill.over { background: var(--red); }
+
 /* ─── Tables ─── */
 
 table {

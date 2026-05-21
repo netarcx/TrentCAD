@@ -22,6 +22,7 @@ import {
 } from '../db.js'
 import { requireAdmin, issuePin, revokePin } from '../auth.js'
 import { serverVersion, getLatestReleaseVersion, isOutdated } from '../version.js'
+import { config } from '../config.js'
 
 const VALID_ROLES: Role[] = ['admin', 'mentor', 'student']
 
@@ -391,6 +392,48 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       actorLabel: req.member!.displayName,
       action: 'project.delete',
       target: `project:${id}`,
+    })
+    return { success: true }
+  })
+
+  // ── Setup state ────────────────────────────────────────────────────
+
+  // Returns the data the first-launch wizard needs to decide whether
+  // to show itself and which steps still need attention. Cheap query;
+  // safe to hit on every admin page mount.
+  app.get('/api/admin/setup-state', async req => {
+    const team = getDb().prepare(
+      `SELECT name, gitHubOrg, setupComplete FROM team WHERE id = 1`
+    ).get() as { name: string; gitHubOrg: string; setupComplete: number }
+    const projectCount = (getDb().prepare(
+      `SELECT COUNT(*) AS n FROM projects WHERE archived = 0`
+    ).get() as { n: number }).n
+    // Exclude the calling admin from the count so the "add your
+    // first teammate" step doesn't claim "1 member exists" right
+    // after the bootstrap admin enrolls themselves.
+    const memberCount = (getDb().prepare(
+      `SELECT COUNT(*) AS n FROM members WHERE id != ?`
+    ).get(req.member!.id) as { n: number }).n
+    return {
+      setupComplete: team.setupComplete === 1,
+      teamInfoSet: team.name.trim().length > 0 && team.gitHubOrg.trim().length > 0,
+      lfsConfigured: !!config.lfsServerUrl,
+      lfsUrl: config.lfsServerUrl ?? '',
+      projectCount,
+      memberCount,
+    }
+  })
+
+  // Mark setup-complete on the team row. The wizard calls this when
+  // the admin clicks "Finish" (or "Skip remaining"). Idempotent —
+  // safe to call repeatedly. Once set, AdminShell stops showing the
+  // wizard route.
+  app.post('/api/admin/setup-complete', async req => {
+    getDb().prepare(`UPDATE team SET setupComplete = 1 WHERE id = 1`).run()
+    logAudit({
+      actorId: req.member!.id,
+      actorLabel: req.member!.displayName,
+      action: 'team.setup-complete',
     })
     return { success: true }
   })

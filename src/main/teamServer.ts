@@ -321,3 +321,59 @@ export async function signOut(): Promise<void> {
 export function adminUiUrl(): string | null {
   return state.serverUrl ? state.serverUrl.replace(/\/+$/, '') + '/#/sign-in' : null
 }
+
+// ── LFS helpers ─────────────────────────────────────────────────────
+
+/**
+ * Look up which team-registered project corresponds to a given
+ * GitHub remote URL. Returns null if either we're not enrolled, the
+ * remote isn't on the snapshot, or the team server hasn't told us an
+ * LFS URL (in which case we leave .lfsconfig alone and the project
+ * falls back to GitHub LFS). Normalises trailing `.git` so a remote
+ * recorded as `https://...repo` matches a project stored as
+ * `https://...repo.git`.
+ */
+export function lookupProjectByRemote(
+  remote: string,
+): { projectId: number; lfsUrl: string } | null {
+  if (!state.team?.lfsUrl) return null
+  const norm = (s: string): string => s.trim().replace(/\.git$/i, '').toLowerCase()
+  const want = norm(remote)
+  const match = state.projects.find(p => norm(p.repoUrl) === want)
+  if (!match) return null
+  return { projectId: match.id, lfsUrl: state.team.lfsUrl }
+}
+
+/**
+ * Mint a fresh short-lived JWT for talking to the LFS server about
+ * this project. The desktop calls this immediately before every
+ * `git lfs ...` invocation; 15-minute TTL is plenty for one push,
+ * and re-minting per-op means a quota change on the server takes
+ * effect on the next operation (no stale "writable" tokens).
+ *
+ * Returns null if LFS isn't configured (the team server returned
+ * 503 or the snapshot has no lfsUrl). Callers fall back to GitHub
+ * LFS in that case — the existing flows still work.
+ */
+export async function getLfsToken(projectId: number): Promise<{
+  token: string
+  url: string
+  writable: boolean
+  quota: { used: number; limit: number | null }
+} | null> {
+  if (!state.token || !state.team?.lfsUrl) return null
+  try {
+    return await fetchTeamApi<{
+      token: string
+      url: string
+      writable: boolean
+      quota: { used: number; limit: number | null }
+    }>('/api/lfs/token', {
+      method: 'POST',
+      body: { projectId },
+      timeoutMs: 6000,
+    })
+  } catch {
+    return null
+  }
+}

@@ -22,10 +22,13 @@ const defIssueRepo = JSON.stringify(process.env.FRAMECAD_DEFAULT_ISSUE_REPO || '
 // Pre-baked team-server URL. When set, an end user who pastes just a
 // bare 6-character PIN (no full enrollment link) gets enrolled against
 // this URL automatically — matches the kiosk-style "students never
-// type the server hostname" deployment. Fork or per-school builds set
-// FRAMECAD_DEFAULT_SERVER_URL=https://framecad.school.local:42130
-// before `npm run package`; leave unset for upstream / generic builds.
-const defServerUrl = JSON.stringify(process.env.FRAMECAD_DEFAULT_SERVER_URL || '')
+// type the server hostname" deployment. The hard-coded fallback
+// points at the FRC 2129 production server so default installer
+// builds work out of the box; downstream forks override at build
+// time by setting FRAMECAD_DEFAULT_SERVER_URL before `npm run package`.
+const defServerUrl = JSON.stringify(
+  process.env.FRAMECAD_DEFAULT_SERVER_URL || 'https://framecad.swrobotics.com'
+)
 
 export default defineConfig({
   main: {

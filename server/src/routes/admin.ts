@@ -554,6 +554,83 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
   // ── Audit log ──────────────────────────────────────────────────────
 
+  // ── DESTRUCTIVE: reset the whole server ────────────────────────────
+  //
+  // Wipes every table (members, devices, projects, pins, audit, team
+  // settings) and re-bootstraps a fresh setup PIN. Intended for
+  // testing the first-launch flow repeatedly without manually
+  // `docker compose down && rm -rf data && docker compose up`.
+  //
+  // We do NOT delete the LFS object store directory — that's
+  // separate (and giftless writes there, not us). Operator deletes
+  // it manually if they want a true clean slate.
+  //
+  // Triple-confirmation lives in the UI; here we just require the
+  // caller to POST the literal string "RESET" as the `confirm` body
+  // field. Belt-and-braces — the UI sends it, but if someone hand-
+  // crafts a curl, they have to do it on purpose.
+  app.post<{ Body: { confirm?: string } }>(
+    '/api/admin/dev-reset',
+    async (req, reply) => {
+      if (req.body?.confirm !== 'RESET') {
+        return reply.code(400).send({
+          error: 'Refusing to reset without confirm="RESET" in the body.',
+        })
+      }
+      const callerId = req.member?.id ?? null
+      const callerLabel = req.member?.displayName ?? 'unknown'
+
+      const db = getDb()
+      // Truncate in dependency order. SQLite has no TRUNCATE; DELETE
+      // is functionally identical for our purposes. We also clear
+      // sqlite_sequence so AUTOINCREMENT counters restart at 1, which
+      // makes the post-reset state look like a fresh install rather
+      // than "members id 47…".
+      db.transaction(() => {
+        db.prepare('DELETE FROM audit_events').run()
+        db.prepare('DELETE FROM devices').run()
+        db.prepare('DELETE FROM pins').run()
+        db.prepare('DELETE FROM members').run()
+        db.prepare('DELETE FROM projects').run()
+        // Reset the singleton team row to defaults rather than
+        // deleting it — migrate() seeds it on insert and we don't
+        // want to re-trigger that path. Easier to UPDATE in place.
+        db.prepare(
+          `UPDATE team SET name = 'My Team', gitHubOrg = '', projectPrefix = '',
+                            welcomeMessage = '', setupComplete = 0, updatedAt = ?
+                      WHERE id = 1`
+        ).run(Date.now())
+        db.prepare(`DELETE FROM sqlite_sequence`).run()
+      })()
+
+      // Re-issue the bootstrap admin PIN. SETUP_PIN.txt gets rewritten
+      // and the banner re-prints to logs, so an operator who lost the
+      // response can still find the new PIN the usual way.
+      const { maybeBootstrapAdminPin } = await import('../bootstrap.js')
+      const pin = await maybeBootstrapAdminPin(req.log)
+
+      // First entry in the freshly-empty audit log marks the reset
+      // itself. actorId is null because the deleting admin is gone;
+      // the label preserves their displayName for the human-readable
+      // trail.
+      logAudit({
+        actorId: null,
+        actorLabel: `${callerLabel} (deleted by reset)`,
+        action: 'server.reset',
+        detail: `prior actor id ${callerId}`,
+      })
+
+      return {
+        success: true,
+        // Send the new PIN back so the UI can show it inline instead
+        // of forcing the operator to read docker logs again.
+        setupPin: pin?.code ?? null,
+      }
+    },
+  )
+
+  // ── Audit log ──────────────────────────────────────────────────────
+
   app.get<{ Querystring: { limit?: string } }>('/api/admin/audit', async req => {
     const limit = Math.min(Math.max(Number.parseInt(req.query.limit || '100', 10) || 100, 1), 500)
     const rows = getDb().prepare(

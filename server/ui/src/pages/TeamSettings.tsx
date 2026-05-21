@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api, ApiError } from '../api'
+import { clearSession } from '../auth'
 
 interface Team {
   name: string
@@ -9,10 +11,17 @@ interface Team {
 }
 
 export default function TeamSettings() {
+  const navigate = useNavigate()
   const [team, setTeam] = useState<Team>({ name: '', gitHubOrg: '', projectPrefix: '', welcomeMessage: '' })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
+  // Reset flow has three stages: closed → confirm-1 → confirm-2 →
+  // post-reset (showing the new PIN before kicking back to sign-in).
+  const [resetStage, setResetStage] = useState<'closed' | 'confirm1' | 'confirm2' | 'done'>('closed')
+  const [resetTyped, setResetTyped] = useState('')
+  const [newSetupPin, setNewSetupPin] = useState<string | null>(null)
+  const [resetting, setResetting] = useState(false)
 
   useEffect(() => {
     api<Team>('GET', '/api/team')
@@ -74,6 +83,129 @@ export default function TeamSettings() {
         <button className="primary" onClick={save} disabled={busy}>
           {busy ? 'Saving…' : 'Save changes'}
         </button>
+      </div>
+
+      {/* ── Danger zone ─────────────────────────────────────────────
+          Server reset. Wipes every member, device, PIN, project, and
+          team setting, then re-issues a fresh bootstrap PIN so the
+          operator can re-test the setup wizard. Intended for
+          development; leaving it permanently visible is a deliberate
+          choice — admins are trusted and the three-stage gate
+          (collapse → type RESET → confirm warning → action) is
+          enough friction to prevent accidents. */}
+      <div className="card danger-zone">
+        <h3>Danger zone</h3>
+        <div className="hint">
+          Reset every member, device, PIN, project, and team setting back to
+          a fresh-install state. Useful while testing the first-launch flow.
+          Does <strong>not</strong> delete the LFS object store — wipe
+          <span className="mono"> ./data/lfs-objects/ </span> by hand if you
+          need a true clean slate.
+        </div>
+
+        {resetStage === 'closed' && (
+          <button
+            className="secondary danger"
+            onClick={() => { setResetStage('confirm1'); setResetTyped(''); setError(null) }}
+          >
+            Reset server…
+          </button>
+        )}
+
+        {resetStage === 'confirm1' && (
+          <div style={{ marginTop: 8 }}>
+            <div className="hint" style={{ color: 'var(--red)', marginBottom: 6 }}>
+              This will delete <strong>every</strong> member, device, PIN,
+              and project on this server. You'll be signed out and the
+              first-launch setup will start over.
+            </div>
+            <label>Type <span className="mono">RESET</span> to continue</label>
+            <input
+              value={resetTyped}
+              onChange={e => setResetTyped(e.target.value)}
+              placeholder="RESET"
+              autoFocus
+            />
+            <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+              <button
+                className="secondary danger"
+                onClick={() => setResetStage('confirm2')}
+                disabled={resetTyped !== 'RESET'}
+              >
+                I understand — continue
+              </button>
+              <button className="link" onClick={() => setResetStage('closed')}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {resetStage === 'confirm2' && (
+          <div style={{ marginTop: 8 }}>
+            <div className="hint" style={{ color: 'var(--red)', marginBottom: 6 }}>
+              Last chance. Click the red button to wipe the database.
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                className="secondary danger"
+                disabled={resetting}
+                onClick={async () => {
+                  setResetting(true)
+                  setError(null)
+                  try {
+                    const res = await api<{ setupPin: string | null }>(
+                      'POST', '/api/admin/dev-reset', { confirm: 'RESET' }
+                    )
+                    setNewSetupPin(res.setupPin)
+                    setResetStage('done')
+                  } catch (err) {
+                    setError((err as ApiError).message)
+                    setResetStage('closed')
+                  } finally {
+                    setResetting(false)
+                  }
+                }}
+              >
+                {resetting ? 'Resetting…' : 'Yes, wipe everything'}
+              </button>
+              <button className="link" onClick={() => setResetStage('closed')} disabled={resetting}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {resetStage === 'done' && (
+          <div className="success" style={{ marginTop: 8 }}>
+            <div style={{ marginBottom: 8 }}>
+              Server reset. Your old session is invalid; sign in again with
+              the new setup PIN below.
+            </div>
+            {newSetupPin ? (
+              <>
+                <span className="tag" style={{ fontSize: 18 }}>{newSetupPin}</span>
+                <div className="hint" style={{ marginTop: 6 }}>
+                  Also saved to <span className="mono">./data/SETUP_PIN.txt</span> and printed to logs.
+                </div>
+              </>
+            ) : (
+              <div className="hint">
+                Check <span className="mono">./data/SETUP_PIN.txt</span> or the server logs for the new PIN.
+              </div>
+            )}
+            <button
+              className="primary"
+              style={{ marginTop: 12 }}
+              onClick={() => {
+                clearSession()
+                navigate('/sign-in', { replace: true })
+              }}
+            >
+              Sign in with new PIN
+            </button>
+          </div>
+        )}
       </div>
     </>
   )

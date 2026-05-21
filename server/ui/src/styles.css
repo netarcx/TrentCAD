@@ -364,6 +364,14 @@ button.link {
   font-size: 13px;
 }
 
+/* ─── Danger zone (destructive ops) ─── */
+.danger-zone {
+  border-color: rgba(251, 113, 133, 0.3);
+}
+.danger-zone h3 {
+  color: var(--red);
+}
+
 /* ─── Storage quota indicator ─── */
 .quota-bar {
   width: 100%;

@@ -178,8 +178,12 @@ jobs:
   # Team server image — pushed to GitHub Container Registry on every
   # main-branch build, tagged with the package.json version + `latest`.
   # Self-hosters pull this via `docker compose` or `docker run`.
+  # No `needs:` — server-image doesn't depend on the desktop matrix /
+  # release artifacts. It used to gate on `prepare-release` for purely
+  # ordering reasons (release artifacts first, then docker tag); now
+  # that prepare-release is disabled, gating here would skip
+  # server-image too. Reads the version directly off package.json.
   server-image:
-    needs: prepare-release
     runs-on: ubuntu-latest
     permissions:
       contents: read

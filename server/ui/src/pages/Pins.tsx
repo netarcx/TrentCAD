@@ -98,8 +98,52 @@ export default function Pins() {
     }
   }
 
-  async function copyToClipboard(code: string): Promise<void> {
-    try { await navigator.clipboard.writeText(code) } catch { /* ignore */ }
+  // navigator.clipboard.writeText only works in a secure context
+  // (HTTPS or http://localhost). When the admin opens this UI on a
+  // LAN IP like http://10.0.0.5:42130 — which is the standard
+  // school-server deployment — the API throws and any catch{} that
+  // swallows the error leaves the clipboard holding whatever was in
+  // it before, which looks like the copy "worked" but produced
+  // garbage. Try the modern API, fall back to the legacy textarea +
+  // execCommand path (works over plain HTTP), and surface failure so
+  // the admin knows when nothing happened.
+  async function copyToClipboard(code: string): Promise<boolean> {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(code)
+        return true
+      } catch { /* fall through to legacy path */ }
+    }
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = code
+      // Keep the textarea off-screen and unfocusable for accessibility
+      // but still in the DOM so select() + execCommand can see it.
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      ta.setAttribute('readonly', '')
+      document.body.appendChild(ta)
+      ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      return ok
+    } catch {
+      return false
+    }
+  }
+
+  /** Which copy button (if any) is currently showing the "Copied!"
+   *  feedback. Keyed by PIN code so we can highlight a specific row
+   *  without flashing every row. `'__failed__'` is a sentinel for the
+   *  error state. */
+  const [copyState, setCopyState] = useState<{ code: string; ok: boolean } | null>(null)
+
+  async function handleCopy(code: string): Promise<void> {
+    const ok = await copyToClipboard(code)
+    setCopyState({ code, ok })
+    setTimeout(() => {
+      setCopyState(curr => (curr?.code === code ? null : curr))
+    }, 2000)
   }
 
   return (
@@ -158,7 +202,11 @@ export default function Pins() {
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <span className="tag">{justIssued.code}</span>
-              <button className="secondary" onClick={() => copyToClipboard(justIssued.code)}>Copy</button>
+              <button className="secondary" onClick={() => handleCopy(justIssued.code)}>
+                {copyState?.code === justIssued.code
+                  ? (copyState.ok ? '✓ Copied!' : '✗ Failed')
+                  : 'Copy'}
+              </button>
               <button className="link" onClick={() => setJustIssued(null)}>Hide</button>
             </div>
           </div>
@@ -200,7 +248,11 @@ export default function Pins() {
                   </td>
                   <td className="mono">{relExpiry(p.expiresAt)}</td>
                   <td className="row-actions">
-                    <button className="secondary" onClick={() => copyToClipboard(p.code)}>Copy</button>
+                    <button className="secondary" onClick={() => handleCopy(p.code)}>
+                      {copyState?.code === p.code
+                        ? (copyState.ok ? '✓ Copied!' : '✗ Failed')
+                        : 'Copy'}
+                    </button>
                     <button className="secondary danger" onClick={() => revoke(p.code)}>Revoke</button>
                   </td>
                 </tr>

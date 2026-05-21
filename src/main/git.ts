@@ -221,6 +221,109 @@ export async function writeLfsConfig(
 }
 
 /**
+ * Belt-and-suspenders LFS routing enforcement run BEFORE every push.
+ *
+ * The previous guard only fired when the *current commit's* staged
+ * files were LFS-tracked. That missed a critical case: a repo with
+ * LFS objects in PRIOR local commits (cloned before the project was
+ * registered, or first imported with LFS pointers already in place).
+ * `git push` enumerates LFS objects for every commit it sends, so
+ * even a metadata-only commit triggers upload of all the pending
+ * LFS pointers, and without correct routing they go to GitHub's
+ * metered LFS endpoint — 403 on quota-exhausted teams.
+ *
+ * Three jobs:
+ *   1. Detect how many LFS pointers HEAD wants to upload.
+ *   2. If the project is registered: write `.lfsconfig` AND strip
+ *      any local `.git/config` `lfs.*url` overrides. git-lfs's
+ *      config order is `.lfsconfig` < local config, so a stale
+ *      `[lfs] url` baked into `.git/config` by an old clone silently
+ *      beats `.lfsconfig`. Stripping the local override makes
+ *      `.lfsconfig` authoritative.
+ *   3. If not registered AND there are LFS pointers to push: refuse
+ *      with a clear "ask admin to register this project" message.
+ *      (No pointers → nothing to route → allow the push.)
+ *
+ * Caller passes the returned `endpoint` to `GIT_LFS_URL` env on the
+ * push spawn for one last layer of certainty — even if `.lfsconfig`
+ * got corrupted somehow, the env var beats everything.
+ */
+async function ensureLfsRoutingForPush(
+  g: SimpleGit,
+  projectDir: string,
+  onProgress?: (p: PublishProgress) => void,
+): Promise<{
+  endpoint: string | null
+  lfsObjectsInWorkingTree: number
+  refuseReason: string | null
+}> {
+  const remotes = await g.getRemotes(true)
+  const origin = remotes.find(r => r.name === 'origin')
+  const remoteUrl = origin?.refs?.fetch ?? origin?.refs?.push ?? ''
+  const cfg = remoteUrl ? lookupProjectByRemote(remoteUrl) : null
+
+  let lfsObjectsInWorkingTree = 0
+  try {
+    const out = await g.raw(['lfs', 'ls-files'])
+    lfsObjectsInWorkingTree = out.split('\n').filter(l => l.trim().length > 0).length
+  } catch { /* lfs not initialised or no pointers yet */ }
+
+  if (cfg) {
+    const endpoint = lfsEndpointForProject(cfg.lfsUrl, cfg.projectId)
+    const lfsConfigPath = path.join(projectDir, '.lfsconfig')
+    let lfsConfigOk = false
+    try {
+      const content = await fs.readFile(lfsConfigPath, 'utf-8')
+      if (content.includes(endpoint)) lfsConfigOk = true
+    } catch { /* missing */ }
+    if (!lfsConfigOk) {
+      onProgress?.({
+        phase: 'preparing',
+        files: [],
+        detail: 'Routing LFS to self-hosted server (writing .lfsconfig)…',
+      })
+      await writeLfsConfig(projectDir, remoteUrl)
+      try { await g.add(['.lfsconfig']) } catch { /* best-effort */ }
+    }
+    // Local `.git/config` `lfs.*url` overrides BEAT `.lfsconfig` in
+    // git-lfs's config-precedence order. Strip them so `.lfsconfig`
+    // is actually authoritative. `--unset-all` exits 5 when the key
+    // isn't there — the `.catch(() => {})` swallows that cleanly.
+    await g.raw(['config', '--local', '--unset-all', 'lfs.url']).catch(() => {})
+    await g.raw(['config', '--local', '--unset-all', 'lfs.pushurl']).catch(() => {})
+    await g.raw(['config', '--local', '--unset-all', 'lfs.origin.url']).catch(() => {})
+    if (remoteUrl) {
+      // Per-remote overrides use the full URL as the section name in
+      // `.git/config`. Strip the one for our actual remote so nothing
+      // route-pins to GitHub's LFS endpoint.
+      await g.raw(['config', '--local', '--unset-all', `lfs.${remoteUrl}.url`]).catch(() => {})
+    }
+    return { endpoint, lfsObjectsInWorkingTree, refuseReason: null }
+  }
+
+  if (lfsObjectsInWorkingTree === 0) {
+    // No LFS in this repo's history — push can safely go straight to
+    // GitHub without any routing setup (nothing for git-lfs to upload).
+    return { endpoint: null, lfsObjectsInWorkingTree: 0, refuseReason: null }
+  }
+  return {
+    endpoint: null,
+    lfsObjectsInWorkingTree,
+    refuseReason:
+      `This project has ${lfsObjectsInWorkingTree} LFS-tracked file` +
+      `${lfsObjectsInWorkingTree === 1 ? '' : 's'} that would be uploaded ` +
+      `by this publish, but it isn't registered on your team server. ` +
+      `FrameCAD doesn't push LFS objects to GitHub — they consume GitHub's ` +
+      `metered LFS quota and block the whole team when it runs out.\n\n` +
+      `Ask your admin to register this project at the team admin UI ` +
+      `(Projects → Add), then publish again. If this is a legacy repo with ` +
+      `LFS data already on GitHub, the admin should also click "Migrate LFS" ` +
+      `on the project row to copy the existing objects to the self-hosted ` +
+      `server.`,
+  }
+}
+
+/**
  * Pattern-match a git error to detect "couldn't reach the remote"
  * — which the client can't actually distinguish from "you're offline"
  * vs "GitHub repo was deleted". Both look the same to git here. So
@@ -1476,61 +1579,23 @@ export async function publish(
     // ── LFS routing policy: SELF-HOSTED ONLY ─────────────────────
     // FrameCAD never pushes LFS objects to GitHub. They eat GitHub's
     // metered LFS quota and silently brick the team when budget runs
-    // out (Trent's team learned this the hard way). For any publish
-    // that involves LFS-tracked files, the project MUST be on the
-    // team server's registry AND have `.lfsconfig` pointing at the
-    // self-hosted Giftless endpoint. We auto-write `.lfsconfig` when
-    // we can; we refuse the publish when we can't (project not
-    // registered → admin task, not a thing the user can self-serve).
-    const stagedLfsFiles = [...await checkAttrLfsBatched(g, files)]
-    if (stagedLfsFiles.length > 0) {
-      const remotes = await g.getRemotes(true)
-      const origin = remotes.find(r => r.name === 'origin')
-      const remoteUrl = origin?.refs?.fetch ?? origin?.refs?.push ?? ''
-      const cfg = remoteUrl ? lookupProjectByRemote(remoteUrl) : null
-      if (!cfg) {
-        const preview = stagedLfsFiles.slice(0, 5).map(f => `  - ${f}`).join('\n')
-        const more = stagedLfsFiles.length > 5
-          ? `\n  …and ${stagedLfsFiles.length - 5} more`
-          : ''
-        const msg =
-          `${stagedLfsFiles.length} LFS-tracked file${stagedLfsFiles.length === 1 ? '' : 's'} would be pushed by this publish:\n\n${preview}${more}\n\n` +
-          `This project isn't registered on your team server, so FrameCAD has nowhere to send the LFS objects. ` +
-          `We never push LFS to GitHub — it consumes GitHub's metered LFS quota and blocks the whole team when it runs out.\n\n` +
-          `Ask your admin to register this project at the team admin UI (Projects → Add), then publish again. ` +
-          `If this is a legacy repo that already has LFS data on GitHub, the admin should also click ` +
-          `"Migrate LFS" on the project row to move the existing objects across.`
-        onProgress?.({ phase: 'error', error: msg })
-        return { success: false, error: msg }
-      }
-
-      // Project IS registered. Make sure `.lfsconfig` exists in the
-      // working tree and points at the self-hosted endpoint we just
-      // looked up. If missing or pointing somewhere else, write the
-      // correct one and stage it for the upcoming commit — that way
-      // the very first publish on a freshly-registered legacy repo
-      // also commits the routing config, so future clients clone
-      // straight to self-hosted.
-      const expectedEndpoint = lfsEndpointForProject(cfg.lfsUrl, cfg.projectId)
-      const lfsConfigPath = path.join(projectDir, '.lfsconfig')
-      let lfsConfigOk = false
-      try {
-        const content = await fs.readFile(lfsConfigPath, 'utf-8')
-        if (content.includes(expectedEndpoint)) lfsConfigOk = true
-      } catch { /* file missing */ }
-      if (!lfsConfigOk) {
-        onProgress?.({
-          phase: 'preparing',
-          files,
-          detail: 'Routing LFS to self-hosted server (writing .lfsconfig)…',
-        })
-        await writeLfsConfig(projectDir, remoteUrl)
-        try { await g.add(['.lfsconfig']) } catch { /* best-effort */ }
-        // Re-stat the staged set so .lfsconfig is part of the file
-        // list reported to the renderer's progress modal.
-        if (!files.includes('.lfsconfig')) files.push('.lfsconfig')
-      }
+    // out (Trent's team learned this the hard way). Run the routing
+    // enforcement BEFORE the push — see helper docstring for why we
+    // can't just look at the current commit's staged files.
+    const lfsRouting = await ensureLfsRoutingForPush(g, projectDir, onProgress)
+    if (lfsRouting.refuseReason) {
+      onProgress?.({ phase: 'error', error: lfsRouting.refuseReason })
+      return { success: false, error: lfsRouting.refuseReason }
     }
+    // Stage `.lfsconfig` for inclusion in this commit if the helper
+    // just wrote a fresh one — that way future clones pick up the
+    // self-hosted endpoint on day one.
+    try {
+      const lfsConfigStatus = await g.raw(['status', '--porcelain', '.lfsconfig'])
+      if (lfsConfigStatus.trim() && !files.includes('.lfsconfig')) {
+        files.push('.lfsconfig')
+      }
+    } catch { /* best-effort */ }
 
     const finalMessage = (message ?? '').trim() || randomCommitMessage()
 
@@ -1582,6 +1647,15 @@ export async function publish(
       // surface per-file transfer bytes to the renderer. No-op when
       // the file failed to initialise; we just lose per-file detail.
       pushGit.env('GIT_LFS_PROGRESS', lfsProgressFile)
+      // Pin the LFS endpoint via env so it overrides every other
+      // source of truth (system gitconfig, global gitconfig,
+      // `.lfsconfig`, local `.git/config`). If the project is on the
+      // team server, this guarantees LFS objects flow to Giftless
+      // even on legacy clones whose `.git/config` still carries the
+      // pre-self-hosted `lfs.url` from GitHub.
+      if (lfsRouting.endpoint) {
+        pushGit.env('GIT_LFS_URL', lfsRouting.endpoint)
+      }
       pushGit.outputHandler((_bin, _stdout, stderr) => {
         stderr.on('data', (chunk: Buffer) => {
           const text = chunk.toString()

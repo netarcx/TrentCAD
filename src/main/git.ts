@@ -1414,20 +1414,24 @@ export async function publish(
 
     // ── File-type blacklist ──────────────────────────────────────
     // Block formats that don't belong in a CAD repo regardless of
-    // size: photos, videos, archives, executables, raw browser URL
-    // shortcuts. Catches the common "I accidentally dragged my
+    // size: videos, audio, niche archives, executables, raw browser
+    // URL shortcuts. Catches the common "I accidentally dragged my
     // Downloads folder into the project" case BEFORE the push
     // wastes bandwidth + bloats history. Extension match is
     // case-insensitive against the trailing dot-segment.
+    //
+    // NOT blocked: images (jpg/png/tif/...) and zip. Vendor STEP
+    // packages almost always ship as `*-STEP.zip`, and teams keep
+    // reference datasheet images / product photos / logos next to
+    // the parts they describe. The 75 MB per-file cap above is the
+    // backstop against accidental binary bloat.
     const BLOCKED_EXTS = new Set<string>([
-      // Photos / images
-      'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tif', 'tiff', 'heic', 'heif', 'svg', 'ico',
       // Video
       'mp4', 'mov', 'avi', 'mkv', 'wmv', 'webm', 'm4v', 'flv', 'mpg', 'mpeg', '3gp',
-      // Audio (lumped in for the same reasons)
+      // Audio
       'mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg', 'opus',
-      // Archives
-      'zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'txz', 'iso', 'lz', 'lzma', 'z',
+      // Niche archives (zip stays allowed for vendor STEP packages)
+      'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'txz', 'iso', 'lz', 'lzma', 'z',
       // Executables / installers
       'exe', 'msi', 'dll', 'dmg', 'pkg', 'app', 'apk', 'deb', 'rpm',
       'bat', 'cmd', 'com', 'ps1', 'sh', 'run', 'bin',
@@ -1443,11 +1447,11 @@ export async function publish(
       const msg =
         `${blacklisted.length} file(s) have a file type that's not allowed ` +
         `in a CAD repo:\n\n${list}\n\nBlocked extensions in this batch: ${exts}.\n\n` +
-        `FrameCAD blocks photos, videos, archives (zip / rar / 7z / tar.gz / xz), ` +
-        `executables, and URL shortcuts at publish time. Delete these files, or ` +
-        `add them to your .gitignore if they belong on disk but shouldn't be ` +
-        `tracked. (Genuine CAD outputs — STEP / IGES / STL / 3D PDF / etc. — ` +
-        `are NOT on the blacklist.)`
+        `FrameCAD blocks videos, audio, executables, niche archives ` +
+        `(rar / 7z / tar.gz / xz), and URL shortcuts at publish time. ` +
+        `Delete these files, or add them to your .gitignore if they belong ` +
+        `on disk but shouldn't be tracked. (Images and zip files — including ` +
+        `vendor STEP zips — are allowed.)`
       onProgress?.({ phase: 'error', error: msg })
       return { success: false, error: msg }
     }

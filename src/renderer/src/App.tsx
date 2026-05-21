@@ -706,6 +706,39 @@ export default function App() {
     </div>
   )
 
+  // Kiosk + auto-open dead-end recovery. When a kiosk-locked device's
+  // assigned project is unreachable (deleted on GitHub OR never
+  // cloned and the user can't navigate to clone it), the welcome
+  // screen renders without ANY actionable path forward. Surface a
+  // banner that explicitly names the trap + tells the user about the
+  // release hotkey so a coach can rescue them in person.
+  const kioskAutoOpenEntry = kioskMode && teamSnapshot?.me?.autoOpenProjectId
+    ? teamSnapshot?.projects?.find(p => p.id === teamSnapshot.me!.autoOpenProjectId)
+    : null
+  const kioskStuck = kioskMode
+    && !project
+    && !!kioskAutoOpenEntry
+    // Two ways to land in the stuck state:
+    //   - Project is deleted on the server (remoteStatus 'missing').
+    //   - Project isn't deleted but our auto-open effect already
+    //     attempted and gave up (no local clone, can't navigate to
+    //     other projects in kiosk mode).
+    && (kioskAutoOpenEntry.remoteStatus === 'missing'
+        || autoOpenAttemptedRef.current)
+  const kioskStuckBanner = kioskStuck && (
+    <div className="error-banner" style={{ background: 'rgba(252, 211, 77, 0.18)' }}>
+      <span className="error-banner-message">
+        ⚠ This device is locked to a team project that isn't available:
+        {' '}<strong>{kioskAutoOpenEntry?.name}</strong>{' '}
+        {kioskAutoOpenEntry?.remoteStatus === 'missing'
+          ? '— the repo has been deleted.'
+          : '— it hasn\'t been cloned locally yet.'}
+        {' '}Press <span className="mono">Ctrl+Shift+Alt+R</span> to release this
+        device from team management, or contact your admin.
+      </span>
+    </div>
+  )
+
   const onboardingModal = showOnboarding && (
     <OnboardingTour onClose={dismissOnboarding} />
   )
@@ -800,6 +833,50 @@ export default function App() {
             </div>
           )
         })()}
+        {publishProgress.quotaGrace === 'in-grace' && (() => {
+          // Show how much of the 24-hour grace window is left so the
+          // user knows when their write window expires. graceStartedAt
+          // is the timestamp recorded on the server when they first
+          // crossed the cap; we render hours-remaining client-side.
+          const start = publishProgress.quotaGraceStartedAt
+          let remaining = '24 hours'
+          if (typeof start === 'number') {
+            const ms = (start + 24 * 60 * 60 * 1000) - Date.now()
+            const hours = Math.max(0, Math.floor(ms / (60 * 60 * 1000)))
+            remaining = `${hours} hour${hours === 1 ? '' : 's'}`
+          }
+          return (
+            <div
+              className="error-banner"
+              style={{
+                background: 'rgba(252, 211, 77, 0.18)',
+                marginTop: 8,
+                marginBottom: 8,
+              }}
+            >
+              <span className="error-banner-message">
+                ⚠ Project is over its storage quota. You have ~{remaining}{' '}
+                left to delete files before further uploads get blocked.
+                Ask your admin to raise the cap if you need more room.
+              </span>
+            </div>
+          )
+        })()}
+        {publishProgress.quotaGrace === 'expired' && (
+          <div
+            className="error-banner"
+            style={{
+              background: 'rgba(251, 113, 133, 0.18)',
+              marginTop: 8,
+              marginBottom: 8,
+            }}
+          >
+            <span className="error-banner-message">
+              ⚠ Project quota grace window has expired. Uploads will fail
+              until usage drops back under the cap or your admin raises it.
+            </span>
+          </div>
+        )}
         {publishProgress.files && publishProgress.files.length > 0 && (
           <div className="publish-file-list">
             <div className="publish-file-list-header">
@@ -815,9 +892,23 @@ export default function App() {
             </ul>
           </div>
         )}
-        {publishProgress.phase === 'error' && (
-          <ErrorMsg text={publishProgress.error || 'Unknown error'} />
-        )}
+        {publishProgress.phase === 'error' && (() => {
+          // When the publish failed AND the server has already
+          // confirmed this project's repo is gone, upgrade the
+          // generic offline-vs-deleted message to the authoritative
+          // "deleted, back up your files" copy. The publish-side
+          // detectRemoteGoneError() can't tell the difference;
+          // the team server's snapshot can.
+          const isConfirmedDeleted = !!publishProgress.remoteGone
+            && openProjectEntry?.remoteStatus === 'missing'
+          const message = isConfirmedDeleted
+            ? "Your admin has confirmed this project's GitHub repo no "
+              + 'longer exists. Your local files are still here — back '
+              + 'up anything you need, then close this project and '
+              + 'delete the local folder.'
+            : publishProgress.error || 'Unknown error'
+          return <ErrorMsg text={message} />
+        })()}
         <div className="actions">
           {publishProgress.phase === 'error' || publishProgress.phase === 'done' ? (
             <button
@@ -1153,6 +1244,7 @@ export default function App() {
 
       {offlineBanner}
       {repoDeletedBanner}
+      {kioskStuckBanner}
       {onboardingModal}
 
       {progressModal}

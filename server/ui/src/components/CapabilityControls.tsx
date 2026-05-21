@@ -21,10 +21,20 @@ interface Props {
   hideAutoOpen?: boolean
 }
 
+/**
+ * Only the capabilities the v3.x desktop client actually consults are
+ * surfaced here. `createProject` / `openProject` became no-ops on the
+ * client when project creation moved to the server admin UI and the
+ * welcome screen collapsed into a project list. They linger in the
+ * server schema for legacy data but offering them as toggles would
+ * mislead admins into thinking they control something — they don't.
+ *
+ * The client-side gate the admin actually wants is `browseTeamProjects`
+ * (controls whether the project list shows at all) and
+ * `manufacturingView` (the secondary shop-floor button).
+ */
 const CAP_LABELS: Array<{ key: keyof CapabilityValue['capabilities']; label: string; hint: string }> = [
-  { key: 'createProject',      label: 'Create Project',     hint: 'Lets them spin up a new project from scratch.' },
-  { key: 'browseTeamProjects', label: 'Team Projects',      hint: 'Lets them browse projects registered in this server.' },
-  { key: 'openProject',        label: 'Open Project',       hint: 'Lets them open an existing project folder from disk.' },
+  { key: 'browseTeamProjects', label: 'Team Projects',      hint: 'Lets them see and join projects registered in this server.' },
   { key: 'manufacturingView',  label: 'Manufacturing View', hint: 'Shop-floor queue grouped by manufacturing method.' },
 ]
 

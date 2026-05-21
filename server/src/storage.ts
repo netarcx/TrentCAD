@@ -35,12 +35,13 @@ function projectDir(projectId: number): string | null {
 
 /**
  * Walk a directory tree and sum the size of every regular file.
- * Symlinks are followed for size (we never expect them in the LFS
- * store; if one shows up it's because a sysadmin put it there).
- * Missing directories return 0 — that's what an empty project looks
- * like before anyone has pushed anything.
+ * Symlinks (if any — giftless never creates them but a sysadmin
+ * might) are followed and counted toward the total. Cycle detection
+ * via a `visited` set on realpath keeps a circular symlink from
+ * driving unbounded recursion. Missing directories return 0 — that's
+ * what an empty project looks like before anyone has pushed anything.
  */
-async function dirSize(absPath: string): Promise<number> {
+async function dirSize(absPath: string, visited = new Set<string>()): Promise<number> {
   let total = 0
   let entries: import('node:fs').Dirent[]
   try {
@@ -52,7 +53,7 @@ async function dirSize(absPath: string): Promise<number> {
   for (const entry of entries) {
     const child = path.join(absPath, entry.name)
     if (entry.isDirectory()) {
-      total += await dirSize(child)
+      total += await dirSize(child, visited)
     } else if (entry.isFile()) {
       try {
         const stat = await fs.stat(child)
@@ -60,6 +61,23 @@ async function dirSize(absPath: string): Promise<number> {
       } catch (err) {
         // Race: giftless might have just deleted this object. Skip it.
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+      }
+    } else if (entry.isSymbolicLink()) {
+      try {
+        const resolved = await fs.realpath(child)
+        if (visited.has(resolved)) continue
+        visited.add(resolved)
+        const stat = await fs.stat(child)
+        if (stat.isFile()) {
+          total += stat.size
+        } else if (stat.isDirectory()) {
+          total += await dirSize(resolved, visited)
+        }
+      } catch (err) {
+        // Broken symlink, permission denied, or loop — skip silently
+        // rather than letting a misconfigured tree crash the scan.
+        const code = (err as NodeJS.ErrnoException).code
+        if (code !== 'ENOENT' && code !== 'EACCES' && code !== 'ELOOP') throw err
       }
     }
   }

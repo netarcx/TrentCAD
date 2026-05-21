@@ -237,6 +237,32 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE projects ADD COLUMN quotaGraceUsedAt INTEGER;
   `,
+  // v9: password authentication for the admin web UI + a `kind`
+  // column on devices distinguishing long-lived desktop clients
+  // from short-lived web sessions.
+  //
+  // Once the team server is exposed to the internet, PIN-only
+  // enrollment isn't strong enough — PINs are 6 chars from a 32-char
+  // alphabet and could be brute-forced over weeks of unsupervised
+  // attempts. After the first PIN claim, an admin sets a password;
+  // future logins use a username (lowercased displayName or
+  // githubUsername) plus that password. `failedLoginCount` +
+  // `lockedUntil` give us a simple rate limiter — 5 failed attempts
+  // inside 15 minutes lock the account for the next 15 minutes.
+  //
+  // The devices.kind column lets requireDevice apply a 30-day
+  // expiry to web sessions (browser tokens) without breaking
+  // long-lived desktop client tokens (Trent's users do offline CAD
+  // for weeks at a time and shouldn't be force-reauthed). Existing
+  // device rows default to 'desktop' on migration — the old
+  // enrollment-from-desktop flow has always been the only writer.
+  `
+  ALTER TABLE members ADD COLUMN passwordHash      TEXT;
+  ALTER TABLE members ADD COLUMN failedLoginCount  INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE members ADD COLUMN lockedUntil       INTEGER;
+  ALTER TABLE members ADD COLUMN lastLoginAt       INTEGER;
+  ALTER TABLE devices ADD COLUMN kind              TEXT NOT NULL DEFAULT 'desktop';
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

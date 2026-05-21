@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, ApiError } from '../api'
+import { copyToClipboard } from '../lib/copyToClipboard'
 
 interface Project {
   id: number
@@ -114,6 +115,27 @@ export default function Projects() {
     scripts: { posix: string; powershell: string }
     shell: 'posix' | 'powershell'
   } | null>(null)
+  // Copy-button feedback for the migrate-LFS modal — mirrors the
+  // PIN page's pattern so both surfaces show "✓ Copied!" /
+  // "✗ Failed" rather than failing silently on LAN HTTP where
+  // navigator.clipboard isn't available.
+  const [migrateCopyState, setMigrateCopyState] = useState<'idle' | 'ok' | 'fail'>('idle')
+
+  // Escape-key support for the migrate-LFS modal. The backdrop click
+  // already closes it; the keyboard path is an accessibility nicety
+  // that users expect from modals. Listener only mounts while the
+  // modal is open so we're not eating Escape elsewhere on the page.
+  useEffect(() => {
+    if (!migrateScript) return
+    function onKey(e: KeyboardEvent): void {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setMigrateScript(null)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [migrateScript])
 
   async function startLfsMigrate(p: Project): Promise<void> {
     setError(null)
@@ -411,13 +433,19 @@ export default function Projects() {
             <div className="actions" style={{ marginTop: 12 }}>
               <button
                 className="secondary"
-                onClick={() => {
-                  void navigator.clipboard.writeText(
+                onClick={async () => {
+                  const ok = await copyToClipboard(
                     migrateScript.scripts[migrateScript.shell],
                   )
+                  setMigrateCopyState(ok ? 'ok' : 'fail')
+                  setTimeout(() => setMigrateCopyState('idle'), 2000)
                 }}
               >
-                Copy to clipboard
+                {migrateCopyState === 'ok'
+                  ? '✓ Copied!'
+                  : migrateCopyState === 'fail'
+                    ? '✗ Failed'
+                    : 'Copy to clipboard'}
               </button>
               <button className="primary" onClick={() => setMigrateScript(null)}>Done</button>
             </div>

@@ -262,14 +262,14 @@ export function detectRemoteGoneError(raw: string): string | null {
  * call on any project — silently no-ops when the project isn't on
  * the team server's registry or has no origin remote configured.
  */
-async function refreshLfsAuthForOpenProject(): Promise<void> {
+async function refreshLfsAuthForOpenProject(): Promise<Awaited<ReturnType<typeof refreshLfsAuth>> | null> {
   try {
     const g = getGit()
     const remotes = await g.getRemotes(true)
     const origin = remotes.find(r => r.name === 'origin')
-    if (!origin?.refs?.fetch) return
-    await refreshLfsAuth(getProjectPath(), origin.refs.fetch)
-  } catch { /* best-effort */ }
+    if (!origin?.refs?.fetch) return null
+    return await refreshLfsAuth(getProjectPath(), origin.refs.fetch)
+  } catch { return null }
 }
 
 /**
@@ -290,7 +290,13 @@ async function refreshLfsAuthForOpenProject(): Promise<void> {
 export async function refreshLfsAuth(
   dirPath: string,
   remote: string,
-): Promise<{ writable: boolean; used: number; limit: number | null } | null> {
+): Promise<{
+  writable: boolean
+  used: number
+  limit: number | null
+  grace?: 'ok' | 'in-grace' | 'expired'
+  graceStartedAt?: number | null
+} | null> {
   const cfg = lookupProjectByRemote(remote)
   if (!cfg) return null
   const tok = await getLfsToken(cfg.projectId)
@@ -309,6 +315,8 @@ export async function refreshLfsAuth(
     writable: tok.writable,
     used: tok.quota.used,
     limit: tok.quota.limit,
+    grace: tok.quota.grace,
+    graceStartedAt: tok.quota.graceStartedAt,
   }
 }
 
@@ -1094,7 +1102,26 @@ export async function publish(
     // self-hosted server with a valid bearer token. The header sits
     // in `.git/config` for the duration of this invocation. No-op
     // when LFS isn't configured for this project.
-    await refreshLfsAuthForOpenProject()
+    //
+    // Surface the server-side quota grace status to the UI so the
+    // user knows they're in the 24-hour warn window before writes
+    // get blocked. The first 'preparing' event with the grace flag
+    // lets the renderer show a yellow banner alongside the modal.
+    const lfsAuth = await refreshLfsAuthForOpenProject()
+    if (lfsAuth?.grace === 'in-grace') {
+      onProgress?.({
+        phase: 'preparing',
+        detail: 'Project is over its storage quota — 24-hour grace window active',
+        quotaGrace: 'in-grace',
+        quotaGraceStartedAt: lfsAuth.graceStartedAt ?? undefined,
+      })
+    } else if (lfsAuth?.grace === 'expired') {
+      onProgress?.({
+        phase: 'preparing',
+        detail: 'Project is over quota and the grace window has expired — uploads will fail',
+        quotaGrace: 'expired',
+      })
+    }
 
     await syncManifest()
 
@@ -1553,7 +1580,11 @@ export async function publish(
   } catch (err: unknown) {
     const errMsg = (err as Error).message
     const remoteGone = detectRemoteGoneError(errMsg)
-    onProgress?.({ phase: 'error', error: remoteGone ?? errMsg })
+    onProgress?.({
+      phase: 'error',
+      error: remoteGone ?? errMsg,
+      remoteGone: remoteGone !== null,
+    })
     return {
       success: false,
       error: remoteGone ?? errMsg,

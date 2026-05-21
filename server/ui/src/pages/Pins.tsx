@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, ApiError } from '../api'
+import { copyToClipboard } from '../lib/copyToClipboard'
 import CapabilityControls from '../components/CapabilityControls'
 import {
   EMPTY_CAPABILITY_VALUE,
@@ -105,39 +106,9 @@ export default function Pins() {
     }
   }
 
-  // navigator.clipboard.writeText only works in a secure context
-  // (HTTPS or http://localhost). When the admin opens this UI on a
-  // LAN IP like http://10.0.0.5:42130 — which is the standard
-  // school-server deployment — the API throws and any catch{} that
-  // swallows the error leaves the clipboard holding whatever was in
-  // it before, which looks like the copy "worked" but produced
-  // garbage. Try the modern API, fall back to the legacy textarea +
-  // execCommand path (works over plain HTTP), and surface failure so
-  // the admin knows when nothing happened.
-  async function copyToClipboard(code: string): Promise<boolean> {
-    if (navigator.clipboard?.writeText) {
-      try {
-        await navigator.clipboard.writeText(code)
-        return true
-      } catch { /* fall through to legacy path */ }
-    }
-    try {
-      const ta = document.createElement('textarea')
-      ta.value = code
-      // Keep the textarea off-screen and unfocusable for accessibility
-      // but still in the DOM so select() + execCommand can see it.
-      ta.style.position = 'fixed'
-      ta.style.left = '-9999px'
-      ta.setAttribute('readonly', '')
-      document.body.appendChild(ta)
-      ta.select()
-      const ok = document.execCommand('copy')
-      document.body.removeChild(ta)
-      return ok
-    } catch {
-      return false
-    }
-  }
+  // copyToClipboard helper now lives in `../lib/copyToClipboard.ts`
+  // so the Projects page (migrate-LFS modal) can reuse the same
+  // safe-fallback logic.
 
   /** Which copy button (if any) is currently showing the "Copied!"
    *  feedback. Keyed by PIN code so we can highlight a specific row

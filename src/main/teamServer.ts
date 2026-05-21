@@ -368,7 +368,12 @@ export async function getLfsToken(projectId: number): Promise<{
   token: string
   url: string
   writable: boolean
-  quota: { used: number; limit: number | null }
+  quota: {
+    used: number
+    limit: number | null
+    grace?: 'ok' | 'in-grace' | 'expired'
+    graceStartedAt?: number | null
+  }
 } | null> {
   if (!state.token || !state.team?.lfsUrl) return null
   try {
@@ -376,7 +381,12 @@ export async function getLfsToken(projectId: number): Promise<{
       token: string
       url: string
       writable: boolean
-      quota: { used: number; limit: number | null }
+      quota: {
+        used: number
+        limit: number | null
+        grace?: 'ok' | 'in-grace' | 'expired'
+        graceStartedAt?: number | null
+      }
     }>('/api/lfs/token', {
       method: 'POST',
       body: { projectId },

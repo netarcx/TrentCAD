@@ -672,6 +672,25 @@ export default function ProjectSetup({ onJoinProject, onOpenProject, onEnterManu
             allowlist server-side (see server/src/routes/client.ts
             `/api/projects`), so we don't filter again here. */}
         {teamSnapshot?.enrolled && (() => {
+          const caps = teamSnapshot.me?.capabilities
+          // No browse capability → empty state with the same copy
+          // we use when the project list IS available but happens
+          // to be empty. The server filters /api/projects to honor
+          // the per-member allowlist; this is the client-side
+          // capability gate that controls whether the LIST itself
+          // is visible.
+          if (!caps?.browseTeamProjects) {
+            return (
+              <div
+                className="setup-cards-empty hint"
+                style={{ textAlign: 'center', marginTop: 24, opacity: 0.8 }}
+              >
+                Your admin hasn't given you access to browse team
+                projects yet. Ask them to enable Team Projects for you
+                on the server.
+              </div>
+            )
+          }
           const projects = teamSnapshot.projects ?? []
           // Build a remote → local-clone map once per render so each
           // row's lookup is O(1). URL normalisation strips trailing
@@ -699,13 +718,23 @@ export default function ProjectSetup({ onJoinProject, onOpenProject, onEnterManu
               {projects.map(p => {
                 const local = localByRemote.get(normRemote(p.repoUrl))
                 const isMissing = p.remoteStatus === 'missing'
+                // A DELETED project with a local clone is still
+                // openable — user may want to back up files before
+                // wiping the folder. We only refuse the click when
+                // the row is BOTH deleted on GitHub AND not locally
+                // cloned (there's nothing to open in that case).
+                const clickable = !isLoading && (!isMissing || !!local)
                 return (
                   <button
                     key={p.id}
                     type="button"
                     className="project-list-row"
-                    disabled={isLoading || isMissing}
-                    title={p.repoUrl}
+                    disabled={!clickable}
+                    title={isMissing
+                      ? (local
+                        ? 'Remote deleted — open locally to back up files'
+                        : 'Remote deleted and no local clone — nothing to open')
+                      : p.repoUrl}
                     onClick={() => {
                       if (local) {
                         onOpenProject(local.path)

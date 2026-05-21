@@ -179,6 +179,21 @@ export interface PublishProgress {
     bytesTransferred: number
     totalBytes: number
   }
+  /** True on the `phase === 'error'` event when the underlying git
+   *  error matched the "remote unreachable" pattern (could be
+   *  offline OR deleted on the server). Renderer cross-references
+   *  the team snapshot to decide whether to surface the
+   *  authoritative "deleted, back up files" copy. */
+  remoteGone?: boolean
+  /** Quota grace status from the server's `/api/lfs/token` response
+   *  when the publish involved an LFS token mint. Renderer shows a
+   *  warning banner when 'in-grace' so the user knows they're in
+   *  the 24-hour window before writes get blocked. */
+  quotaGrace?: 'ok' | 'in-grace' | 'expired'
+  /** Timestamp (ms since epoch) when the grace window started.
+   *  Renderer derives the remaining-time display from this. Only
+   *  meaningful when `quotaGrace === 'in-grace'`. */
+  quotaGraceStartedAt?: number
 }
 
 export interface DependencyStatus {

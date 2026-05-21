@@ -9,7 +9,7 @@
 
 import type { FastifyInstance } from 'fastify'
 import { getDb, type Role, type MemberStatus } from '../db.js'
-import { requireDevice } from '../auth.js'
+import { requireDevice, hashPassword, isPasswordAcceptable } from '../auth.js'
 import { config } from '../config.js'
 import { lfsEnabled, mintLfsToken } from '../lfs.js'
 import { scanProjectStorage } from '../storage.js'
@@ -70,6 +70,62 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
         !req.url.startsWith('/api/projects') &&
         !req.url.startsWith('/api/lfs/')) return
     await requireDevice(req, reply)
+  })
+
+  // Set or change the password on the calling member's account. New-
+  // member flow: admin claims via PIN → /api/me/has-password says
+  // false → web UI prompts to set one before letting them leave the
+  // sign-in screen. Existing-account flow: settings page can call
+  // this with their current password as confirmation. The "current"
+  // password is optional but the admin UI requires it when one is
+  // already set.
+  app.post<{ Body: { currentPassword?: string; newPassword?: string } }>(
+    '/api/me/set-password',
+    async (req, reply) => {
+      const { getDb: getDbInner } = await import('../db.js')
+      const m = req.member!
+      const newPassword = req.body?.newPassword ?? ''
+      const check = isPasswordAcceptable(newPassword)
+      if (!check.ok) {
+        return reply.code(400).send({ error: check.reason })
+      }
+      // If the member already has a password, require the current
+      // one to swap it. Empty `currentPassword` only OK on first-set.
+      const row = getDbInner().prepare(
+        `SELECT passwordHash FROM members WHERE id = ?`
+      ).get(m.id) as { passwordHash: string | null }
+      if (row.passwordHash) {
+        const { verifyPassword } = await import('../auth.js')
+        const ok = await verifyPassword(row.passwordHash, req.body?.currentPassword ?? '')
+        if (!ok) {
+          return reply.code(401).send({ error: 'Current password is incorrect.' })
+        }
+      }
+      const hash = await hashPassword(newPassword)
+      getDbInner().prepare(
+        `UPDATE members SET passwordHash = ?, failedLoginCount = 0, lockedUntil = NULL WHERE id = ?`
+      ).run(hash, m.id)
+      const { logAudit } = await import('../db.js')
+      logAudit({
+        actorId: m.id,
+        actorLabel: m.displayName,
+        action: row.passwordHash ? 'password.change' : 'password.set',
+        target: `member:${m.id}`,
+      })
+      return { success: true }
+    },
+  )
+
+  // Tiny helper the sign-in / settings UI uses to decide whether to
+  // show the "set password" prompt vs a regular change-password form.
+  // Authed → only callable by the member themselves (no leaking of
+  // other members' password state).
+  app.get('/api/me/has-password', async req => {
+    const { getDb: getDbInner } = await import('../db.js')
+    const row = getDbInner().prepare(
+      `SELECT passwordHash FROM members WHERE id = ?`
+    ).get(req.member!.id) as { passwordHash: string | null }
+    return { hasPassword: row.passwordHash !== null }
   })
 
   app.get('/api/me', async req => {
@@ -189,14 +245,20 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
       // Re-scan disk usage; cache back into the projects row so the
       // admin Projects page shows fresh numbers without a separate
       // scheduler. Best-effort: on scan failure, fall back to the
-      // cached value rather than blocking the token issue.
+      // cached value AND do NOT advance the scannedAt timestamp —
+      // otherwise the admin UI shows "scanned 5s ago" with stale
+      // bytes, AND any grace-period progression below could
+      // accidentally bypass the cap if storage was modified but
+      // the scan failed to observe it.
       let currentBytes = project.storageBytes
+      let scanOk = false
       try {
         currentBytes = await scanProjectStorage(projectId)
         getDb().prepare(
           `UPDATE projects SET storageBytes = ?, storageScannedAt = ? WHERE id = ?`
         ).run(currentBytes, Date.now(), projectId)
-      } catch { /* keep cached value */ }
+        scanOk = true
+      } catch { /* keep cached value; scanOk stays false */ }
 
       // Three-state quota check with a 24-hour grace window. The user
       // who first crosses the cap gets a writable token + a warning so
@@ -213,20 +275,27 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
 
       if (!isOverCap) {
         // Under the cap. Clear any past grace timestamp so the next
-        // crossing gets a fresh 24-hour window.
+        // crossing gets a fresh 24-hour window. Skip the clear if
+        // the scan didn't run — the cached bytes might be stale
+        // and the user might actually still be over the cap.
         writable = true
-        if (project.quotaGraceUsedAt !== null) {
+        if (scanOk && project.quotaGraceUsedAt !== null) {
           getDb().prepare(
             `UPDATE projects SET quotaGraceUsedAt = NULL WHERE id = ?`
           ).run(projectId)
         }
       } else if (project.quotaGraceUsedAt === null) {
-        // First crossing — start the grace clock + grant write.
+        // First crossing — start the grace clock + grant write. ONLY
+        // persist the timestamp when the scan succeeded; otherwise a
+        // transient scan failure on a borderline project could start
+        // the clock against the user's intent.
         writable = true
         quotaGrace = 'in-grace'
-        getDb().prepare(
-          `UPDATE projects SET quotaGraceUsedAt = ? WHERE id = ?`
-        ).run(now, projectId)
+        if (scanOk) {
+          getDb().prepare(
+            `UPDATE projects SET quotaGraceUsedAt = ? WHERE id = ?`
+          ).run(now, projectId)
+        }
       } else if (now - project.quotaGraceUsedAt < GRACE_MS) {
         // Still within the grace window. Keep granting writes.
         writable = true

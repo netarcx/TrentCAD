@@ -86,6 +86,45 @@ export async function verifyToken(stored: string, candidate: string): Promise<bo
   }
 }
 
+/**
+ * Hash a user-chosen password. Stronger argon2 parameters than tokens
+ * because passwords are low-entropy and we expect them to live in the
+ * DB for years — defend against offline brute force on a leaked DB.
+ * Defaults bumped per OWASP recommendations as of 2024.
+ */
+export function hashPassword(password: string): Promise<string> {
+  return argon2.hash(password, {
+    type: argon2.argon2id,
+    memoryCost: 19_456, // 19 MiB
+    timeCost: 2,
+    parallelism: 1,
+  })
+}
+
+/** Verify a password against a stored hash. */
+export async function verifyPassword(stored: string, candidate: string): Promise<boolean> {
+  try {
+    return await argon2.verify(stored, candidate)
+  } catch {
+    return false
+  }
+}
+
+/** Bare-minimum password strength check. 10 chars + one letter + one
+ *  digit covers the most common "1234"/"password"/"" mistakes; we
+ *  deliberately don't enforce special-character / case-mix rules
+ *  because the research is clear those don't help against modern
+ *  cracking and they push users toward bad coping strategies. */
+export function isPasswordAcceptable(password: string): { ok: true } | { ok: false; reason: string } {
+  if (password.length < 10) {
+    return { ok: false, reason: 'Password must be at least 10 characters.' }
+  }
+  if (!/[a-zA-Z]/.test(password) || !/[0-9]/.test(password)) {
+    return { ok: false, reason: 'Password must include both letters and at least one number.' }
+  }
+  return { ok: true }
+}
+
 // ── PIN lifecycle ────────────────────────────────────────────────────
 
 const DEFAULT_PIN_TTL_MS = 24 * 60 * 60 * 1000 // 24h
@@ -293,7 +332,7 @@ async function findDeviceByToken(token: string): Promise<{
   member: AuthedMember
 } | null> {
   const rows = getDb().prepare(
-    `SELECT d.id AS dId, d.memberId, d.label, d.tokenHash,
+    `SELECT d.id AS dId, d.memberId, d.label, d.tokenHash, d.lastSeenAt, d.kind,
             m.id AS mId, m.displayName, m.githubUsername, m.role, m.status,
             m.capabilities, m.allowedProjectIds, m.autoOpenProjectId, m.kioskMode
        FROM devices d
@@ -304,6 +343,8 @@ async function findDeviceByToken(token: string): Promise<{
     memberId: number
     label: string
     tokenHash: string
+    lastSeenAt: number
+    kind: string
     mId: number
     displayName: string
     githubUsername: string | null
@@ -315,8 +356,23 @@ async function findDeviceByToken(token: string): Promise<{
     kioskMode: number
   }>
 
+  // 30 days for browser/web sessions; desktop devices never expire
+  // by time (they're revoked explicitly via the admin Devices page
+  // or via member-status inactive). The web-vs-desktop distinction
+  // is on `devices.kind`, populated by /api/login for web sessions
+  // and defaulting to 'desktop' for everything else.
+  const WEB_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
+  const now = Date.now()
+
   for (const row of rows) {
     if (await verifyToken(row.tokenHash, token)) {
+      // Per-kind expiry. An expired web session returns null (401)
+      // here so the next request from that browser flips them back
+      // to the sign-in screen. The device row stays — admin can
+      // see it in the Devices page and clean up explicitly.
+      if (row.kind === 'web' && now - row.lastSeenAt > WEB_SESSION_TTL_MS) {
+        continue
+      }
       return {
         device: { id: row.dId, memberId: row.memberId, label: row.label },
         member: {

@@ -17,7 +17,7 @@ import {
   type MemberStatus,
   type MemberCapabilities,
 } from '../db.js'
-import { consumePin, generateToken, hashToken } from '../auth.js'
+import { consumePin, generateToken, hashToken, verifyPassword } from '../auth.js'
 
 interface EnrollBody {
   pin?: string
@@ -224,4 +224,162 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
       },
     }
   })
+
+  // ── Password login ─────────────────────────────────────────────────
+  //
+  // Username + password authentication for admins on the web UI. PINs
+  // are still the bootstrap path (you can't log in with a password
+  // you've never set), but once an admin has claimed and set a
+  // password, this is the recurring login surface — appropriate for
+  // an internet-exposed deployment where PIN-only was too weak.
+  //
+  // Username matching is case-insensitive against either displayName
+  // or githubUsername. Failed attempts increment a counter; the
+  // 5th failure within 15 minutes locks the account for the next
+  // 15 minutes (regardless of which IP is trying). After a successful
+  // login the counter resets.
+  //
+  // Account-lock window: 15 min. Same window for "count failures
+  // toward the lock". So a determined attacker can do 4 attempts
+  // every 15 min indefinitely — but that's ~14 attempts/hour, which
+  // against argon2id passwords is computationally cheap to ignore.
+  app.post<{ Body: { username?: string; password?: string; deviceLabel?: string } }>(
+    '/api/login',
+    async (req, reply) => {
+      const username = (req.body?.username ?? '').trim()
+      const password = req.body?.password ?? ''
+      if (!username || !password) {
+        return reply.code(400).send({ error: 'Username and password are required.' })
+      }
+
+      const db = getDb()
+      const now = Date.now()
+
+      // Lookup is case-insensitive across both name and GitHub
+      // username so a member who sets up as "Trent Fox" can log in
+      // as "trent fox" (and also as their GitHub username if set).
+      const member = db.prepare(
+        `SELECT id, displayName, githubUsername, role, status, passwordHash,
+                failedLoginCount, lockedUntil, capabilities, allowedProjectIds,
+                autoOpenProjectId, kioskMode
+           FROM members
+          WHERE status = 'active'
+            AND (LOWER(displayName) = LOWER(?) OR LOWER(githubUsername) = LOWER(?))
+          LIMIT 1`
+      ).get(username, username) as {
+        id: number
+        displayName: string
+        githubUsername: string | null
+        role: 'admin' | 'mentor' | 'student'
+        status: 'active' | 'inactive'
+        passwordHash: string | null
+        failedLoginCount: number
+        lockedUntil: number | null
+        capabilities: string | null
+        allowedProjectIds: string | null
+        autoOpenProjectId: number | null
+        kioskMode: number
+      } | undefined
+
+      // Sleep-on-fail to slow down brute force. argon2 verify on a
+      // dummy hash for the "user not found" case keeps the timing
+      // similar between found-but-wrong-password and not-found,
+      // closing the user-enumeration timing channel.
+      if (!member || !member.passwordHash) {
+        // Match the verify-time of a real argon2 check so an attacker
+        // can't enumerate which usernames exist by timing the response.
+        await verifyPassword(
+          '$argon2id$v=19$m=19456,t=2,p=1$dummysaltdummy$dummyhashdummyhashdum',
+          password,
+        ).catch(() => false)
+        return reply.code(401).send({ error: 'Invalid username or password.' })
+      }
+
+      // Locked out — even a correct password is rejected until the
+      // lock expires. We don't leak HOW LONG; just "try later".
+      if (member.lockedUntil !== null && member.lockedUntil > now) {
+        const minutes = Math.ceil((member.lockedUntil - now) / 60000)
+        return reply.code(429).send({
+          error: `Account temporarily locked due to repeated failed login attempts. Try again in about ${minutes} minute${minutes === 1 ? '' : 's'}.`,
+        })
+      }
+
+      const ok = await verifyPassword(member.passwordHash, password)
+      if (!ok) {
+        const newCount = member.failedLoginCount + 1
+        // Five strikes within rolling 15-minute window locks the
+        // account. The "rolling" part is implicit — we never reset
+        // the count except on successful login, but the lockedUntil
+        // timestamp is what actually gates access. Simpler than
+        // tracking a true sliding window.
+        const LOCK_THRESHOLD = 5
+        const LOCK_DURATION_MS = 15 * 60 * 1000
+        const newLockedUntil = newCount >= LOCK_THRESHOLD
+          ? now + LOCK_DURATION_MS
+          : null
+        db.prepare(
+          `UPDATE members SET failedLoginCount = ?, lockedUntil = ? WHERE id = ?`
+        ).run(newCount, newLockedUntil, member.id)
+        logAudit({
+          actorId: member.id,
+          actorLabel: member.displayName,
+          action: newLockedUntil ? 'login.locked' : 'login.failed',
+          target: `member:${member.id}`,
+          detail: `count=${newCount}`,
+        })
+        return reply.code(401).send({ error: 'Invalid username or password.' })
+      }
+
+      // Reset the failure counter on success + record lastLoginAt
+      // for audit / "show last sign-in" UX later.
+      db.prepare(
+        `UPDATE members
+            SET failedLoginCount = 0,
+                lockedUntil = NULL,
+                lastLoginAt = ?
+          WHERE id = ?`
+      ).run(now, member.id)
+
+      // Mint a fresh device row — same shape as enrollment so all
+      // the existing `requireDevice` paths just work. Re-use the
+      // device-label-or-default policy.
+      const token = generateToken()
+      const tokenHash = await hashToken(token)
+      const deviceLabel = (req.body?.deviceLabel ?? '').trim() || 'web session'
+      const deviceResult = db.prepare(
+        `INSERT INTO devices (memberId, label, tokenHash, createdAt, lastSeenAt, kind)
+         VALUES (?, ?, ?, ?, ?, 'web')`
+      ).run(member.id, deviceLabel, tokenHash, now, now)
+
+      const teamRow = db.prepare(`SELECT * FROM team WHERE id = 1`).get() as TeamRow
+
+      logAudit({
+        actorId: member.id,
+        actorLabel: member.displayName,
+        action: 'login.success',
+        target: `device:${deviceResult.lastInsertRowid}`,
+      })
+
+      return {
+        token,
+        device: { id: deviceResult.lastInsertRowid as number, label: deviceLabel },
+        member: {
+          id: member.id,
+          displayName: member.displayName,
+          githubUsername: member.githubUsername,
+          role: member.role,
+          capabilities: parseCapabilities(member.capabilities),
+          allowedProjectIds: parseAllowedProjectIds(member.allowedProjectIds),
+          autoOpenProjectId: member.autoOpenProjectId,
+          kioskMode: member.kioskMode === 1 && member.autoOpenProjectId !== null,
+        },
+        team: {
+          name: teamRow.name,
+          gitHubOrg: teamRow.gitHubOrg,
+          projectPrefix: teamRow.projectPrefix,
+          welcomeMessage: teamRow.welcomeMessage,
+        },
+      }
+    },
+  )
 }

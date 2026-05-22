@@ -531,14 +531,19 @@ export async function refreshLfsAuth(
   if (!tok) return null
   const endpoint = lfsEndpointForProject(cfg.lfsUrl, cfg.projectId)
   const g = simpleGit(dirPath)
-  // The extraheader key needs the URL with the trailing slash —
-  // matches what git-lfs's batch endpoint resolves to and ensures
-  // git uses the header for every sub-path under our LFS server.
-  await g.raw([
-    'config', '--local',
-    `http.${endpoint}/.extraheader`,
-    `Authorization: Bearer ${tok.token}`,
-  ])
+  // The extraheader scope MUST exclude /objects/storage/<oid>. git-lfs
+  // attaches its own Authorization on storage PUTs (the per-object
+  // token Giftless minted in the batch response); a broad extraheader
+  // at the endpoint root piles a second Authorization on top, and
+  // Cloudflare rejects the duplicate-header request with 400 before
+  // it ever reaches Giftless. Scope to the two paths that DO need
+  // pre-auth — batch + locks — so storage PUTs go out with one header.
+  const header = `Authorization: Bearer ${tok.token}`
+  // Drop the old root-scoped key that pre-3.0.27 installs wrote, so
+  // existing clones get healed on the next refresh.
+  await g.raw(['config', '--local', '--unset', `http.${endpoint}/.extraheader`]).catch(() => {})
+  await g.raw(['config', '--local', `http.${endpoint}/objects/batch.extraheader`, header])
+  await g.raw(['config', '--local', `http.${endpoint}/locks.extraheader`, header])
   return {
     writable: tok.writable,
     used: tok.quota.used,
@@ -1032,9 +1037,12 @@ async function runJoinClone(
       const tok = await getLfsToken(lfsCfg.projectId).catch(() => null)
       if (tok) {
         const endpoint = lfsEndpointForProject(lfsCfg.lfsUrl, lfsCfg.projectId)
+        // Scope to batch + locks only — see refreshLfsAuth() for why
+        // a root-scoped extraheader breaks storage PUTs on Cloudflare.
+        const header = `Authorization: Bearer ${tok.token}`
         lfsConfigForClone.push(
-          '--config',
-          `http.${endpoint}/.extraheader=Authorization: Bearer ${tok.token}`,
+          '--config', `http.${endpoint}/objects/batch.extraheader=${header}`,
+          '--config', `http.${endpoint}/locks.extraheader=${header}`,
         )
       }
     }

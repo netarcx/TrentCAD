@@ -54,6 +54,11 @@ export default function TeamSettings() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
+  // Per-admin GitHub PAT — separate from the team-level token, used
+  // when this admin probes / creates repos so their own scope (incl.
+  // SSO + per-repo access) covers things the team token might miss.
+  const [hasMyGhPat, setHasMyGhPat] = useState(false)
+  const [myPatInput, setMyPatInput] = useState('')
   // Theme picker — client-only setting, persisted to localStorage.
   // The choice 'system' follows the OS prefers-color-scheme.
   const [theme, setThemeState] = useState<ThemeChoice>(getStoredTheme())
@@ -65,6 +70,12 @@ export default function TeamSettings() {
   const [resetting, setResetting] = useState(false)
 
   useEffect(() => {
+    // Personal PAT status — independent fetch since /api/team is
+    // team-wide and we need the calling admin's own gitHubPat flag.
+    api<{ member: { hasGitHubPat?: boolean } }>('GET', '/api/me')
+      .then(r => setHasMyGhPat(!!r.member.hasGitHubPat))
+      .catch(() => { /* silent — non-fatal */ })
+
     api<Team>('GET', '/api/team')
       .then(t => {
         setTeam(t)
@@ -199,13 +210,103 @@ export default function TeamSettings() {
       </div>
 
       <div className="card">
-        <h3>GitHub</h3>
+        <h3>Your GitHub account</h3>
         <div className="hint">
-          Organization, project-name prefix, and the Personal Access Token
-          FrameCAD uses on the team's behalf. The PAT is stored on this
-          server and never sent back to browsers or desktop clients —
-          they ask the server to do the GitHub call. Scopes needed:
-          classic <span className="mono">repo</span> (full) OR a
+          Link a personal access token from <strong>your</strong>{' '}
+          GitHub account. FrameCAD uses it when YOU initiate a GitHub
+          API call from the admin UI (checking a project's remote,
+          creating a new repo) so the call runs with your own access
+          — picking up SSO-protected and per-repo private repos that
+          a shared team token can't see. The token never reaches
+          browsers or desktop clients; it's stored on this server
+          and only used server-side.
+          {' '}
+          <a
+            href="https://github.com/settings/tokens?type=beta"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Create a fine-grained token
+          </a>{' '}
+          with <span className="mono">contents:read</span> +{' '}
+          <span className="mono">metadata:read</span> on the repos you
+          care about (and <span className="mono">administration:write</span>{' '}
+          if you'll create new repos from FrameCAD).
+        </div>
+        <label>
+          Personal token: {hasMyGhPat ? (
+            <span style={{ color: 'var(--green)' }}>linked</span>
+          ) : (
+            <span style={{ color: 'var(--text-muted)' }}>not linked</span>
+          )}
+        </label>
+        <input
+          type="password"
+          value={myPatInput}
+          onChange={e => setMyPatInput(e.target.value)}
+          placeholder={hasMyGhPat
+            ? 'Leave blank to keep the existing token'
+            : 'ghp_… or github_pat_…'}
+          autoComplete="off"
+          spellCheck={false}
+        />
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <button
+            className="primary"
+            disabled={busy || !myPatInput.trim()}
+            onClick={async () => {
+              setBusy(true); setError(null); setStatus(null)
+              try {
+                const res = await api<{ hasGitHubPat: boolean }>(
+                  'POST', '/api/me/github-pat',
+                  { gitHubPat: myPatInput.trim() },
+                )
+                setHasMyGhPat(!!res.hasGitHubPat)
+                setMyPatInput('')
+                setStatus('Your GitHub token is linked.')
+              } catch (err) {
+                setError((err as ApiError).message)
+              } finally {
+                setBusy(false)
+              }
+            }}
+          >
+            {hasMyGhPat ? 'Replace token' : 'Link token'}
+          </button>
+          {hasMyGhPat && (
+            <button
+              className="link"
+              disabled={busy}
+              onClick={async () => {
+                if (!confirm('Unlink your personal GitHub token? Admin operations will fall back to the team-level token; private repos that only your account can see may stop showing up correctly.')) return
+                setBusy(true); setError(null)
+                try {
+                  await api('POST', '/api/me/github-pat', { gitHubPat: '' })
+                  setHasMyGhPat(false)
+                  setMyPatInput('')
+                  setStatus('Personal GitHub token unlinked.')
+                } catch (err) {
+                  setError((err as ApiError).message)
+                } finally {
+                  setBusy(false)
+                }
+              }}
+            >
+              Unlink
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="card">
+        <h3>GitHub (team)</h3>
+        <div className="hint">
+          Organization, project-name prefix, and a <strong>shared</strong>{' '}
+          fallback Personal Access Token. The team token is used when
+          the calling admin hasn't linked their own (see the card above);
+          for org-wide operations like check-remote on every project
+          where no specific admin's token has been linked yet. Scopes
+          needed: classic <span className="mono">repo</span> (full) OR a
           fine-grained token with <span className="mono">contents:write</span>,{' '}
           <span className="mono">metadata:read</span>, and{' '}
           <span className="mono">administration:write</span> on the

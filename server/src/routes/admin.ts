@@ -48,6 +48,32 @@ function coerceProjectIdList(input: unknown): number[] | null {
   return input.filter((n): n is number => Number.isFinite(n))
 }
 
+/**
+ * Return the list of PATs the server should try when calling the
+ * GitHub API on behalf of `memberId`, in preference order:
+ *   1. The member's personal PAT (added via /api/me/github-pat).
+ *      Preferred because it has the member's own access scope —
+ *      private repos visible to them but not to the team token.
+ *   2. The team-level PAT (set on Team Settings).
+ *
+ * Returns at most 2 entries; empty array when neither is set.
+ * Callers iterate in order and short-circuit on the first 200.
+ */
+function effectiveGitHubPats(memberId: number): string[] {
+  const memberRow = getDb().prepare(
+    `SELECT gitHubPat FROM members WHERE id = ?`
+  ).get(memberId) as { gitHubPat: string | null } | undefined
+  const teamRow = getDb().prepare(
+    `SELECT gitHubPat FROM team WHERE id = 1`
+  ).get() as { gitHubPat: string | null } | undefined
+  const pats: string[] = []
+  if (memberRow?.gitHubPat) pats.push(memberRow.gitHubPat)
+  if (teamRow?.gitHubPat && teamRow.gitHubPat !== memberRow?.gitHubPat) {
+    pats.push(teamRow.gitHubPat)
+  }
+  return pats
+}
+
 export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', async (req, reply) => {
     if (!req.url.startsWith('/api/admin/')) return
@@ -425,11 +451,18 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
           error: 'Set a GitHub organization in Team Settings before creating repos.',
         })
       }
-      if (!teamRow.gitHubPat) {
+      // Use the calling admin's personal PAT first if they've linked
+      // one — their token is more likely to have org-create scope on
+      // their own behalf, and the audit trail on github.com attributes
+      // the repo creation to them rather than to a shared bot account.
+      // Falls back to the team PAT.
+      const callerPats = effectiveGitHubPats(req.member!.id)
+      if (callerPats.length === 0) {
         return reply.code(412).send({
-          error: 'Set a GitHub Personal Access Token in Team Settings → GitHub before creating repos.',
+          error: 'No GitHub token available. Link your personal GitHub PAT in your account settings, or have an admin set the team-level PAT in Team Settings → GitHub.',
         })
       }
+      const githubPat = callerPats[0]
 
       // Auto-prefix the repo name with the team's project prefix when
       // it isn't already present. Keeps the org tidy — every team
@@ -445,7 +478,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         const ghRes = await fetch(`https://api.github.com/orgs/${encodeURIComponent(teamRow.gitHubOrg)}/repos`, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${teamRow.gitHubPat}`,
+            'Authorization': `Bearer ${githubPat}`,
             'Accept': 'application/vnd.github+json',
             'X-GitHub-Api-Version': '2022-11-28',
             'Content-Type': 'application/json',
@@ -509,7 +542,9 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         await fetch(`https://api.github.com/repos/${encodeURIComponent(teamRow.gitHubOrg)}/${encodeURIComponent(finalName)}`, {
           method: 'DELETE',
           headers: {
-            'Authorization': `Bearer ${teamRow.gitHubPat}`,
+            // Same PAT we used to create the repo — anything else
+            // wouldn't have authority to delete it.
+            'Authorization': `Bearer ${githubPat}`,
             'Accept': 'application/vnd.github+json',
             'X-GitHub-Api-Version': '2022-11-28',
             'User-Agent': 'framecad-server',
@@ -661,47 +696,60 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
       // Pull the stored PAT so we can authenticate against private
       // repos in the team's org. Without it, GitHub returns 404 to
-      // anonymous HEAD on a private repo — indistinguishable from
-      // "repo doesn't exist", which would have us tell the admin
-      // their freshly-created private repo was missing.
-      const teamRow = getDb().prepare(
-        `SELECT gitHubPat FROM team WHERE id = 1`
-      ).get() as { gitHubPat: string | null }
+      // Pull the calling admin's personal PAT + the team PAT and
+      // try each in turn. Without auth, GitHub returns 404 to
+      // anonymous probes of private repos — indistinguishable from
+      // "repo doesn't exist," which was incorrectly marking
+      // freshly-created or SSO-protected private repos as missing
+      // for admins whose own credentials would have found them.
+      // We try the calling admin's PAT first since they're most
+      // likely to have access to repos they care about.
+      const pats = effectiveGitHubPats(req.member!.id)
 
       let status: 'ok' | 'missing' | 'error' = 'error'
       let detail: string | null = null
       try {
-        const controller = new AbortController()
-        const timer = setTimeout(() => controller.abort(), 5000)
-        try {
-          // Use GitHub's repos API instead of a raw HEAD on the HTML
-          // URL — the API correctly returns 200 for authenticated
-          // access to private repos, 404 for genuinely missing /
-          // unauthorized. The HTML route can't distinguish those.
-          const parsedPath = parsed.pathname.replace(/^\//, '').replace(/\.git$/i, '')
-          const apiUrl = `https://api.github.com/repos/${parsedPath}`
-          const headers: Record<string, string> = {
-            'Accept': 'application/vnd.github+json',
-            'X-GitHub-Api-Version': '2022-11-28',
-            'User-Agent': 'framecad-server',
+        const parsedPath = parsed.pathname.replace(/^\//, '').replace(/\.git$/i, '')
+        const apiUrl = `https://api.github.com/repos/${parsedPath}`
+        const baseHeaders: Record<string, string> = {
+          'Accept': 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          'User-Agent': 'framecad-server',
+        }
+        // Build the candidate list: each PAT, plus a final
+        // anonymous attempt for public repos when no PAT is set.
+        const attempts = pats.length > 0
+          ? pats.map(p => ({ ...baseHeaders, Authorization: `Bearer ${p}` }))
+          : [baseHeaders]
+        for (let i = 0; i < attempts.length; i++) {
+          const controller = new AbortController()
+          const timer = setTimeout(() => controller.abort(), 5000)
+          try {
+            // `redirect: 'manual'` so a malicious 30x can't redirect us
+            // off github.com to an internal host.
+            const res = await fetch(apiUrl, {
+              method: 'GET',
+              headers: attempts[i],
+              signal: controller.signal,
+              redirect: 'manual',
+            })
+            if (res.status === 200) {
+              status = 'ok'
+              detail = null
+              break
+            }
+            // 404 / 401 → try the next PAT before declaring missing.
+            // The LAST attempt's verdict is what we record.
+            if (res.status === 404 || res.status === 401) {
+              status = 'missing'
+              detail = null
+            } else {
+              status = 'error'
+              detail = `HTTP ${res.status}`
+            }
+          } finally {
+            clearTimeout(timer)
           }
-          if (teamRow.gitHubPat) {
-            headers.Authorization = `Bearer ${teamRow.gitHubPat}`
-          }
-          // `redirect: 'manual'` so a malicious 30x can't redirect us
-          // off github.com to an internal host. We treat any redirect
-          // as "I don't know" rather than following it.
-          const res = await fetch(apiUrl, {
-            method: 'GET',
-            headers,
-            signal: controller.signal,
-            redirect: 'manual',
-          })
-          if (res.status === 200) status = 'ok'
-          else if (res.status === 404 || res.status === 401) status = 'missing'
-          else { status = 'error'; detail = `HTTP ${res.status}` }
-        } finally {
-          clearTimeout(timer)
         }
       } catch (err) {
         status = 'error'

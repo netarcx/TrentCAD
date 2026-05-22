@@ -318,6 +318,17 @@ const MIGRATIONS: string[] = [
   ALTER TABLE team ADD COLUMN lfsTokenTtlMinutes INTEGER NOT NULL DEFAULT 15;
   ALTER TABLE team ADD COLUMN quotaGraceHours INTEGER NOT NULL DEFAULT 24;
   `,
+  // v13: per-admin GitHub PAT. The team-level PAT (v11) is shared
+  // across all admin operations, which fails when the team's
+  // fine-grained token doesn't have access to a specific private
+  // repo (or an admin's SSO-protected repos aren't reachable via
+  // the team token). Each admin can now link their own PAT; the
+  // server prefers the calling admin's PAT and falls back to the
+  // team PAT. Same storage rules as the team PAT (plaintext on a
+  // trusted self-hosted server, never returned to clients).
+  `
+  ALTER TABLE members ADD COLUMN gitHubPat TEXT;
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

@@ -256,12 +256,50 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     }
   })
 
+  // Set or clear the calling member's personal GitHub PAT. The
+  // server uses this token (preferred over the team-level PAT) for
+  // GitHub API calls the admin initiates — check-remote on a private
+  // repo, create-on-github with their own org permissions, etc. This
+  // closes the gap where a fine-grained team PAT couldn't see one
+  // admin's SSO-protected or repo-scoped private repos.
+  //
+  // Empty string clears the token. We never echo the value back —
+  // only a `hasGitHubPat` boolean ships in GET /api/me.
+  app.post<{ Body: { gitHubPat?: string } }>(
+    '/api/me/github-pat',
+    async (req, reply) => {
+      const raw = (req.body?.gitHubPat ?? '').trim()
+      if (raw && !/^[A-Za-z0-9_-]+$/.test(raw)) {
+        return reply.code(400).send({
+          error: 'GitHub PAT must contain only letters, digits, underscore, and hyphen — no whitespace.',
+        })
+      }
+      const m = req.member!
+      getDb().prepare(
+        `UPDATE members SET gitHubPat = ? WHERE id = ?`
+      ).run(raw || null, m.id)
+      const { logAudit } = await import('../db.js')
+      logAudit({
+        actorId: m.id,
+        actorLabel: m.displayName,
+        action: raw ? 'github-pat.set' : 'github-pat.cleared',
+        target: `member:${m.id}`,
+      })
+      return { success: true, hasGitHubPat: !!raw }
+    },
+  )
+
   app.get('/api/me', async req => {
     // req.member already carries hydrated capabilities (see auth.ts —
     // findDeviceByToken parses them on every authenticated call). The
     // shape exposed here is what the desktop client persists into its
     // TeamSnapshot.me — see src/shared/types.ts.
     const m = req.member!
+    // Look up the personal-PAT boolean without leaking the value.
+    // Cheap single-row read on the member id.
+    const patRow = getDb().prepare(
+      `SELECT gitHubPat FROM members WHERE id = ?`
+    ).get(m.id) as { gitHubPat: string | null } | undefined
     return {
       member: {
         id: m.id,
@@ -272,6 +310,9 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
         allowedProjectIds: m.allowedProjectIds,
         autoOpenProjectId: m.autoOpenProjectId,
         kioskMode: m.kioskMode,
+        // Boolean-only — actual token never leaves the server. Admin
+        // UI uses this to render "Linked / Not linked" status.
+        hasGitHubPat: !!patRow?.gitHubPat,
       },
       device: req.device,
     }

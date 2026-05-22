@@ -675,9 +675,18 @@ export default function App() {
     if (error) navigator.clipboard.writeText(error)
   }
 
+  // Strip developer sentinels that the main process tags onto certain
+  // errors for the renderer's selective remediation paths
+  // (LFS_UNREACHABLE_SENTINEL / GITHUB_AUTH_REQUIRED_SENTINEL). Without
+  // this, the literal `GITHUB_AUTH_REQUIRED: This looks like a private
+  // GitHub repo…` leaks into the banner verbatim, which is unhelpful
+  // to a normal user.
+  const stripSentinels = (msg: string): string => msg
+    .replace(/(^|\s)(LFS_UNREACHABLE|GITHUB_AUTH_REQUIRED):\s*/g, '$1')
+  const displayError = error ? stripSentinels(error) : error
   const errorBanner = error && (
     <div className="error-banner">
-      <span className="error-banner-message" title={error}>{error}</span>
+      <span className="error-banner-message" title={displayError ?? ''}>{displayError}</span>
       <div className="error-banner-actions">
         {reportState === 'idle' && ghLoggedIn && (
           <button
@@ -1025,6 +1034,12 @@ export default function App() {
         </datalist>
         {updateBanner}
         {errorBanner}
+        {/* Kiosk-stuck banner lives in the welcome-screen branch too:
+            kiosk-mode users with an unreachable assigned project never
+            leave this branch, so the banner was previously rendered
+            below (in the project-view branch) where they could never
+            see it. */}
+        {kioskStuckBanner}
         <ProjectSetup
           onJoinProject={joinProject}
           onOpenProject={openProject}

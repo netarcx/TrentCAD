@@ -904,21 +904,28 @@ body.slam-shake {
    state. Soft pulsing ring + accent border, plus a count badge piggy-
    backed onto the button. Disabled and reduced motion preferences
    knock the animation out so it doesn't distract during sync itself. */
-.toolbar-btn.has-remote-updates {
+/* `.has-remote-updates` highlights the Sync button when origin has
+   commits we haven't pulled. `.has-unpushed` mirrors that on the
+   Publish button when local has commits we haven't pushed. Same
+   visual treatment + same reduced-motion handling. */
+.toolbar-btn.has-remote-updates,
+.toolbar-btn.has-unpushed {
   position: relative;
   border: 1px solid var(--accent);
   box-shadow: 0 0 0 0 var(--accent-tint);
   animation: toolbar-btn-pulse 2s ease-in-out infinite;
 }
 
-.toolbar-btn.has-remote-updates:disabled {
+.toolbar-btn.has-remote-updates:disabled,
+.toolbar-btn.has-unpushed:disabled {
   animation: none;
   border-color: var(--border);
   box-shadow: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .toolbar-btn.has-remote-updates { animation: none; }
+  .toolbar-btn.has-remote-updates,
+  .toolbar-btn.has-unpushed { animation: none; }
 }
 
 @keyframes toolbar-btn-pulse {

@@ -179,7 +179,7 @@ export default function Members() {
                 </tr>
                 {editingId === m.id && (
                   <tr>
-                    <td colSpan={6} style={{ background: 'rgba(255,255,255,0.04)' }}>
+                    <td colSpan={6} style={{ background: 'var(--bg-hover)' }}>
                       <MemberCapsEditor
                         member={m}
                         projects={projects}

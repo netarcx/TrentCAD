@@ -494,10 +494,42 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
           : typeof req.body?.quotaBytes === 'number' && Number.isFinite(req.body.quotaBytes)
             ? Math.max(0, Math.floor(req.body.quotaBytes))
             : DEFAULT_PROJECT_QUOTA_BYTES
-      const insert = getDb().prepare(
-        `INSERT INTO projects (name, repoUrl, description, createdAt, quotaBytes)
-         VALUES (?, ?, ?, ?, ?)`
-      ).run(finalName, createdRepoUrl, (req.body?.description ?? '').trim(), Date.now(), quota)
+      let insert
+      try {
+        insert = getDb().prepare(
+          `INSERT INTO projects (name, repoUrl, description, createdAt, quotaBytes)
+           VALUES (?, ?, ?, ?, ?)`
+        ).run(finalName, createdRepoUrl, (req.body?.description ?? '').trim(), Date.now(), quota)
+      } catch (insertErr) {
+        // The repo was created on GitHub successfully but the local
+        // INSERT failed (usually UNIQUE on repoUrl — admin double-
+        // clicked, or a parallel registration won the race). Delete
+        // the GitHub repo so we don't strand it; the admin's intent
+        // was "this should not exist if we couldn't track it".
+        await fetch(`https://api.github.com/repos/${encodeURIComponent(teamRow.gitHubOrg)}/${encodeURIComponent(finalName)}`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${teamRow.gitHubPat}`,
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'User-Agent': 'framecad-server',
+          },
+        }).catch(() => { /* best-effort — log audit notes the orphan */ })
+        const code = (insertErr as { code?: string }).code
+        if (code === 'SQLITE_CONSTRAINT_UNIQUE') {
+          return reply.code(409).send({
+            error: `A FrameCAD project with that repo URL already exists. The GitHub repo was deleted to avoid duplication.`,
+          })
+        }
+        logAudit({
+          actorId: req.member!.id,
+          actorLabel: req.member!.displayName,
+          action: 'project.create-on-github.rollback',
+          target: createdRepoUrl,
+          detail: `Local INSERT failed (${(insertErr as Error).message}); GitHub repo deletion attempted.`,
+        })
+        throw insertErr
+      }
       logAudit({
         actorId: req.member!.id,
         actorLabel: req.member!.displayName,
@@ -1091,7 +1123,12 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     }
     if (updates.length === 0) return { success: true }
     updates.push('updatedAt = ?')
-    values.push(String(Date.now()))
+    // INTEGER column — push the number, not String(Date.now()). The
+    // earlier String() coerced it via SQLite's relaxed type affinity
+    // to TEXT in that cell, breaking numeric comparisons downstream
+    // (any code doing `team.updatedAt > someMs` would silently
+    // string-compare).
+    values.push(Date.now())
     getDb()
       .prepare(`UPDATE team SET ${updates.join(', ')} WHERE id = 1`)
       .run(...values)

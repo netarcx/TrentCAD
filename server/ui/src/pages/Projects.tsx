@@ -301,7 +301,7 @@ export default function Projects() {
       </div>
 
       {createOnGh && (
-        <div className="modal-overlay" onClick={() => { if (!creatingOnGh) { setCreateOnGh(null); setCreateGhError(null); setCreateGhResult(null) } }}>
+        <div className="modal-backdrop" onClick={() => { if (!creatingOnGh) { setCreateOnGh(null); setCreateGhError(null); setCreateGhResult(null) } }}>
           <div className="modal" onClick={e => e.stopPropagation()} style={{ minWidth: 480 }}>
             {createGhResult ? (
               <>

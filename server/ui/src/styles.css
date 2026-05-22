@@ -21,7 +21,9 @@
   --accent-hover: #c4b5fd;
   --accent-tint: rgba(167, 139, 250, 0.15);
   --green: #86efac;
+  --green-tint: rgba(134, 239, 172, 0.15);
   --yellow: #fcd34d;
+  --yellow-tint: rgba(252, 211, 77, 0.15);
   --red: #fb7185;
   --red-tint: rgba(251, 113, 133, 0.15);
   --border: #353535;
@@ -31,6 +33,10 @@
      surface separation reads; lighter on light to avoid muddy
      halos. */
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+  /* Modal scrim is a near-black overlay on dark mode; light mode
+     overrides this to a lighter tint so the page doesn't go nearly
+     opaque-black when a modal opens against a white UI. */
+  --modal-scrim: rgba(0, 0, 0, 0.55);
   color-scheme: dark;
 }
 
@@ -48,11 +54,14 @@
   --accent-hover: #6d28d9;
   --accent-tint: rgba(124, 58, 237, 0.08);
   --green: #15803d;
+  --green-tint: rgba(21, 128, 61, 0.10);
   --yellow: #a16207;
+  --yellow-tint: rgba(161, 98, 7, 0.10);
   --red: #be123c;
   --red-tint: rgba(190, 18, 60, 0.08);
   --border: #e4e4e7;
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --modal-scrim: rgba(15, 15, 23, 0.35);
   color-scheme: light;
 }
 
@@ -459,8 +468,8 @@ table th {
   color: var(--text-secondary);
 }
 .pill.admin { color: var(--accent); background: var(--accent-tint); }
-.pill.mentor { color: var(--yellow); background: rgba(252, 211, 77, 0.15); }
-.pill.student { color: var(--green); background: rgba(134, 239, 172, 0.15); }
+.pill.mentor { color: var(--yellow); background: var(--yellow-tint); }
+.pill.student { color: var(--green); background: var(--green-tint); }
 
 .tag {
   display: inline-block;
@@ -524,7 +533,7 @@ table th {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--modal-scrim);
   display: flex;
   align-items: center;
   justify-content: center;

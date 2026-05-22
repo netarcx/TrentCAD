@@ -286,11 +286,26 @@ async function ensureLfsRoutingForPush(
     const ga = await g.raw(['show', 'HEAD:.gitattributes']).catch(() => '')
     if (/filter=lfs/i.test(ga)) lfsConfiguredInRepo = true
   } catch { /* no commits yet or no .gitattributes */ }
-  // Signal #3: git-lfs's smudge filter installed in this repo's
-  // config. `git lfs install` writes filter.lfs.smudge into the
-  // local config; presence is a strong signal LFS is in use.
+  // Belt-and-suspenders: fresh repos with no commits yet (just-
+  // created project, pre-first-publish) have no HEAD to `git show`
+  // against. Fall back to reading `.gitattributes` from the working
+  // tree directly so a createProject flow that wrote LFS patterns
+  // but hasn't committed yet is still detected.
+  if (!lfsConfiguredInRepo) {
+    try {
+      const ga = await fs.readFile(path.join(projectDir, '.gitattributes'), 'utf-8')
+      if (/filter=lfs/i.test(ga)) lfsConfiguredInRepo = true
+    } catch { /* file missing — fine */ }
+  }
+  // Signal #3: git-lfs's smudge filter. `git lfs install` defaults
+  // to the GLOBAL scope on most platforms — Windows installers wire
+  // it up there at install time. The Linux/macOS default is also
+  // global. So we explicitly check ALL scopes (no `--local` flag);
+  // the previous --local-only check missed legitimate LFS-enabled
+  // repos on stock Windows boxes where the filter was set globally
+  // by the git-lfs installer.
   try {
-    const smudge = (await g.raw(['config', '--local', '--get', 'filter.lfs.smudge'])).trim()
+    const smudge = (await g.raw(['config', '--get', 'filter.lfs.smudge'])).trim()
     if (smudge) lfsConfiguredInRepo = true
   } catch { /* not set */ }
   const repoUsesLfs = lfsObjectsInWorkingTree > 0 || lfsConfiguredInRepo
@@ -330,13 +345,24 @@ async function ensureLfsRoutingForPush(
       }
     }
     await setLocal('lfs.url', endpoint)
-    await setLocal('lfs.pushurl', endpoint)
-    // Also strip the legacy per-remote override (`[lfs "<remote>"] url`)
-    // so an old entry pointing at github.com can't beat our setting.
+    // Note: `lfs.pushurl` was set here in an earlier pass as belt-
+    // and-suspenders, but git-lfs doesn't recognize that key (only
+    // `lfs.url` is honored at this scope). Setting it was dead code
+    // that gave false confidence about a separate push override.
+    // The per-remote `lfs.<remote>.pushurl` form IS honored — we
+    // don't need it because `-c lfs.url=` covers both directions.
+    //
+    // Strip the legacy per-remote override (`[lfs "<remote>"] url`)
+    // at BOTH scopes so an old entry pointing at github.com can't
+    // beat our setting. Local is the obvious one; global covers a
+    // shared dev box where someone ran `git lfs install --global`
+    // pointing at GitHub years ago.
     if (remoteUrl) {
-      try {
-        await g.raw(['config', '--local', '--unset-all', `lfs.${remoteUrl}.url`])
-      } catch { /* not set — fine */ }
+      for (const scope of ['--local', '--global'] as const) {
+        try {
+          await g.raw(['config', scope, '--unset-all', `lfs.${remoteUrl}.url`])
+        } catch { /* not set at this scope — fine */ }
+      }
     }
     // VERIFY the resolved endpoint with `git lfs env`. If git-lfs
     // STILL reports a github.com endpoint after all the config
@@ -345,9 +371,38 @@ async function ensureLfsRoutingForPush(
     // GitHub LFS. The `-c lfs.url=…` arg simulates exactly what
     // the actual push will see, so a passing check here means the
     // push will route correctly.
+    //
+    // Two regexes because git-lfs 3.4+ sometimes splits the
+    // endpoint into push/fetch lines (`Endpoint (push)=...` /
+    // `Endpoint (download)=...`) when per-direction overrides are
+    // in play. Both must point at our endpoint or we refuse.
+    let envOutput = ''
+    let lfsEnvFailed = false
     try {
-      const env = await g.raw(['-c', `lfs.url=${endpoint}`, 'lfs', 'env'])
-      const m = env.match(/^Endpoint=([^\s]+)/m)
+      envOutput = await g.raw(['-c', `lfs.url=${endpoint}`, 'lfs', 'env'])
+    } catch {
+      lfsEnvFailed = true
+    }
+    if (lfsEnvFailed) {
+      // git-lfs isn't callable. The repo uses LFS (we wouldn't be
+      // in this branch otherwise — cfg && we're past detection),
+      // so a push without git-lfs would either silently strand
+      // pointer files OR upload to GitHub's default endpoint.
+      // Refuse rather than allow either failure mode.
+      return {
+        endpoint,
+        lfsObjectsInWorkingTree,
+        refuseReason:
+          `git-lfs isn't installed on this machine, but this project uses LFS.\n\n` +
+          `Install git-lfs from https://git-lfs.com/ and re-run \`git lfs install\`, ` +
+          `then try publishing again. The previous behaviour would have silently ` +
+          `pushed pointer files to GitHub or skipped routing entirely; the safer ` +
+          `default is to stop here.`,
+      }
+    }
+    const endpointLines = envOutput.match(/^Endpoint[^=]*=([^\s]+)/gm) ?? []
+    for (const line of endpointLines) {
+      const m = line.match(/=([^\s]+)/)
       const resolved = m?.[1] ?? ''
       if (resolved && !resolved.startsWith(endpoint)) {
         return {
@@ -356,13 +411,13 @@ async function ensureLfsRoutingForPush(
           refuseReason:
             `LFS routing verification failed.\n\n` +
             `FrameCAD configured the LFS endpoint as ${endpoint}, but git-lfs ` +
-            `resolves it to ${resolved}. Something in your git config or ` +
-            `environment is overriding the setting. Run \`git lfs env\` from ` +
-            `the project folder to see what's set, or ask your admin to ` +
+            `resolves \`${line}\` (expected ${endpoint}). Something in your git ` +
+            `config or environment is overriding the setting. Run \`git lfs env\` ` +
+            `from the project folder to see what's set, or ask your admin to ` +
             `check the project's .git/config.`,
         }
       }
-    } catch { /* git-lfs not callable — fall through, the actual push will surface a clearer error */ }
+    }
     return { endpoint, lfsObjectsInWorkingTree, refuseReason: null }
   }
 

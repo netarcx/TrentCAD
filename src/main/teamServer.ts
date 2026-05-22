@@ -353,10 +353,12 @@ export function getPolicies(): TeamPolicies {
     maxFileSizeMb: p.maxFileSizeMb ?? DEFAULT_TEAM_POLICIES.maxFileSizeMb,
     lfsAutotrackThresholdMb:
       p.lfsAutotrackThresholdMb ?? DEFAULT_TEAM_POLICIES.lfsAutotrackThresholdMb,
-    blockedExtensions:
-      Array.isArray(p.blockedExtensions) && p.blockedExtensions.length > 0
-        ? p.blockedExtensions
-        : DEFAULT_TEAM_POLICIES.blockedExtensions,
+    // Honor an explicit empty array — an admin may have intentionally
+    // cleared the blocklist. Only fall back to defaults when the
+    // field is missing entirely (older server response shape).
+    blockedExtensions: Array.isArray(p.blockedExtensions)
+      ? p.blockedExtensions
+      : DEFAULT_TEAM_POLICIES.blockedExtensions,
     lfsTokenTtlMinutes: p.lfsTokenTtlMinutes ?? DEFAULT_TEAM_POLICIES.lfsTokenTtlMinutes,
     quotaGraceHours: p.quotaGraceHours ?? DEFAULT_TEAM_POLICIES.quotaGraceHours,
   }

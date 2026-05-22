@@ -55,17 +55,41 @@ export default function Logs() {
       setLines(res.lines)
     } catch (err) {
       setError((err as ApiError).message)
+      // Pause auto-refresh on error so we don't hammer a broken
+      // endpoint every 5s (Docker socket not mounted, container
+      // stopped). User flips the checkbox or hits Refresh to resume.
+      setAuto(false)
     } finally {
       setBusy(false)
     }
   }
 
-  // Auto-refresh + container switch.
+  // Auto-refresh + container switch. Switching containers cancels
+  // any in-flight request from the previous tab (via the active
+  // value being closed over in refresh) — but the response can
+  // still land after we've already moved on. The version counter
+  // here ensures only the latest response wins setLines.
   useEffect(() => {
-    refresh()
-    if (!auto) return
-    const id = setInterval(refresh, 5000)
-    return () => clearInterval(id)
+    let cancelled = false
+    const runOnce = async (): Promise<void> => {
+      setBusy(true)
+      setError(null)
+      try {
+        const res = await api<LogResponse>('GET', `/api/admin/logs/${active}?tail=${tail}`)
+        if (cancelled) return
+        setLines(res.lines)
+      } catch (err) {
+        if (cancelled) return
+        setError((err as ApiError).message)
+        setAuto(false)
+      } finally {
+        if (!cancelled) setBusy(false)
+      }
+    }
+    runOnce()
+    if (!auto) return () => { cancelled = true }
+    const id = setInterval(runOnce, 5000)
+    return () => { cancelled = true; clearInterval(id) }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, tail, auto])
 
@@ -135,8 +159,12 @@ export default function Logs() {
             lineHeight: 1.4,
             maxHeight: '70vh',
             overflowY: 'auto',
+            // Wrap at word boundaries first; only break mid-token
+            // when nothing else fits. Avoids chopping URLs / IDs /
+            // hashes in tracebacks at arbitrary chars.
             whiteSpace: 'pre-wrap',
-            wordBreak: 'break-all',
+            wordBreak: 'normal',
+            overflowWrap: 'anywhere',
           }}
         >
           {lines.length === 0

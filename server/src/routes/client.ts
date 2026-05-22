@@ -30,17 +30,33 @@ interface TeamRow {
   quotaGraceHours?: number
 }
 
+/** Inline copy of the v12 default blocklist. Kept in sync by hand
+ *  with migration v12's DEFAULT clause AND shared/types.ts's
+ *  DEFAULT_TEAM_POLICIES.blockedExtensions — if you change one,
+ *  change the others. */
+const DEFAULT_BLOCKED_EXTS = [
+  'mp4', 'mov', 'avi', 'mkv', 'wmv', 'webm', 'm4v', 'flv', 'mpg', 'mpeg', '3gp',
+  'mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg', 'opus',
+  'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'txz', 'iso', 'lz', 'lzma', 'z',
+  'exe', 'msi', 'dll', 'dmg', 'pkg', 'app', 'apk', 'deb', 'rpm',
+  'bat', 'cmd', 'com', 'ps1', 'sh', 'run', 'bin',
+  'url', 'webloc', 'desktop',
+]
+
 /** Parse the JSON-encoded blockedExtensions column with a safety
  *  net: an empty / corrupt value falls back to the v12 default
- *  list so a botched manual DB edit doesn't blank the policy. */
+ *  list so a botched manual DB edit doesn't blank the policy.
+ *  An EMPTY ARRAY in the JSON is honored (admin can intentionally
+ *  disable the blocklist); only undefined / null / parse failure
+ *  drops back to defaults. */
 function parseBlockedExts(raw: string | undefined): string[] {
-  if (!raw) return []
+  if (!raw) return [...DEFAULT_BLOCKED_EXTS]
   try {
     const v = JSON.parse(raw)
-    if (!Array.isArray(v)) return []
+    if (!Array.isArray(v)) return [...DEFAULT_BLOCKED_EXTS]
     return v.filter((x): x is string => typeof x === 'string')
   } catch {
-    return []
+    return [...DEFAULT_BLOCKED_EXTS]
   }
 }
 

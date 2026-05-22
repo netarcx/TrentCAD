@@ -312,7 +312,13 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
                   <span className="mono"> gh</span> on your PATH.
                 </div>
               )}
-              {!authStatus?.loggedIn && authStatus?.ghCliAvailable !== false && (
+              {/* Don't show the "sign-in required" copy until we've
+                  resolved authStatus. While the IPC is still in
+                  flight, authStatus is null and we don't want to
+                  flash that message at someone who's already signed
+                  in — they'll see "Signed in as @username" the
+                  moment the response lands. */}
+              {authStatus !== null && !authStatus.loggedIn && authStatus.ghCliAvailable !== false && (
                 <div className="enroll-github-hint">
                   GitHub sign-in is required so FrameCAD can clone your team's
                   private repos and identify your check-outs to teammates.
@@ -341,9 +347,11 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
                 onClick={() => void submitEnroll()}
                 disabled={busy || !displayName.trim() || !authStatus?.loggedIn}
                 style={{ minWidth: 120 }}
-                title={authStatus?.loggedIn
-                  ? 'Finish enrollment with your GitHub account'
-                  : 'Sign in with GitHub first — required for private-repo access'}
+                title={authStatus === null
+                  ? 'Checking GitHub sign-in…'
+                  : authStatus.loggedIn
+                    ? 'Finish enrollment with your GitHub account'
+                    : 'Sign in with GitHub first — required for private-repo access'}
               >
                 {busy ? 'Enrolling…' : 'Finish'}
               </button>

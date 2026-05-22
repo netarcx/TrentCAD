@@ -3,13 +3,16 @@ import { ipcMain, BrowserWindow } from 'electron'
 
 const RETRY_DELAYS = [30_000, 60_000, 120_000, 240_000]
 
-function isArtifactMissing(msg: string): boolean {
-  return /404|not found|cannot find|ENOENT|no published/i.test(msg)
-    && !/latest.*yml/i.test(msg)
+function isArtifactPending(msg: string): boolean {
+  return /ERR_UPDATER_CHANNEL_FILE_NOT_FOUND/i.test(msg)
+    || (/cannot find.*latest.*release/i.test(msg) && !/no published/i.test(msg))
+    || /ERR_UPDATER_ASSET_NOT_FOUND/i.test(msg)
 }
 
 function isNoRelease(msg: string): boolean {
-  return /404|not found|cannot find|latest.*yml|enotfound/i.test(msg)
+  return /no published versions/i.test(msg)
+    || /ERR_UPDATER_NO_PUBLISHED_VERSIONS/i.test(msg)
+    || /enotfound/i.test(msg)
 }
 
 function send(win: BrowserWindow | null, channel: string, data?: unknown): void {
@@ -67,6 +70,15 @@ export function initAutoUpdater(getMainWindow: () => BrowserWindow | null): void
       return { success: true, currentVersion, latestVersion, updateAvailable }
     } catch (err) {
       const msg = (err as Error).message || ''
+      if (isArtifactPending(msg)) {
+        return {
+          success: true,
+          currentVersion: autoUpdater.currentVersion?.version || '',
+          latestVersion: '',
+          updateAvailable: true,
+          artifactPending: true
+        }
+      }
       if (isNoRelease(msg)) {
         return {
           success: true,
@@ -74,15 +86,6 @@ export function initAutoUpdater(getMainWindow: () => BrowserWindow | null): void
           latestVersion: '',
           updateAvailable: false,
           noReleasesYet: true
-        }
-      }
-      if (isArtifactMissing(msg)) {
-        return {
-          success: true,
-          currentVersion: autoUpdater.currentVersion?.version || '',
-          latestVersion: '',
-          updateAvailable: true,
-          artifactPending: true
         }
       }
       return { success: false, error: msg }

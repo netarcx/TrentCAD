@@ -1,16 +1,4 @@
 !include "LogicLib.nsh"
-!include "nsDialogs.nsh"
-
-; A previous version of this file tried to inject a custom nsDialogs
-; page (desktop-icon + taskbar-pin checkboxes) via `!macro
-; customWelcomePage` — but electron-builder has no `customWelcomePage`
-; hook, so the macro was never inserted, the Page declaration never
-; ran, and NSIS marked the page functions as unreferenced. That dead
-; code tripped `warning 6010` which electron-builder treats as fatal,
-; killing every Windows build from v3.0.20 through v3.0.27. The page
-; is now removed; the desktop shortcut + taskbar pin happen
-; unconditionally in customInstall below (matches the v3.0.20+
-; behavior anyway since the choice never reached customInstall).
 
 ; Override electron-builder's built-in "app is running" check — we handle
 ; it ourselves in customInit by force-killing the lingering process.
@@ -144,52 +132,7 @@
   ${Else}
     DetailPrint "GitHub CLI already installed."
   ${EndIf}
-
-  ; ── Desktop shortcut + taskbar pin ────────────────────────────────
-  ; Unconditional now — see the header comment at the top of this file
-  ; for why the user-choice dialog was removed. Per-machine install
-  ; runs elevated, so the desktop shortcut goes to the All Users
-  ; desktop where every account sees it. SetShellVarContext stays
-  ; "all" for the rest of the macro since the uninstaller cleanup at
-  ; the bottom also needs to find it.
-  SetShellVarContext all
-
-  DetailPrint "Creating desktop shortcut..."
-  CreateShortCut "$DESKTOP\FrameCAD.lnk" "$INSTDIR\FrameCAD.exe" "" "$INSTDIR\FrameCAD.exe" 0
-
-  DetailPrint "Pinning FrameCAD to the taskbar..."
-  Call PinToTaskbar
 !macroend
-
-; Best-effort pin-to-taskbar via PowerShell + Shell.Application COM.
-; Works on Windows 10 and most Windows 11 builds (newer 11 22H2+ has
-; been progressively removing the verb; failure is silent). The
-; user can always right-click → Pin manually if this doesn't take.
-;
-; We write the PowerShell to %TEMP% rather than passing it inline
-; because nested quoting through nsExec → cmd → powershell is a
-; nightmare and the temp-file approach is debuggable if it breaks.
-Function PinToTaskbar
-  StrCpy $0 "$TEMP\framecad-pin-taskbar.ps1"
-  FileOpen $1 "$0" w
-  ; NSIS double-dollar escapes a literal `$` so PowerShell variables
-  ; come through correctly. `$\r$\n` is a literal CRLF in the file.
-  FileWrite $1 'try {$\r$\n'
-  FileWrite $1 '  $$shell = New-Object -ComObject Shell.Application$\r$\n'
-  FileWrite $1 '  $$folder = $$shell.NameSpace("$INSTDIR")$\r$\n'
-  FileWrite $1 '  if ($$folder -ne $$null) {$\r$\n'
-  FileWrite $1 '    $$item = $$folder.ParseName("FrameCAD.exe")$\r$\n'
-  FileWrite $1 '    if ($$item -ne $$null) {$\r$\n'
-  FileWrite $1 '      $$verb = $$item.Verbs() | Where-Object { $$_.Name.Replace("&","") -eq "Pin to taskbar" }$\r$\n'
-  FileWrite $1 '      if ($$verb) { $$verb.DoIt() }$\r$\n'
-  FileWrite $1 '    }$\r$\n'
-  FileWrite $1 '  }$\r$\n'
-  FileWrite $1 '} catch { }$\r$\n'
-  FileClose $1
-  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$0"'
-  Pop $1
-  Delete "$0"
-FunctionEnd
 
 !macro customUnInit
   ; Unregister COM add-in
@@ -197,11 +140,4 @@ FunctionEnd
 
   ; Remove add-in files
   RMDir /r "$INSTDIR\solidworks-addin"
-
-  ; Remove the desktop shortcut we created in customInstall (if the
-  ; user picked the checkbox). SetShellVarContext "all" matches the
-  ; install-side choice so we look in C:\Users\Public\Desktop, not
-  ; the uninstalling user's personal desktop.
-  SetShellVarContext all
-  Delete "$DESKTOP\FrameCAD.lnk"
 !macroend

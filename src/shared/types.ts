@@ -162,6 +162,13 @@ export interface UpdateInfo {
   version: string
 }
 
+export interface UpdateRetryStatus {
+  status: 'waiting' | 'checking' | 'found' | 'none' | 'gave-up' | 'cancelled'
+  attempt?: number
+  maxAttempts?: number
+  nextRetryMs?: number
+}
+
 export interface PublishProgress {
   phase: 'preparing' | 'uploading' | 'done' | 'error'
   files?: string[]
@@ -499,12 +506,11 @@ export interface IpcApi {
     currentVersion?: string
     latestVersion?: string
     updateAvailable?: boolean
-    /** True when the check succeeded but no GitHub release exists yet
-     *  (typical for a fresh repo / first build pre-publish). Lets the
-     *  UI show a calm "no releases yet" message instead of an error. */
     noReleasesYet?: boolean
+    artifactPending?: boolean
     error?: string
   }>
+  cancelUpdateRetry(): Promise<void>
   getAppVersion(): Promise<string>
   /** Best-effort OS hostname for pre-filling the enrollment wizard's
    *  Device Label field. Returns '' on any failure. */
@@ -582,6 +588,7 @@ export interface IpcApi {
   onUpdateAvailable(callback: (info: UpdateInfo) => void): () => void
   onUpdateDownloadProgress(callback: (progress: { percent: number }) => void): () => void
   onUpdateDownloaded(callback: () => void): () => void
+  onUpdateRetryStatus(callback: (data: UpdateRetryStatus) => void): () => void
   onPublishProgress(callback: (progress: PublishProgress) => void): () => void
   onJoinProgress(callback: (progress: PublishProgress) => void): () => void
 

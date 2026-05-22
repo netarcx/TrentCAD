@@ -88,6 +88,9 @@ const api: IpcApi = {
   checkForUpdate: () =>
     ipcRenderer.invoke('check-for-update'),
 
+  cancelUpdateRetry: () =>
+    ipcRenderer.invoke('cancel-update-retry'),
+
   getAppVersion: () =>
     ipcRenderer.invoke('get-app-version'),
 
@@ -291,6 +294,13 @@ const api: IpcApi = {
     const handler = () => callback()
     ipcRenderer.on('update-downloaded', handler)
     return () => ipcRenderer.removeListener('update-downloaded', handler)
+  },
+
+  onUpdateRetryStatus: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
+      callback(data as Parameters<typeof callback>[0])
+    ipcRenderer.on('update-retry-status', handler)
+    return () => ipcRenderer.removeListener('update-retry-status', handler)
   },
 
   onPublishProgress: (callback) => {

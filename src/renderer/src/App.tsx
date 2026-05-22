@@ -20,7 +20,7 @@ import ActivityView from './components/ActivityView'
 import PartsManager from './components/PartsManager'
 import ApprovalsPanel from './components/ApprovalsPanel'
 import logoUrl from './assets/logo.png'
-import type { AdminConfig, DependencyStatus, FileEntry, GlobalAdminConfig, ProjectTotals, PublishProgress, UpdateInfo } from '@shared/types'
+import type { AdminConfig, DependencyStatus, FileEntry, GlobalAdminConfig, ProjectTotals, PublishProgress, UpdateInfo, UpdateRetryStatus } from '@shared/types'
 import { useTeam } from './hooks/useTeam'
 
 function countByState(files: FileEntry[], state: string): number {
@@ -85,6 +85,7 @@ export default function App() {
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [updateProgress, setUpdateProgress] = useState<number | null>(null)
   const [updateReady, setUpdateReady] = useState(false)
+  const [updateRetry, setUpdateRetry] = useState<UpdateRetryStatus | null>(null)
   const [appVersion, setAppVersion] = useState<string>('')
   const [adminConfig, setAdminConfig] = useState<AdminConfig>({})
   const [globalAdmin, setGlobalAdmin] = useState<GlobalAdminConfig>({})
@@ -543,6 +544,8 @@ export default function App() {
               alert(`Could not check for updates: ${r.error || 'unknown error'}`)
             } else if (r.noReleasesYet) {
               alert(`You're on v${r.currentVersion}. No published releases to compare against yet.`)
+            } else if (r.artifactPending) {
+              alert(`Update found but the installer is still being built. Will keep checking in the background — you'll see a banner when it's ready.`)
             } else if (r.updateAvailable) {
               alert(`Update available — v${r.latestVersion} is downloading in the background.`)
             } else {
@@ -610,11 +613,18 @@ export default function App() {
 
   useEffect(() => {
     const cleanups = [
-      window.api.onUpdateAvailable((info) => setUpdateInfo(info)),
+      window.api.onUpdateAvailable((info) => {
+        setUpdateInfo(info)
+        setUpdateRetry(null)
+      }),
       window.api.onUpdateDownloadProgress(({ percent }) => setUpdateProgress(percent)),
       window.api.onUpdateDownloaded(() => {
         setUpdateProgress(null)
         setUpdateReady(true)
+        setUpdateRetry(null)
+      }),
+      window.api.onUpdateRetryStatus((data) => {
+        setUpdateRetry(data.status === 'found' || data.status === 'none' || data.status === 'cancelled' ? null : data)
       })
     ]
     // Guard against a preload that ever returns undefined for one of
@@ -740,7 +750,25 @@ export default function App() {
     </div>
   )
 
-  const updateBanner = updateInfo && (
+  const retryBanner = updateRetry && (
+    <div className="update-banner">
+      {updateRetry.status === 'waiting' ? (
+        <>
+          <span>Update found — installer still building. Retrying ({updateRetry.attempt}/{updateRetry.maxAttempts})...</span>
+          <button onClick={() => window.api.cancelUpdateRetry()}>Dismiss</button>
+        </>
+      ) : updateRetry.status === 'checking' ? (
+        <span>Checking for installer... (attempt {updateRetry.attempt}/{updateRetry.maxAttempts})</span>
+      ) : updateRetry.status === 'gave-up' ? (
+        <>
+          <span>Installer not ready yet. Try again later with Ctrl+Shift+R.</span>
+          <button onClick={() => setUpdateRetry(null)}>Dismiss</button>
+        </>
+      ) : null}
+    </div>
+  )
+
+  const updateBanner = updateInfo ? (
     <div className="update-banner">
       {updateReady ? (
         <>
@@ -758,7 +786,7 @@ export default function App() {
         <span>Update v{updateInfo.version} available — downloading...</span>
       )}
     </div>
-  )
+  ) : retryBanner
 
   if (!identityChecked) return null
 

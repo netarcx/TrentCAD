@@ -66,6 +66,7 @@ const FRIENDLY_LABELS: Record<string, string> = {
   gitResetup: 'Re-initialising git',
   resetAllAppState: 'Resetting',
   createProgressTag: 'Tagging',
+  checkForUpdate: 'Checking for updates',
 }
 
 const GRACE_MS = 300

@@ -187,10 +187,13 @@ services:
       #   Clients send a `transfers` array in their batch request;
       #   Giftless picks the first one it supports. Modern clients
       #   prefer multipart-basic; older clients fall back to basic.
-      # - max_part_size = 50 MiB: well under CF's 100 MB cap, so even
-      #   a multi-GB assembly uploads in tens of parts rather than
-      #   hundreds, and each PUT stays comfortably inside the body
-      #   limit with headroom for slow/buffered uploads.
+      # - max_part_size = 16 MiB: tradeoff between CF-cap headroom and
+      #   per-object parallelism. A 500 MB assembly becomes 32 parts,
+      #   which exactly matches `lfs.concurrenttransfers=32` on the
+      #   client — git-lfs 3.5+ uses that budget for both parallel
+      #   objects AND parallel parts within an object, so a single big
+      #   file saturates all 32 workers on its own. Per-part metadata
+      #   overhead (~600 B header) is negligible vs the 16 MB body.
       GIFTLESS_CONFIG_STR: |
         TRANSFER_ADAPTERS:
           basic:
@@ -205,7 +208,7 @@ services:
               storage_class: giftless.storage.local_storage:LocalStorage
               storage_options:
                 path: /lfs-storage
-              max_part_size: 52428800
+              max_part_size: 16777216
         AUTH_PROVIDERS:
           - factory: giftless.auth.jwt:factory
             options:
@@ -242,10 +245,27 @@ services:
       - --module
       - giftless.wsgi_entrypoint:app
       - --master
+      - --enable-threads
+      # 8 procs × 4 threads = 32 concurrent request handlers — matches
+      # the client's `lfs.concurrenttransfers=32` so server-side worker
+      # availability never becomes the bottleneck when one client is
+      # saturating the parallel-upload budget. UP2 has 12 cores so 8
+      # procs leaves headroom for everything else.
       - --processes
-      - "2"
+      - "8"
       - --threads
-      - "2"
+      - "4"
+      # Default uwsgi listen backlog is 100; with 32 client workers
+      # plus background admin/health pollers, that runs out and the
+      # kernel starts dropping SYNs. 4096 is conservative but matches
+      # the typical Linux `somaxconn` headroom.
+      - --listen
+      - "4096"
+      # Larger HTTP request buffer for the Authorization header (the
+      # multipart adapter overlays a per-part JWT that can be 600+ B
+      # before base64; default 4 KB is enough but more is harmless).
+      - --buffer-size
+      - "65535"
 
     labels:
       org.opencontainers.image.title: FrameCAD LFS Server

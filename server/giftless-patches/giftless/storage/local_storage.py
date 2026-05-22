@@ -45,9 +45,12 @@ from giftless.view import BaseView, ViewProvider
 # keep it generous-but-not-borderline to amortize per-part round-trips.
 DEFAULT_PART_SIZE = 10 * 1024 * 1024
 
-# Buffer size for stream copies on commit — larger than the default
-# 16 KiB to reduce syscall overhead on multi-GB concatenations.
-_COPY_BUF = 1 * 1024 * 1024
+# Buffer size for stream copies on commit. The commit step does
+# (parts count) × (read+hash+write) over the full object — for a
+# 500 MB assembly that's ~1 GB of sequential disk I/O. 4 MiB chunks
+# cut syscall count to ~125 per GB (vs 1024 at 1 MiB) and keep
+# SHA-256 hardware acceleration in its sweet spot on modern CPUs.
+_COPY_BUF = 4 * 1024 * 1024
 
 
 class LocalMultipartView(BaseView):

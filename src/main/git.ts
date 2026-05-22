@@ -1050,7 +1050,8 @@ async function runJoinClone(
     await cloneGit.clone(cloneUrl, dirPath, [
       '--single-branch',
       '--no-tags',
-      '--config', 'lfs.concurrenttransfers=12',
+      '--config', 'lfs.concurrenttransfers=32',
+      '--config', 'lfs.transferqueuesize=64',
       '--config', 'http.postBuffer=524288000',
       '--config', 'lfs.activitytimeout=600',
       '--config', 'lfs.dialtimeout=30',
@@ -1097,21 +1098,29 @@ async function runJoinClone(
  * cheap one-time writes to .git/config that survive across pulls and
  * pushes; running every open is fine and idempotent.
  *
- * - lfs.concurrenttransfers 12 — git's default is 8; bumping to 12 helps
- *   multi-file CAD publishes saturate the connection. Higher than ~16
- *   tends to choke residential up-links.
+ * - lfs.concurrenttransfers 32 — git's default is 8. With multipart-
+ *   basic enabled server-side (v3.0.30+), git-lfs 3.5+ uses this
+ *   value as the parallelism budget for BOTH parallel-object AND
+ *   parallel-part uploads. 32 keeps a single 500 MB assembly fully
+ *   saturated against a 16 MB part size (32 parts) while still
+ *   letting a multi-object publish push many small files in parallel.
+ *   Server-side uwsgi runs 8 procs × 4 threads = 32 concurrent
+ *   handlers to match.
+ * - lfs.transferqueuesize 64 — prefetched object batch; lets workers
+ *   start the next object the moment one finishes instead of waiting
+ *   on a batch-endpoint round trip.
  * - http.postBuffer 500 MB — large CAD pushes occasionally trip git's
  *   default ~1 MB stream buffer and fail mid-push with HTTP 500. The
  *   buffer only allocates as needed; it doesn't waste 500 MB up front.
  * - lfs.activitytimeout 600 — give a slow chunk 10 minutes before
  *   declaring the upload dead, instead of the default 30s.
- * - lfs.dialtimeout 30 — wait 30s for the initial TLS handshake to
- *   github-lfs.s3 instead of failing fast on a slow link.
+ * - lfs.dialtimeout 30 — wait 30s for the initial TLS handshake.
  */
 async function applyUploadTunings(): Promise<void> {
   const g = getGit()
   await Promise.all([
-    g.raw(['config', '--local', 'lfs.concurrenttransfers', '12']).catch(() => {}),
+    g.raw(['config', '--local', 'lfs.concurrenttransfers', '32']).catch(() => {}),
+    g.raw(['config', '--local', 'lfs.transferqueuesize', '64']).catch(() => {}),
     g.raw(['config', '--local', 'http.postBuffer', '524288000']).catch(() => {}),
     g.raw(['config', '--local', 'lfs.activitytimeout', '600']).catch(() => {}),
     g.raw(['config', '--local', 'lfs.dialtimeout', '30']).catch(() => {})

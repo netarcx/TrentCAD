@@ -24,14 +24,19 @@ Var FCADTaskbarChosen
 !macroend
 
 Function fcadOptionsShow
-  !insertmacro MUI_HEADER_TEXT "Installation Options" "Choose how FrameCAD appears on your computer."
+  ; MUI_HEADER_TEXT used to live here but electron-builder pulls
+  ; our installer.nsh BEFORE the MUI2 macros are defined — NSIS
+  ; couldn't find the macro at parse time and aborted the Windows
+  ; build (v3.0.20 → 3.0.25 had no .exe attached for this reason).
+  ; The in-page label below already explains what's going on; the
+  ; page header just falls back to NSIS defaults which is fine.
   nsDialogs::Create 1018
   Pop $FCADOptionsDialog
   ${If} $FCADOptionsDialog == error
     Abort
   ${EndIf}
 
-  ${NSD_CreateLabel} 0 0 100% 24u "FrameCAD can add quick-launch shortcuts so you don't have to dig through the Start menu every time. Uncheck anything you don't want."
+  ${NSD_CreateLabel} 0 0 100% 24u "Installation options for FrameCAD. The desktop icon and taskbar pin are checked by default — uncheck anything you don't want."
 
   ${NSD_CreateCheckbox} 0 32u 100% 12u "&Create a desktop icon"
   Pop $FCADDesktopCheckbox

@@ -278,8 +278,44 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
               )}
               {signInHint && <div className="enroll-github-hint">{signInHint}</div>}
               {authStatus?.ghCliAvailable === false && (
+                <div className="enroll-github-hint" style={{ lineHeight: 1.5 }}>
+                  <strong>GitHub CLI isn't installed on this machine.</strong>{' '}
+                  FrameCAD uses <span className="mono">gh</span> to handle GitHub
+                  sign-in. Install it first, then come back here:
+                  <ul style={{ margin: '6px 0 0 18px', padding: 0 }}>
+                    <li>
+                      <strong>Windows:</strong>{' '}
+                      <span className="mono">winget install --id GitHub.cli</span>
+                      {' '}(or{' '}
+                      <a
+                        href="https://cli.github.com/"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >cli.github.com</a>
+                      {' '}for the installer)
+                    </li>
+                    <li>
+                      <strong>macOS:</strong>{' '}
+                      <span className="mono">brew install gh</span>
+                    </li>
+                    <li>
+                      <strong>Linux:</strong>{' '}
+                      see{' '}
+                      <a
+                        href="https://github.com/cli/cli/blob/trunk/docs/install_linux.md"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >install_linux.md</a>
+                    </li>
+                  </ul>
+                  After install, restart FrameCAD so it picks up the new
+                  <span className="mono"> gh</span> on your PATH.
+                </div>
+              )}
+              {!authStatus?.loggedIn && authStatus?.ghCliAvailable !== false && (
                 <div className="enroll-github-hint">
-                  GitHub CLI isn't installed on this machine. Install <span className="mono">gh</span> first to sign in.
+                  GitHub sign-in is required so FrameCAD can clone your team's
+                  private repos and identify your check-outs to teammates.
                 </div>
               )}
             </div>
@@ -294,27 +330,22 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
               >
                 Back
               </button>
-              {/* One Finish button. When signed in to GitHub, the
-                  primary action is just "Finish". When not signed
-                  in, label changes to "Skip GitHub & Finish" so the
-                  user knows what they're committing to.
-                  (Previous version rendered TWO Finish buttons when
-                  signed in — link variant + primary — both with the
-                  same label, which read as a UI bug.) */}
+              {/* Finish is disabled until GitHub sign-in succeeds.
+                  Was previously skippable, but private-repo support
+                  + auditability mean we need a real GitHub identity
+                  on every device. Users without `gh` installed see
+                  the install-instructions hint above instead of a
+                  dead-end. */}
               <button
                 className="toolbar-btn primary"
                 onClick={() => void submitEnroll()}
-                disabled={busy || !displayName.trim()}
+                disabled={busy || !displayName.trim() || !authStatus?.loggedIn}
                 style={{ minWidth: 120 }}
                 title={authStatus?.loggedIn
                   ? 'Finish enrollment with your GitHub account'
-                  : "Skip GitHub for now — you can sign in later from Settings"}
+                  : 'Sign in with GitHub first — required for private-repo access'}
               >
-                {busy
-                  ? 'Enrolling…'
-                  : authStatus?.loggedIn
-                    ? 'Finish'
-                    : 'Skip GitHub & Finish'}
+                {busy ? 'Enrolling…' : 'Finish'}
               </button>
             </div>
           </div>

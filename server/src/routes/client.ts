@@ -265,7 +265,9 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
   })
 
   app.get('/api/team', async () => {
-    const team = getDb().prepare(`SELECT * FROM team WHERE id = 1`).get() as TeamRow
+    const team = getDb().prepare(`SELECT * FROM team WHERE id = 1`).get() as TeamRow & {
+      gitHubPat: string | null
+    }
     return {
       name: team.name,
       gitHubOrg: team.gitHubOrg,
@@ -277,6 +279,12 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
       // and fall back to whatever LFS URL the project's `.lfsconfig`
       // already specifies (i.e. GitHub LFS).
       lfsUrl: effectiveLfsUrl(),
+      // Boolean only — the actual PAT never leaves the server. Used
+      // by the admin UI's Team Settings page to render "Token: set /
+      // not set" without round-tripping the secret. Authed devices
+      // see it too (harmless — they'd know if private-repo clone
+      // worked or not from the actual auth result).
+      hasGitHubPat: !!team.gitHubPat,
     }
   })
 

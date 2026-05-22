@@ -10,6 +10,7 @@ interface Team {
   projectPrefix: string
   welcomeMessage: string
   lfsUrl: string
+  hasGitHubPat: boolean
 }
 
 // Reasonable client-side validation for the LFS URL. Catches the
@@ -22,7 +23,12 @@ export default function TeamSettings() {
   const navigate = useNavigate()
   const [team, setTeam] = useState<Team>({
     name: '', gitHubOrg: '', projectPrefix: '', welcomeMessage: '', lfsUrl: '',
+    hasGitHubPat: false,
   })
+  // PAT input is write-only — server never echoes the value back. The
+  // input shows "" by default; the user can leave it blank to keep
+  // the existing token or type a new one to replace it.
+  const [patInput, setPatInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
@@ -50,13 +56,29 @@ export default function TeamSettings() {
       // Mirror the server's `.replace(/\/+$/, '')` on lfsUrl so the
       // user sees the cleaned value reflected back into the field
       // immediately after save without having to refetch.
-      const payload = { ...team, lfsUrl: team.lfsUrl.trim().replace(/\/+$/, '') }
+      // We strip `hasGitHubPat` (server-computed boolean, not editable)
+      // and only include `gitHubPat` when the user typed something
+      // new (empty input = keep existing token, don't clobber).
+      const { hasGitHubPat: _hasPat, ...rest } = team
+      const payload: Record<string, string> = {
+        ...rest,
+        lfsUrl: team.lfsUrl.trim().replace(/\/+$/, ''),
+      }
+      if (patInput.trim() !== '') payload.gitHubPat = patInput.trim()
       if (payload.lfsUrl && !LFS_URL_REGEX.test(payload.lfsUrl)) {
         setError('LFS URL must be a plain http:// or https:// URL (no quotes, spaces, or angle brackets).')
         return
       }
       await api('PATCH', '/api/admin/team', payload)
-      setTeam(payload)
+      // Update local team state: cleaned lfsUrl + hasGitHubPat
+      // reflects what we just sent. Wipe the PAT input on success
+      // so a re-save doesn't accidentally re-send the same token.
+      setTeam({
+        ...team,
+        lfsUrl: payload.lfsUrl,
+        hasGitHubPat: patInput.trim() !== '' ? true : team.hasGitHubPat,
+      })
+      if (patInput.trim() !== '') setPatInput('')
       setStatus('Saved. Connected clients pick this up on their next sync.')
     } catch (err) {
       setError((err as ApiError).message)
@@ -99,6 +121,61 @@ export default function TeamSettings() {
 
         <label>Project name prefix</label>
         <input value={team.projectPrefix} onChange={e => setTeam({ ...team, projectPrefix: e.target.value })} placeholder="framecad-" />
+      </div>
+
+      <div className="card">
+        <h3>GitHub</h3>
+        <div className="hint">
+          Personal Access Token used by FrameCAD to create new repos in the
+          configured org and clone private repos on behalf of clients. The
+          token is stored on this server and is <strong>never</strong> sent
+          back to browsers or desktop clients — they ask the server to do
+          the GitHub call. Scopes needed: classic <span className="mono">repo</span>{' '}
+          (full) OR a fine-grained token with <span className="mono">contents:write</span>,{' '}
+          <span className="mono">metadata:read</span>, and{' '}
+          <span className="mono">administration:write</span> on the org's repos.
+        </div>
+        <label>
+          Token status: {team.hasGitHubPat ? (
+            <span style={{ color: 'var(--green)' }}>set</span>
+          ) : (
+            <span style={{ color: 'var(--text-muted)' }}>not set</span>
+          )}
+        </label>
+        <input
+          type="password"
+          value={patInput}
+          onChange={e => setPatInput(e.target.value)}
+          placeholder={team.hasGitHubPat
+            ? 'Leave blank to keep the existing token'
+            : 'ghp_… or github_pat_…'}
+          autoComplete="off"
+          spellCheck={false}
+        />
+        {team.hasGitHubPat && (
+          <button
+            type="button"
+            className="link"
+            style={{ marginTop: 6 }}
+            onClick={async () => {
+              if (!confirm('Clear the stored GitHub token? FrameCAD will no longer be able to create repos or clone private ones until a new token is set.')) return
+              setBusy(true)
+              setError(null)
+              try {
+                await api('PATCH', '/api/admin/team', { gitHubPat: '' })
+                setTeam({ ...team, hasGitHubPat: false })
+                setPatInput('')
+                setStatus('GitHub token cleared.')
+              } catch (err) {
+                setError((err as ApiError).message)
+              } finally {
+                setBusy(false)
+              }
+            }}
+          >
+            Clear token
+          </button>
+        )}
       </div>
 
       <div className="card">

@@ -69,6 +69,15 @@ services:
       # the giftless container should ever write here; this `:ro`
       # flag makes that explicit and survives a misconfiguration.
       - ./data/lfs-objects:/lfs-storage:ro
+      # Read-only Docker socket so the admin Logs page can read
+      # container stdout/stderr from this stack (framecad-server +
+      # framecad-lfs). `:ro` means we can list/inspect/read logs but
+      # not start/stop/exec into other containers — defence-in-depth
+      # since the admin endpoint already allowlists the two container
+      # names. If you'd rather not expose docker.sock at all, comment
+      # this out; the Logs page will show "Docker socket unreachable"
+      # but everything else keeps working.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
 
     environment:
       <<: *shared-env

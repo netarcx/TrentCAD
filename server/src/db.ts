@@ -278,6 +278,20 @@ const MIGRATIONS: string[] = [
     ON members(LOWER(username))
     WHERE username IS NOT NULL;
   `,
+  // v11: GitHub PAT stored on the team row so the admin can create
+  // repos from the admin UI's Projects page (instead of bouncing to
+  // github.com → New Repo → paste URL back here). The PAT is also
+  // used by the desktop client to clone private repos in the team's
+  // org. Stored plaintext: the server is a trusted self-hosted box,
+  // the secret is no more sensitive than the device tokens already
+  // living in this table, and operators are explicitly warned not
+  // to share the DB. Encrypt-at-rest is a future hardening pass if
+  // anyone asks. Scopes needed: `repo` (full classic PAT) OR a
+  // fine-grained token with `contents:write` + `metadata:read` +
+  // `administration:write` on the target org's repos.
+  `
+  ALTER TABLE team ADD COLUMN gitHubPat TEXT;
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

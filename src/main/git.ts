@@ -4,7 +4,7 @@ import os from 'os'
 import { createReadStream } from 'fs'
 import fs from 'fs/promises'
 import type { FileEntry, FileState, HistoryEntry, PartsManifest, PublishProgress, PublishResult, SyncResult } from '@shared/types'
-import { LFS_UNREACHABLE_SENTINEL } from '@shared/types'
+import { GITHUB_AUTH_REQUIRED_SENTINEL, LFS_UNREACHABLE_SENTINEL } from '@shared/types'
 import { getLocks, verifyLocks } from './locking'
 import { loadManifest, syncManifest, annotatePartNumbers } from './parts'
 import { loadAllMeta, annotateMeta } from './meta'
@@ -699,6 +699,28 @@ function isLfsUnreachableError(raw: string): boolean {
  *  process can't drift on the prefix string. */
 export const LFS_UNREACHABLE_ERROR_PREFIX = LFS_UNREACHABLE_SENTINEL
 
+/**
+ * Detect git errors that mean "this is a private repo and we don't
+ * have credentials" or "credentials we have are wrong". Surfaced to
+ * the renderer so it can prompt the user to sign in via GitHub
+ * instead of showing the raw git error message — which usually says
+ * "repository not found" for the private-without-auth case, leading
+ * users to think the repo doesn't exist.
+ */
+function isGitAuthError(raw: string): boolean {
+  const msg = raw.toLowerCase()
+  return (
+    msg.includes('authentication failed') ||
+    msg.includes('could not read username') ||
+    msg.includes('could not read password') ||
+    msg.includes('permission denied') ||
+    // GitHub returns "repository not found" for private repos that
+    // the requester can't access. Strict-match on the github.com URL
+    // so we don't false-positive on a typo'd public repo URL.
+    (msg.includes('repository') && msg.includes('not found') && msg.includes('github.com'))
+  )
+}
+
 export interface JoinProjectOptions {
   /** When true, set GIT_LFS_SKIP_SMUDGE=1 on the clone so git-lfs
    *  doesn't try to fetch object contents. Result: a working tree
@@ -762,6 +784,19 @@ export async function joinProject(
         error: friendly,
       })
       throw new Error(`${LFS_UNREACHABLE_ERROR_PREFIX} ${friendly}`)
+    }
+    if (isGitAuthError(errMsg)) {
+      // Most likely cause is a private repo without GitHub credentials
+      // on this machine. Tag with the sentinel so the renderer can
+      // show a "Sign in with GitHub" prompt instead of the raw git
+      // error (which says "repository not found" for private-no-auth
+      // and confuses users into thinking the repo is missing).
+      const friendly =
+        'This looks like a private GitHub repo and FrameCAD doesn\'t have credentials ' +
+        'to access it on this machine. Sign in with GitHub first ' +
+        '(`gh auth login` or the desktop\'s Sync with Team flow handles it) and try again.'
+      onProgress?.({ phase: 'error', error: friendly })
+      throw new Error(`${GITHUB_AUTH_REQUIRED_SENTINEL} ${friendly}`)
     }
     onProgress?.({ phase: 'error', error: errMsg })
     throw err
@@ -1353,10 +1388,17 @@ export async function publish(
     `framecad-lfs-progress-${Date.now()}-${process.pid}.log`,
   )
   let stopLfsTail: (() => void) | null = null
+  // Track the last file git-lfs reported uploading. Used in the error
+  // path to tell the user WHICH file the publish died on — usually the
+  // single most actionable diagnostic for a partial-publish failure.
+  // Updated by the GIT_LFS_PROGRESS tail; resets between phases via
+  // the natural progression of the underlying stream.
+  let lastLfsFile: string | null = null
   try {
     await fs.writeFile(lfsProgressFile, '')
     stopLfsTail = tailLfsProgress(lfsProgressFile, cf => {
       onProgress?.({ phase: 'uploading', currentFile: cf })
+      if (cf?.path) lastLfsFile = cf.path
     })
   } catch { /* fall through — progress just won't have per-file detail */ }
 
@@ -1907,14 +1949,26 @@ export async function publish(
     // real Giftless outage from being mis-labelled as a deleted repo.
     const lfsUnreachable = isLfsUnreachableError(errMsg)
     const remoteGone = !lfsUnreachable ? detectRemoteGoneError(errMsg) : null
+    // Append the last file git-lfs was uploading when the failure
+    // happened — usually the single most actionable diagnostic for a
+    // mid-publish death. ("Re-publishing without `foo.sldasm` will
+    // probably succeed; investigate that file specifically.") Only
+    // tacked on when we have something AND the error isn't already
+    // a friendlier classified one (lfs-unreachable / remote-gone
+    // come with their own remediation copy).
+    const decoratedErr = (!lfsUnreachable && !remoteGone && lastLfsFile)
+      ? `${errMsg}\n\nLast file being uploaded when this failed: ${lastLfsFile}. ` +
+        `If you re-publish and hit the same error, try removing or splitting that ` +
+        `file specifically — earlier files in this commit already uploaded successfully.`
+      : (remoteGone ?? errMsg)
     onProgress?.({
       phase: 'error',
-      error: remoteGone ?? errMsg,
+      error: decoratedErr,
       remoteGone: remoteGone !== null,
     })
     return {
       success: false,
-      error: remoteGone ?? errMsg,
+      error: decoratedErr,
       remoteGone: remoteGone !== null,
     }
   } finally {

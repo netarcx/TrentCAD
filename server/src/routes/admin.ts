@@ -384,6 +384,137 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   )
 
+  // Create a brand-new GitHub repo under the team's configured org
+  // AND register it as a FrameCAD project in one shot. Saves the
+  // admin from bouncing to github.com / New repo / copy URL / paste
+  // back. Requires a `gitHubPat` to be stored on the team row (see
+  // Settings → GitHub) and a non-empty `gitHubOrg`. Repo visibility
+  // defaults to private — most team CAD shouldn't be public — but
+  // the admin can flip it via the `private` flag.
+  //
+  // We don't initialize the repo with a README on GitHub's side
+  // because FrameCAD's `createProject` flow on the desktop expects
+  // an empty repo to push the initial commit into. The new repo URL
+  // can be handed straight to the desktop's Join Project / Create
+  // Project flow.
+  app.post<{ Body: {
+    name: string
+    description?: string
+    private?: boolean
+    quotaBytes?: number | null
+  } }>(
+    '/api/admin/projects/create-on-github',
+    async (req, reply) => {
+      const name = (req.body?.name ?? '').trim()
+      if (!name) {
+        return reply.code(400).send({ error: 'Project name is required.' })
+      }
+      // GitHub's repo-name rules: alphanumerics, hyphens, underscores,
+      // dots. Strict-validate so a typo doesn't get a 422 from GitHub
+      // mid-create with a worse error message.
+      if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) {
+        return reply.code(400).send({
+          error: 'Repo name must be 1-100 characters, letters/digits/dot/hyphen/underscore only.',
+        })
+      }
+      const teamRow = getDb().prepare(
+        `SELECT gitHubOrg, gitHubPat, projectPrefix FROM team WHERE id = 1`
+      ).get() as { gitHubOrg: string; gitHubPat: string | null; projectPrefix: string }
+      if (!teamRow.gitHubOrg) {
+        return reply.code(412).send({
+          error: 'Set a GitHub organization in Team Settings before creating repos.',
+        })
+      }
+      if (!teamRow.gitHubPat) {
+        return reply.code(412).send({
+          error: 'Set a GitHub Personal Access Token in Team Settings → GitHub before creating repos.',
+        })
+      }
+
+      // Auto-prefix the repo name with the team's project prefix when
+      // it isn't already present. Keeps the org tidy — every team
+      // project ends up named `framecad-<thing>` instead of having
+      // some prefixed + some not.
+      const finalName = (teamRow.projectPrefix && !name.toLowerCase().startsWith(teamRow.projectPrefix.toLowerCase()))
+        ? teamRow.projectPrefix + name
+        : name
+
+      const isPrivate = req.body?.private !== false   // default true (private)
+      let createdRepoUrl: string
+      try {
+        const ghRes = await fetch(`https://api.github.com/orgs/${encodeURIComponent(teamRow.gitHubOrg)}/repos`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${teamRow.gitHubPat}`,
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'Content-Type': 'application/json',
+            'User-Agent': 'framecad-server',
+          },
+          body: JSON.stringify({
+            name: finalName,
+            description: (req.body?.description ?? '').trim() || undefined,
+            private: isPrivate,
+            // No auto-init — desktop createProject pushes the first
+            // commit. An auto-init README would conflict.
+            auto_init: false,
+            has_issues: true,
+            has_projects: false,
+            has_wiki: false,
+          }),
+        })
+        if (!ghRes.ok) {
+          const body = await ghRes.json().catch(() => ({})) as {
+            message?: string
+            errors?: Array<{ message?: string }>
+          }
+          // Surface GitHub's reason back to the admin so they can act
+          // on it (PAT expired, name already taken, no permission, etc).
+          // Don't leak the PAT in the response — GitHub doesn't echo
+          // it, but be defensive anyway.
+          const detail = body.errors?.[0]?.message || body.message || `HTTP ${ghRes.status}`
+          return reply.code(ghRes.status === 401 || ghRes.status === 403 ? 412 : 502).send({
+            error: `GitHub refused to create the repo: ${detail}`,
+          })
+        }
+        const created = await ghRes.json() as { clone_url: string; html_url: string }
+        createdRepoUrl = created.clone_url
+      } catch (err) {
+        return reply.code(502).send({
+          error: `Couldn't reach github.com: ${(err as Error).message}`,
+        })
+      }
+
+      // Register in our projects table so the desktop sees it via
+      // the team snapshot. Quota uses the same default-or-explicit
+      // logic as the regular create endpoint.
+      const quota =
+        req.body?.quotaBytes === null
+          ? null
+          : typeof req.body?.quotaBytes === 'number' && Number.isFinite(req.body.quotaBytes)
+            ? Math.max(0, Math.floor(req.body.quotaBytes))
+            : DEFAULT_PROJECT_QUOTA_BYTES
+      const insert = getDb().prepare(
+        `INSERT INTO projects (name, repoUrl, description, createdAt, quotaBytes)
+         VALUES (?, ?, ?, ?, ?)`
+      ).run(finalName, createdRepoUrl, (req.body?.description ?? '').trim(), Date.now(), quota)
+      logAudit({
+        actorId: req.member!.id,
+        actorLabel: req.member!.displayName,
+        action: 'project.create-on-github',
+        target: `project:${insert.lastInsertRowid}`,
+        detail: `${createdRepoUrl} (private=${isPrivate})`,
+      })
+      return {
+        success: true,
+        id: insert.lastInsertRowid,
+        name: finalName,
+        repoUrl: createdRepoUrl,
+        private: isPrivate,
+      }
+    },
+  )
+
   // Edit project metadata — currently only the quota is mutable from
   // the admin UI. (name / repoUrl could be added here later; for now
   // the operator deletes + recreates if they got those wrong, which
@@ -496,17 +627,41 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         })
       }
 
+      // Pull the stored PAT so we can authenticate against private
+      // repos in the team's org. Without it, GitHub returns 404 to
+      // anonymous HEAD on a private repo — indistinguishable from
+      // "repo doesn't exist", which would have us tell the admin
+      // their freshly-created private repo was missing.
+      const teamRow = getDb().prepare(
+        `SELECT gitHubPat FROM team WHERE id = 1`
+      ).get() as { gitHubPat: string | null }
+
       let status: 'ok' | 'missing' | 'error' = 'error'
       let detail: string | null = null
       try {
         const controller = new AbortController()
         const timer = setTimeout(() => controller.abort(), 5000)
         try {
+          // Use GitHub's repos API instead of a raw HEAD on the HTML
+          // URL — the API correctly returns 200 for authenticated
+          // access to private repos, 404 for genuinely missing /
+          // unauthorized. The HTML route can't distinguish those.
+          const parsedPath = parsed.pathname.replace(/^\//, '').replace(/\.git$/i, '')
+          const apiUrl = `https://api.github.com/repos/${parsedPath}`
+          const headers: Record<string, string> = {
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'User-Agent': 'framecad-server',
+          }
+          if (teamRow.gitHubPat) {
+            headers.Authorization = `Bearer ${teamRow.gitHubPat}`
+          }
           // `redirect: 'manual'` so a malicious 30x can't redirect us
           // off github.com to an internal host. We treat any redirect
           // as "I don't know" rather than following it.
-          const res = await fetch(url, {
-            method: 'HEAD',
+          const res = await fetch(apiUrl, {
+            method: 'GET',
+            headers,
             signal: controller.signal,
             redirect: 'manual',
           })
@@ -667,6 +822,50 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   )
 
+  // ── Container logs ─────────────────────────────────────────────────
+  //
+  // Admin-only snapshot endpoint that reads the last N lines of a
+  // container's stdout/stderr via Docker's Unix socket. Two
+  // containers expected in the standard docker-compose stack:
+  // 'framecad-server' (this Node app) and 'framecad-lfs' (the
+  // Giftless container). Adding new ones is a matter of letting them
+  // through the allowlist below.
+  //
+  // Requires /var/run/docker.sock to be bind-mounted into this
+  // container's filesystem — see docker-compose.yml. We hard-allowlist
+  // the container names so a hijacked admin token can't read logs of
+  // unrelated containers on the same Docker daemon (defence-in-depth;
+  // the socket gives broader powers in theory but we only expose what
+  // we need).
+  const LOG_ALLOWLIST = new Set(['framecad-server', 'framecad-lfs'])
+  app.get<{
+    Params: { name: string }
+    Querystring: { tail?: string }
+  }>(
+    '/api/admin/logs/:name',
+    async (req, reply) => {
+      const name = req.params.name
+      if (!LOG_ALLOWLIST.has(name)) {
+        return reply.code(400).send({
+          error: `Container "${name}" is not in the log-readable allowlist.`,
+        })
+      }
+      const tail = Math.max(
+        1,
+        Math.min(2000, Number.parseInt(req.query.tail ?? '500', 10) || 500),
+      )
+      try {
+        const { fetchContainerLogs } = await import('../dockerLogs.js')
+        const lines = await fetchContainerLogs(name, tail)
+        return { container: name, tail, lines }
+      } catch (err) {
+        return reply.code(502).send({
+          error: (err as Error).message || 'Docker socket unreachable',
+        })
+      }
+    },
+  )
+
   // ── Setup state ────────────────────────────────────────────────────
 
   // Returns the data the first-launch wizard needs to decide whether
@@ -760,11 +959,16 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     projectPrefix?: string
     welcomeMessage?: string
     lfsUrl?: string
+    /** GitHub Personal Access Token used by the server to create repos
+     *  on behalf of admins. Empty string clears it. Audit logs only
+     *  record set/clear, never the value. */
+    gitHubPat?: string
   } }>('/api/admin/team', async (req, reply) => {
     const updates: string[] = []
-    const values: string[] = []
+    const values: Array<string | null> = []
+    let patChanged: 'set' | 'cleared' | null = null
     for (const field of [
-      'name', 'gitHubOrg', 'projectPrefix', 'welcomeMessage', 'lfsUrl',
+      'name', 'gitHubOrg', 'projectPrefix', 'welcomeMessage', 'lfsUrl', 'gitHubPat',
     ] as const) {
       if (typeof req.body?.[field] === 'string') {
         const raw = req.body[field]!.trim()
@@ -783,6 +987,20 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
           // resolves correctly regardless of how the admin typed it.
           updates.push(`${field} = ?`)
           values.push(raw.replace(/\/+$/, ''))
+        } else if (field === 'gitHubPat') {
+          // Empty string = clear the token. Light-touch validation:
+          // GitHub PATs are alphanum + underscore + dash, with a
+          // ghp_/ghs_/github_pat_ prefix on classic / fine-grained.
+          // We don't enforce a strict format because GitHub has changed
+          // the shape twice; just refuse whitespace + obvious bad chars.
+          if (raw && !/^[A-Za-z0-9_-]+$/.test(raw)) {
+            return reply.code(400).send({
+              error: 'GitHub PAT must contain only letters, digits, underscore, and hyphen — no whitespace.',
+            })
+          }
+          updates.push(`gitHubPat = ?`)
+          values.push(raw || null)
+          patChanged = raw ? 'set' : 'cleared'
         } else {
           updates.push(`${field} = ?`)
           values.push(raw)
@@ -795,11 +1013,18 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     getDb()
       .prepare(`UPDATE team SET ${updates.join(', ')} WHERE id = 1`)
       .run(...values)
+    // Strip the PAT value from the audit-log detail — we want to know
+    // WHEN it was set or cleared, never WHAT it was set to. The
+    // `patChanged` flag captured above is the breadcrumb.
+    const safeDetail = { ...req.body }
+    if ('gitHubPat' in safeDetail) {
+      safeDetail.gitHubPat = patChanged === 'set' ? '<set>' : '<cleared>'
+    }
     logAudit({
       actorId: req.member!.id,
       actorLabel: req.member!.displayName,
       action: 'team.update',
-      detail: JSON.stringify(req.body),
+      detail: JSON.stringify(safeDetail),
     })
     return { success: true }
   })

@@ -4,7 +4,7 @@ import logoUrl from '../assets/logo.png'
 import TeamEnroll from './TeamEnroll'
 import { prepareSlamSnapshot, triggerWaterSlam } from '../lib/water-slam'
 import type { GlobalAdminConfig, ProjectConfig, TeamSnapshot } from '@shared/types'
-import { LFS_UNREACHABLE_SENTINEL } from '@shared/types'
+import { GITHUB_AUTH_REQUIRED_SENTINEL, LFS_UNREACHABLE_SENTINEL } from '@shared/types'
 
 interface Props {
   onJoinProject: (url: string, path: string, options?: { skipSmudge?: boolean }) => Promise<void>
@@ -853,16 +853,23 @@ export default function ProjectSetup({ onJoinProject, onOpenProject, onEnterManu
                 try {
                   await onJoinProject(url, path)
                 } catch (err) {
-                  // Detect the LFS-unreachable sentinel and offer a
-                  // skip-smudge retry. Anything else bubbles up
-                  // through useGit's error state as before.
+                  // Detect specific error sentinels from the main
+                  // process and offer focused remediation. Anything
+                  // else bubbles up through useGit's error state.
                   //
                   // `includes` (not `startsWith`) — Electron's IPC
                   // sometimes prefixes thrown errors with
                   // `Error invoking remote method '...':` which would
-                  // shift the sentinel off the front and silently
-                  // skip the retry path.
+                  // shift the sentinel off the front.
                   const msg = (err as Error).message || ''
+                  if (msg.includes(GITHUB_AUTH_REQUIRED_SENTINEL)) {
+                    // Private repo without local credentials. Don't
+                    // offer a retry — sign-in is an out-of-band step.
+                    // Let the existing useGit error banner show the
+                    // friendly message; we just make sure it's not
+                    // overlaid by a stale one.
+                    return
+                  }
                   if (!msg.includes(LFS_UNREACHABLE_SENTINEL)) return
                   const friendly = msg
                     .slice(msg.indexOf(LFS_UNREACHABLE_SENTINEL) + LFS_UNREACHABLE_SENTINEL.length)

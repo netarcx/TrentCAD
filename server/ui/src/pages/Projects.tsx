@@ -47,6 +47,55 @@ export default function Projects() {
   // and show "Checking…" so the admin doesn't think the click did
   // nothing on a slow GitHub).
   const [checkingId, setCheckingId] = useState<number | null>(null)
+  // "Create on GitHub" modal state. Distinct from the registration
+  // flow above because this one ALSO calls GitHub's repo-create API
+  // before inserting locally. Closed when null.
+  const [createOnGh, setCreateOnGh] = useState<{
+    name: string
+    description: string
+    private: boolean
+    quotaGb: string
+  } | null>(null)
+  const [creatingOnGh, setCreatingOnGh] = useState(false)
+  const [createGhError, setCreateGhError] = useState<string | null>(null)
+  const [createGhResult, setCreateGhResult] = useState<{ repoUrl: string; name: string } | null>(null)
+
+  async function submitCreateOnGitHub(): Promise<void> {
+    if (!createOnGh) return
+    setCreateGhError(null)
+    if (!createOnGh.name.trim()) {
+      setCreateGhError('Repo name is required.')
+      return
+    }
+    const parsedGb = createOnGh.quotaGb.trim() === '' ? null : Number.parseFloat(createOnGh.quotaGb)
+    if (parsedGb !== null && (!Number.isFinite(parsedGb) || parsedGb < 0)) {
+      setCreateGhError('Quota must be a non-negative number or blank.')
+      return
+    }
+    setCreatingOnGh(true)
+    try {
+      const quotaBytes = parsedGb === null ? null : Math.round(parsedGb * 1024 * 1024 * 1024)
+      const res = await api<{ name: string; repoUrl: string; private: boolean }>(
+        'POST',
+        '/api/admin/projects/create-on-github',
+        {
+          name: createOnGh.name.trim(),
+          description: createOnGh.description.trim(),
+          private: createOnGh.private,
+          quotaBytes,
+        },
+      )
+      // Stash the result so the modal can show the new clone URL
+      // (which is what the admin needs to hand to clients). Don't
+      // close the modal yet — let the user copy the URL first.
+      setCreateGhResult({ repoUrl: res.repoUrl, name: res.name })
+      await load()
+    } catch (err) {
+      setCreateGhError((err as ApiError).message)
+    } finally {
+      setCreatingOnGh(false)
+    }
+  }
 
   async function load(): Promise<void> {
     try {
@@ -233,12 +282,124 @@ export default function Projects() {
             />
           </div>
         </div>
-        <div style={{ marginTop: 14 }}>
+        <div style={{ marginTop: 14, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           <button className="primary" onClick={add} disabled={busy || !name.trim() || !repoUrl.trim()}>
-            {busy ? 'Adding…' : 'Add project'}
+            {busy ? 'Adding…' : 'Add existing repo'}
+          </button>
+          <button
+            className="secondary"
+            onClick={() => setCreateOnGh({
+              name: '',
+              description: '',
+              private: true,
+              quotaGb: String(DEFAULT_QUOTA_GB),
+            })}
+          >
+            Create new repo on GitHub…
           </button>
         </div>
       </div>
+
+      {createOnGh && (
+        <div className="modal-overlay" onClick={() => { if (!creatingOnGh) { setCreateOnGh(null); setCreateGhError(null); setCreateGhResult(null) } }}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ minWidth: 480 }}>
+            {createGhResult ? (
+              <>
+                <h2>Repo created</h2>
+                <div className="hint" style={{ marginBottom: 10 }}>
+                  GitHub created <strong>{createGhResult.name}</strong>. The
+                  clone URL below is also registered as a FrameCAD project,
+                  so it'll show up on the welcome screen for everyone.
+                </div>
+                <input
+                  readOnly
+                  className="mono"
+                  value={createGhResult.repoUrl}
+                  onFocus={e => e.currentTarget.select()}
+                  onClick={e => (e.currentTarget as HTMLInputElement).select()}
+                  style={{ width: '100%' }}
+                />
+                <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+                  <button
+                    className="secondary"
+                    onClick={async () => {
+                      await copyToClipboard(createGhResult.repoUrl)
+                    }}
+                  >
+                    Copy URL
+                  </button>
+                  <button
+                    className="primary"
+                    onClick={() => { setCreateOnGh(null); setCreateGhError(null); setCreateGhResult(null) }}
+                  >
+                    Done
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h2>Create new repo on GitHub</h2>
+                <div className="hint" style={{ marginBottom: 10 }}>
+                  Creates a new repo in your team's GitHub org using the
+                  stored PAT and registers it as a FrameCAD project. Repo
+                  is created empty — desktop clients push the initial
+                  commit on first publish.
+                </div>
+                {createGhError && <div className="error">{createGhError}</div>}
+                <label>Repo name</label>
+                <input
+                  value={createOnGh.name}
+                  onChange={e => setCreateOnGh({ ...createOnGh, name: e.target.value })}
+                  placeholder="2026-robot"
+                  autoFocus
+                  spellCheck={false}
+                />
+                <label>Description (optional)</label>
+                <input
+                  value={createOnGh.description}
+                  onChange={e => setCreateOnGh({ ...createOnGh, description: e.target.value })}
+                  placeholder="Main competition robot"
+                />
+                <label
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={createOnGh.private}
+                    onChange={e => setCreateOnGh({ ...createOnGh, private: e.target.checked })}
+                  />
+                  Private (recommended for team CAD)
+                </label>
+                <label style={{ marginTop: 10 }}>Storage quota (GB)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  value={createOnGh.quotaGb}
+                  onChange={e => setCreateOnGh({ ...createOnGh, quotaGb: e.target.value })}
+                  placeholder="blank = unlimited"
+                />
+                <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+                  <button
+                    className="secondary"
+                    onClick={() => { setCreateOnGh(null); setCreateGhError(null) }}
+                    disabled={creatingOnGh}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="primary"
+                    onClick={submitCreateOnGitHub}
+                    disabled={creatingOnGh || !createOnGh.name.trim()}
+                  >
+                    {creatingOnGh ? 'Creating…' : 'Create repo'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="card">
         <h3>Registered projects</h3>

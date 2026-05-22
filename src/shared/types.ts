@@ -576,6 +576,15 @@ export interface IpcApi {
  */
 export const LFS_UNREACHABLE_SENTINEL = 'LFS_UNREACHABLE:'
 
+/**
+ * Sentinel for clone/fetch failures that the user can fix by signing
+ * in to GitHub — typically a private repo that the working machine
+ * has no credentials for. Same matching contract as
+ * LFS_UNREACHABLE_SENTINEL: renderer uses `.includes()` not
+ * `.startsWith()` because Electron IPC may wrap the message with
+ * "Error invoking remote method '...':". */
+export const GITHUB_AUTH_REQUIRED_SENTINEL = 'GITHUB_AUTH_REQUIRED:'
+
 declare global {
   interface Window {
     api: IpcApi

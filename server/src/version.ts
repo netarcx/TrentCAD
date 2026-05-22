@@ -34,6 +34,12 @@ let inflight: Promise<string | null> | null = null
 /** The server's own version, read once at module load. */
 export const serverVersion: string = readServerVersion()
 
+/** Kick off a background check immediately on import, then repeat
+ *  every hour so the cache is always warm — even if no admin ever
+ *  opens the dashboard. */
+getLatestReleaseVersion().catch(() => {})
+setInterval(() => { getLatestReleaseVersion().catch(() => {}) }, CACHE_TTL_MS)
+
 function readServerVersion(): string {
   try {
     // ESM-safe __dirname. tsx-watch + the compiled dist/ layout both

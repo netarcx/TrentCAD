@@ -34,7 +34,10 @@ export default function UpdateBanner() {
   const [status, setStatus] = useState<VersionStatus | null>(null)
 
   useEffect(() => {
-    api<VersionStatus>('GET', '/api/admin/version-status').then(setStatus).catch(() => {})
+    const check = () => api<VersionStatus>('GET', '/api/admin/version-status').then(setStatus).catch(() => {})
+    check()
+    const id = setInterval(check, 60 * 60 * 1000)
+    return () => clearInterval(id)
   }, [])
 
   if (!status) return null

@@ -1504,7 +1504,7 @@ body.slam-shake {
   color: var(--text-muted);
 }
 
-.file-table-header .col-name { flex: 1; }
+.file-table-header .col-name { flex: 1; min-width: 0; }
 .file-table-header .col-partnum { width: 130px; }
 .file-table-header .col-status { width: 100px; }
 .file-table-header .col-lock { width: 160px; }
@@ -1566,6 +1566,7 @@ body.slam-shake {
 .file-table {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 2px 0;
 }
 
@@ -1577,6 +1578,7 @@ body.slam-shake {
   font-size: 13px;
   cursor: pointer;
   transition: background 0.08s;
+  min-width: 0;
 }
 
 .file-row:hover { background: var(--bg-hover); }
@@ -1584,6 +1586,7 @@ body.slam-shake {
 
 .file-row .col-name {
   flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;

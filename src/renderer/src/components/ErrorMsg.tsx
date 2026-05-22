@@ -8,7 +8,12 @@ export default function ErrorMsg({ text, className = 'admin-error', style }: {
   const [copied, setCopied] = useState(false)
 
   const copy = () => {
-    navigator.clipboard.writeText(text)
+    // Chrome can reject clipboard.writeText with "Document is not
+    // focused" if the window loses focus between the click and the
+    // API call. Swallow so it doesn't bubble up as an unhandled
+    // promise rejection (which used to nuke the whole renderer
+    // via main.tsx's pre-mount overlay — see the v3.0.22 fix).
+    navigator.clipboard.writeText(text).catch(() => { /* clipboard blocked */ })
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }

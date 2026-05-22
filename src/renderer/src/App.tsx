@@ -672,7 +672,15 @@ export default function App() {
   }, [stats, parts.inReviewParts.length])
 
   const copyError = () => {
-    if (error) navigator.clipboard.writeText(error)
+    // Chrome rejects clipboard.writeText with "Document is not
+    // focused" when the window momentarily loses focus between the
+    // click event and the API call (happens with our error banner
+    // because the dismiss-button hover can briefly steal focus).
+    // Swallow the rejection so it doesn't bubble up to the global
+    // unhandledrejection handler in main.tsx.
+    if (error) {
+      navigator.clipboard.writeText(error).catch(() => { /* clipboard blocked */ })
+    }
   }
 
   // Strip developer sentinels that the main process tags onto certain

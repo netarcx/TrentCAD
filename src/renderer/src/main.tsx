@@ -43,8 +43,32 @@ function paintFatalError(label: string, err: unknown): void {
   } catch { /* nothing we can do here */ }
 }
 
-window.addEventListener('error', e => paintFatalError('Uncaught error', e.error ?? e.message))
-window.addEventListener('unhandledrejection', e => paintFatalError('Unhandled promise rejection', e.reason))
+// Track whether React has mounted. The fatal-error overlay is for
+// PRE-mount catastrophes (preload contract mismatch, ESM resolution
+// failure, missing #root) — once React owns the page, a runtime
+// unhandled promise rejection (e.g. a Chrome clipboard write that
+// rejects with "Document is not focused" on a button click while
+// the window hasn't fully focused yet) shouldn't nuke the whole UI
+// back to a "FrameCAD failed to start" screen. Post-mount, those
+// belong in console.error so dev tools can find them, but the user
+// keeps a working app.
+let reactMounted = false
+window.addEventListener('error', e => {
+  if (reactMounted) {
+    // eslint-disable-next-line no-console
+    console.error('Uncaught error (post-mount):', e.error ?? e.message)
+    return
+  }
+  paintFatalError('Uncaught error', e.error ?? e.message)
+})
+window.addEventListener('unhandledrejection', e => {
+  if (reactMounted) {
+    // eslint-disable-next-line no-console
+    console.error('Unhandled promise rejection (post-mount):', e.reason)
+    return
+  }
+  paintFatalError('Unhandled promise rejection', e.reason)
+})
 
 try {
   // Patch window.api so every IPC call increments / decrements a global
@@ -76,6 +100,10 @@ try {
       <App />
     </ErrorBoundary>
   )
+  // Flip the flag in a microtask so any synchronous error from
+  // createRoot still hits paintFatalError, but subsequent runtime
+  // errors after the first React tick are treated as post-mount.
+  queueMicrotask(() => { reactMounted = true })
 } catch (err) {
   paintFatalError('Failed to mount React root', err)
 }

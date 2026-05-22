@@ -540,6 +540,9 @@ export async function refreshLfsAuth(
   // it ever reaches Giftless. Scope to the two paths that DO need
   // pre-auth — batch + locks — so storage PUTs go out with one header.
   const header = `Authorization: Bearer ${tok.token}`
+  // Ensure lfs.url points at the team server — heals existing clones
+  // that predate LFS registration without waiting for a publish.
+  await g.raw(['config', '--local', 'lfs.url', endpoint]).catch(() => {})
   // Drop the old root-scoped key that pre-3.0.27 installs wrote, so
   // existing clones get healed on the next refresh.
   await g.raw(['config', '--local', '--unset', `http.${endpoint}/.extraheader`]).catch(() => {})
@@ -844,6 +847,20 @@ export async function joinProject(
   onProgress?: (p: PublishProgress) => void,
   options?: JoinProjectOptions,
 ): Promise<void> {
+  // Guard: if the target directory already exists and is non-empty,
+  // give a clear error instead of letting git fail with a cryptic
+  // "destination path already exists and is not an empty directory".
+  try {
+    const entries = await fs.readdir(dirPath)
+    if (entries.length > 0) {
+      throw new Error(
+        `The folder "${dirPath}" already exists and is not empty. ` +
+        'Choose a different location or delete the existing folder first.'
+      )
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+  }
   await addSafeDirectory(dirPath)
   await addSafeDirectory(path.dirname(dirPath))
   onProgress?.({
@@ -1035,9 +1052,10 @@ async function runJoinClone(
     const lfsConfigForClone: string[] = []
     const lfsCfg = lookupProjectByRemote(url)
     if (lfsCfg) {
+      const endpoint = lfsEndpointForProject(lfsCfg.lfsUrl, lfsCfg.projectId)
+      lfsConfigForClone.push('--config', `lfs.url=${endpoint}`)
       const tok = await getLfsToken(lfsCfg.projectId).catch(() => null)
       if (tok) {
-        const endpoint = lfsEndpointForProject(lfsCfg.lfsUrl, lfsCfg.projectId)
         // Scope to batch + locks only — see refreshLfsAuth() for why
         // a root-scoped extraheader breaks storage PUTs on Cloudflare.
         const header = `Authorization: Bearer ${tok.token}`
@@ -1229,6 +1247,24 @@ export async function openProject(dirPath: string): Promise<void> {
     await ensureGitAttributes().catch(() => { /* best-effort */ })
   })
   await applyUploadTunings()
+
+  // Ensure LFS routing points at the team's self-hosted server for
+  // existing clones that predate LFS registration. Writes .lfsconfig
+  // AND sets lfs.url in .git/config so the local override is
+  // authoritative. No-op when the project isn't on the team registry.
+  if (git) {
+    const remotes = await git.getRemotes(true).catch(() => [])
+    const origin = remotes.find(r => r.name === 'origin')
+    const remoteUrl = origin?.refs?.fetch ?? origin?.refs?.push ?? ''
+    if (remoteUrl) {
+      const cfg = lookupProjectByRemote(remoteUrl)
+      if (cfg) {
+        const endpoint = lfsEndpointForProject(cfg.lfsUrl, cfg.projectId)
+        await writeLfsConfig(dirPath, remoteUrl).catch(() => null)
+        await git.raw(['config', '--local', 'lfs.url', endpoint]).catch(() => null)
+      }
+    }
+  }
 
   // Best-effort background fetch so the SW add-in's "newer version
   // available" check reflects up-to-date remote state on subsequent

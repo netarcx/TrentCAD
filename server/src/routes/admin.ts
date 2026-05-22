@@ -91,6 +91,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     allowedProjectIds?: unknown
     autoOpenProjectId?: number | null
     kioskMode?: boolean
+    maxUses?: number
   } }>('/api/admin/pins', async (req, reply) => {
     const role = req.body?.role as Role | undefined
     if (!role || !VALID_ROLES.includes(role)) {
@@ -113,13 +114,14 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       allowedProjectIds,
       autoOpenProjectId,
       kioskMode: !!req.body?.kioskMode,
+      maxUses: typeof req.body?.maxUses === 'number' ? req.body.maxUses : undefined,
     })
     logAudit({
       actorId: req.member!.id,
       actorLabel: req.member!.displayName,
       action: 'pin.create',
       target: pin.code,
-      detail: `role=${pin.role}`,
+      detail: `role=${pin.role} maxUses=${pin.maxUses}`,
     })
     return pin
   })
@@ -128,9 +130,10 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     const now = Date.now()
     const rows = getDb().prepare(
       `SELECT code, role, displayName, githubUsername, expiresAt, createdAt,
-              capabilities, allowedProjectIds, autoOpenProjectId, kioskMode
+              capabilities, allowedProjectIds, autoOpenProjectId, kioskMode,
+              maxUses, useCount
          FROM pins
-        WHERE consumedAt IS NULL
+        WHERE useCount < maxUses
           AND (expiresAt IS NULL OR expiresAt > ?)
         ORDER BY createdAt DESC`
     ).all(now) as Array<{
@@ -144,6 +147,8 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       allowedProjectIds: string | null
       autoOpenProjectId: number | null
       kioskMode: number
+      maxUses: number
+      useCount: number
     }>
     return {
       pins: rows.map(r => ({
@@ -157,6 +162,8 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         allowedProjectIds: parseAllowedProjectIds(r.allowedProjectIds),
         autoOpenProjectId: r.autoOpenProjectId,
         kioskMode: r.kioskMode === 1 && r.autoOpenProjectId !== null,
+        maxUses: r.maxUses,
+        useCount: r.useCount,
       })),
     }
   })

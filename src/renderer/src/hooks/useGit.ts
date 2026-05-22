@@ -139,22 +139,28 @@ export function useGit() {
   }, [])
 
   const checkOut = useCallback(async (filePath: string) => {
+    setIsLoading(true)
     setError(null)
     try {
       await window.api.checkOut(filePath)
       await fetchAll()
     } catch (err) {
       setError((err as Error).message)
+    } finally {
+      setIsLoading(false)
     }
   }, [])
 
   const checkIn = useCallback(async (filePath: string) => {
+    setIsLoading(true)
     setError(null)
     try {
       await window.api.checkIn(filePath)
       await fetchAll()
     } catch (err) {
       setError((err as Error).message)
+    } finally {
+      setIsLoading(false)
     }
   }, [])
 

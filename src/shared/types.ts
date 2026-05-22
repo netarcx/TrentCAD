@@ -598,6 +598,13 @@ export interface IpcApi {
     displayName?: string
     githubUsername?: string
   }): Promise<EnrollResult>
+  /** Sign in with username + password to add this device to an existing account. */
+  teamLoginDevice(args: {
+    serverUrl: string
+    username: string
+    password: string
+    deviceLabel?: string
+  }): Promise<EnrollResult>
   /** Drop the local token + cache. Server-side audit row still records the device. */
   teamSignOut(): Promise<void>
   /** Returns the URL to open the admin web UI in a browser (or null when not enrolled). */

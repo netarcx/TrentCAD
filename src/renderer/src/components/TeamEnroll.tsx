@@ -12,6 +12,7 @@ interface Props {
   globalAdmin?: GlobalAdminConfig
 }
 
+type Mode = 'pin' | 'signin'
 type Step = 'paste' | 'profile' | 'submit'
 
 /**
@@ -32,6 +33,7 @@ type Step = 'paste' | 'profile' | 'submit'
  *  3. **Submit** — spinner while `teamEnroll` runs, success → caller.
  */
 export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): JSX.Element {
+  const [mode, setMode] = useState<Mode>('pin')
   const [step, setStep] = useState<Step>('paste')
   const [linkInput, setLinkInput] = useState('')
   const [parsed, setParsed] = useState<EnrollLinkParts | null>(null)
@@ -42,6 +44,11 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
   const [signInHint, setSignInHint] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Sign-in mode state
+  const [siServerUrl, setSiServerUrl] = useState(globalAdmin?.defaultServerUrl ?? '')
+  const [siUsername, setSiUsername] = useState('')
+  const [siPassword, setSiPassword] = useState('')
 
   // Re-parse on every keystroke. Cheap operation; gives instant
   // feedback under the input.
@@ -139,6 +146,31 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
     }
   }
 
+  async function submitSignIn(): Promise<void> {
+    setBusy(true)
+    setError(null)
+    setStep('submit')
+    try {
+      const result = await window.api.teamLoginDevice({
+        serverUrl: siServerUrl.trim(),
+        username: siUsername.trim(),
+        password: siPassword,
+        deviceLabel: deviceLabel.trim() || undefined,
+      })
+      if (!result.success) {
+        setError(result.error || 'Could not sign in.')
+        setStep('paste')
+        return
+      }
+      onEnrolled()
+    } catch (err) {
+      setError((err as Error).message)
+      setStep('paste')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   // Hint shown under the link input. Three cases: nothing typed yet,
   // a valid parsed link (show what we'll connect to), or an
   // unrecognised input.
@@ -175,13 +207,15 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
       </button>
 
       <div className="enroll-wizard">
-        <div className="enroll-step-dots" aria-label={`Step ${step === 'paste' ? 1 : step === 'profile' ? 2 : 3} of 3`}>
-          <span className={`enroll-step-dot${step === 'paste' ? ' active' : ' done'}`} />
-          <span className={`enroll-step-dot${step === 'profile' ? ' active' : step === 'submit' ? ' done' : ''}`} />
-          <span className={`enroll-step-dot${step === 'submit' ? ' active' : ''}`} />
-        </div>
+        {mode === 'pin' && (
+          <div className="enroll-step-dots" aria-label={`Step ${step === 'paste' ? 1 : step === 'profile' ? 2 : 3} of 3`}>
+            <span className={`enroll-step-dot${step === 'paste' ? ' active' : ' done'}`} />
+            <span className={`enroll-step-dot${step === 'profile' ? ' active' : step === 'submit' ? ' done' : ''}`} />
+            <span className={`enroll-step-dot${step === 'submit' ? ' active' : ''}`} />
+          </div>
+        )}
 
-        {step === 'paste' && (
+        {step === 'paste' && mode === 'pin' && (
           <div className="enroll-step">
             <h1>Sync with your team</h1>
             <p className="subtitle">
@@ -214,6 +248,83 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
                 onClick={() => { setStep('profile'); setError(null) }}
               >
                 Continue
+              </button>
+            </div>
+            <div style={{ marginTop: 16, textAlign: 'center' }}>
+              <button
+                className="toolbar-btn link-btn"
+                onClick={() => { setMode('signin'); setError(null) }}
+                style={{ fontSize: 13, opacity: 0.8 }}
+              >
+                Already have an account? Sign in instead
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === 'paste' && mode === 'signin' && (
+          <div className="enroll-step">
+            <h1>Sign in</h1>
+            <p className="subtitle">
+              Use your existing account to add this device.
+            </p>
+            <div className="form-group">
+              <label>Team server</label>
+              <input
+                className="enroll-link-input"
+                value={siServerUrl}
+                onChange={e => setSiServerUrl(e.target.value)}
+                placeholder="http://your-team.local:42130"
+                autoFocus
+                spellCheck={false}
+              />
+            </div>
+            <div className="form-group">
+              <label>Username</label>
+              <input
+                className="enroll-link-input"
+                value={siUsername}
+                onChange={e => setSiUsername(e.target.value)}
+                placeholder="your username"
+                spellCheck={false}
+                autoComplete="username"
+              />
+            </div>
+            <div className="form-group">
+              <label>Password</label>
+              <input
+                className="enroll-link-input"
+                type="password"
+                value={siPassword}
+                onChange={e => setSiPassword(e.target.value)}
+                placeholder="your password"
+                autoComplete="current-password"
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && siServerUrl.trim() && siUsername.trim() && siPassword) {
+                    void submitSignIn()
+                  }
+                }}
+              />
+            </div>
+            {error && <div className="form-error">{error}</div>}
+            <div className="actions">
+              <button className="toolbar-btn" onClick={onBack} disabled={busy}>Cancel</button>
+              <button
+                className="toolbar-btn primary"
+                disabled={busy || !siServerUrl.trim() || !siUsername.trim() || !siPassword}
+                onClick={() => void submitSignIn()}
+                style={{ minWidth: 120 }}
+              >
+                {busy ? 'Signing in…' : 'Sign in'}
+              </button>
+            </div>
+            <div style={{ marginTop: 16, textAlign: 'center' }}>
+              <button
+                className="toolbar-btn link-btn"
+                onClick={() => { setMode('pin'); setError(null) }}
+                style={{ fontSize: 13, opacity: 0.8 }}
+              >
+                Have a PIN? Enroll with PIN instead
               </button>
             </div>
           </div>
@@ -361,7 +472,7 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
 
         {step === 'submit' && (
           <div className="enroll-step">
-            <h1>Enrolling…</h1>
+            <h1>{mode === 'signin' ? 'Signing in…' : 'Enrolling…'}</h1>
             <p className="subtitle">Shaking hands with the team server.</p>
             <div className="enroll-spinner-row">
               <span className="loading-spinner" />

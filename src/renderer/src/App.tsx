@@ -1310,6 +1310,7 @@ export default function App() {
             onClose={isOverlayTier ? () => setInspectorOpen(false) : undefined}
             onNavigate={navigateToPath}
             isMentor={isMentor}
+            isLoading={isLoading}
           />
         )}
       </div>

@@ -721,6 +721,12 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     displayName?: string
     githubUsername?: string
   }) => teamServer.enroll(args))
+  ipcMain.handle('team-login-device', (_e, args: {
+    serverUrl: string
+    username: string
+    password: string
+    deviceLabel?: string
+  }) => teamServer.loginDevice(args))
   ipcMain.handle('team-sign-out', () => teamServer.signOut())
   ipcMain.handle('team-admin-ui-url', () => teamServer.adminUiUrl())
   ipcMain.handle('team-ping-server', () => teamServer.pingTeamServer())

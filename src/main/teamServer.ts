@@ -242,6 +242,54 @@ export async function enroll(args: {
   }
 }
 
+export async function loginDevice(args: {
+  serverUrl: string
+  username: string
+  password: string
+  deviceLabel?: string
+}): Promise<EnrollResult> {
+  const cleanUrl = args.serverUrl.trim().replace(/\/+$/, '')
+  if (!/^https?:\/\//i.test(cleanUrl)) {
+    return { success: false, error: 'Server URL must start with http:// or https://' }
+  }
+
+  const previous = { ...state }
+  state.serverUrl = cleanUrl
+  state.token = null
+  try {
+    const data = await fetchTeamApi<{
+      token: string
+      member: MyMember
+      team: TeamConfig
+    }>('/api/login', {
+      method: 'POST',
+      body: {
+        username: args.username.trim(),
+        password: args.password,
+        deviceLabel: args.deviceLabel?.trim() || undefined,
+        kind: 'desktop',
+        clientVersion: app.getVersion(),
+      },
+    })
+    state.token = data.token
+    state.me = data.member
+    state.team = data.team
+    state.error = null
+    await persistEnrollment()
+    await refresh().catch(() => {})
+    return { success: true, snapshot: currentSnapshot() }
+  } catch (err) {
+    state.serverUrl = previous.serverUrl
+    state.token = previous.token
+    state.me = previous.me
+    state.team = previous.team
+    state.members = previous.members
+    state.projects = previous.projects
+    state.lastSyncAt = previous.lastSyncAt
+    return { success: false, error: (err as Error).message }
+  }
+}
+
 export async function refresh(): Promise<TeamSnapshot> {
   if (!state.token) {
     state.error = 'Not enrolled'

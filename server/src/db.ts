@@ -329,6 +329,18 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE members ADD COLUMN gitHubPat TEXT;
   `,
+  // v14: multi-use PINs. A single PIN can enroll the same person on
+  // up to `maxUses` devices without the admin issuing a separate code
+  // each time. `useCount` tracks how many enrollments have consumed
+  // this PIN; `consumedAt` is set only when `useCount >= maxUses` (fully
+  // exhausted) so the existing "active PINs" query (`consumedAt IS NULL`)
+  // keeps working. Existing rows default to maxUses=1, useCount=0 for
+  // unconsumed PINs and maxUses=1, useCount=1 for already-consumed ones.
+  `
+  ALTER TABLE pins ADD COLUMN maxUses  INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE pins ADD COLUMN useCount INTEGER NOT NULL DEFAULT 0;
+  UPDATE pins SET useCount = 1 WHERE consumedAt IS NOT NULL;
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

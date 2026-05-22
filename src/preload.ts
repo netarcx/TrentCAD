@@ -230,6 +230,9 @@ const api: IpcApi = {
   teamEnroll: (args) =>
     ipcRenderer.invoke('team-enroll', args),
 
+  teamLoginDevice: (args) =>
+    ipcRenderer.invoke('team-login-device', args),
+
   teamSignOut: () =>
     ipcRenderer.invoke('team-sign-out'),
 

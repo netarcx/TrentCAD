@@ -19,6 +19,8 @@ interface Props {
    *  draft and in-review; sign-off transitions (released, manufactured,
    *  and any downgrade out of those) require mentor or above. */
   isMentor?: boolean
+  /** When true, git operations are in progress — disable action buttons. */
+  isLoading?: boolean
 }
 
 function stateLabel(state: FileState): string {
@@ -66,7 +68,7 @@ function formatTime(iso: string): string {
   return d.toLocaleDateString()
 }
 
-export default function DetailsPanel({ file, onCheckOut, onCheckIn, onClose, onNavigate, isMentor = true }: Props) {
+export default function DetailsPanel({ file, onCheckOut, onCheckIn, onClose, onNavigate, isMentor = true, isLoading = false }: Props) {
   const [meta, setMeta] = useState<PartMeta>({})
   const [loading, setLoading] = useState(false)
   const [commentText, setCommentText] = useState('')
@@ -489,12 +491,12 @@ export default function DetailsPanel({ file, onCheckOut, onCheckIn, onClose, onN
       {!file.isDirectory && (
         <div className="details-actions">
           {canCheckOut && (
-            <button className="toolbar-btn" onClick={() => onCheckOut(file.path)}>
+            <button className="toolbar-btn" onClick={() => onCheckOut(file.path)} disabled={isLoading}>
               Check Out
             </button>
           )}
           {canCheckIn && (
-            <button className="toolbar-btn" onClick={() => onCheckIn(file.path)}>
+            <button className="toolbar-btn" onClick={() => onCheckIn(file.path)} disabled={isLoading}>
               Check In
             </button>
           )}

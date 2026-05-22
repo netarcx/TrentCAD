@@ -45,9 +45,9 @@ export async function maybeBootstrapAdminPin(log: FastifyBaseLogger): Promise<Is
   // Reuse it so a restart doesn't constantly print new PINs at the operator.
   const pendingAdminPin = db.prepare(
     `SELECT code, role, expiresAt, capabilities, allowedProjectIds,
-            autoOpenProjectId, kioskMode
+            autoOpenProjectId, kioskMode, maxUses
        FROM pins
-      WHERE role = 'admin' AND consumedAt IS NULL
+      WHERE role = 'admin' AND useCount < maxUses
         AND (expiresAt IS NULL OR expiresAt > ?)
       ORDER BY createdAt DESC
       LIMIT 1`
@@ -59,6 +59,7 @@ export async function maybeBootstrapAdminPin(log: FastifyBaseLogger): Promise<Is
     allowedProjectIds: string | null
     autoOpenProjectId: number | null
     kioskMode: number
+    maxUses: number
   } | undefined
 
   const pin: IssuedPin = pendingAdminPin
@@ -70,8 +71,9 @@ export async function maybeBootstrapAdminPin(log: FastifyBaseLogger): Promise<Is
         allowedProjectIds: parseAllowedProjectIds(pendingAdminPin.allowedProjectIds),
         autoOpenProjectId: pendingAdminPin.autoOpenProjectId,
         kioskMode: pendingAdminPin.kioskMode === 1 && pendingAdminPin.autoOpenProjectId !== null,
+        maxUses: pendingAdminPin.maxUses,
       }
-    : issuePin({ role: 'admin', createdBy: null, ttlMs: null })
+    : issuePin({ role: 'admin', createdBy: null, ttlMs: null, maxUses: 1 })
 
   await fs.writeFile(
     path.join(config.dataDir, 'SETUP_PIN.txt'),

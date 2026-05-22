@@ -141,6 +141,7 @@ export interface IssuedPin {
    *  appears, closing the project re-opens it. Locked-down kiosk
    *  for shared shop computers. */
   kioskMode: boolean
+  maxUses: number
 }
 
 /**
@@ -166,6 +167,7 @@ export function issuePin(args: {
   allowedProjectIds?: number[]
   autoOpenProjectId?: number | null
   kioskMode?: boolean
+  maxUses?: number
 }): IssuedPin {
   const now = Date.now()
   const ttl = args.ttlMs === undefined ? DEFAULT_PIN_TTL_MS : args.ttlMs
@@ -187,6 +189,7 @@ export function issuePin(args: {
   // the admin UI prevents the bad-config combination but a hand-
   // crafted API call could still set kiosk without a project.
   const kioskMode = !!args.kioskMode && autoOpenProjectId !== null
+  const maxUses = Math.max(1, Math.min(10, Math.floor(args.maxUses ?? 3)))
 
   // Loop on the very rare PRIMARY-KEY collision. We're not relying on
   // luck — at 6 chars × 32-letter alphabet that's ~10^9 keyspace, and
@@ -196,8 +199,8 @@ export function issuePin(args: {
     try {
       getDb().prepare(
         `INSERT INTO pins (code, role, displayName, githubUsername, expiresAt, createdBy, createdAt,
-                           capabilities, allowedProjectIds, autoOpenProjectId, kioskMode)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                           capabilities, allowedProjectIds, autoOpenProjectId, kioskMode, maxUses)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         code,
         args.role,
@@ -210,8 +213,9 @@ export function issuePin(args: {
         JSON.stringify(allowedProjectIds),
         autoOpenProjectId,
         kioskMode ? 1 : 0,
+        maxUses,
       )
-      return { code, role: args.role, expiresAt, capabilities, allowedProjectIds, autoOpenProjectId, kioskMode }
+      return { code, role: args.role, expiresAt, capabilities, allowedProjectIds, autoOpenProjectId, kioskMode, maxUses }
     } catch (err) {
       // SQLITE_CONSTRAINT_PRIMARYKEY — try a different code.
       if ((err as { code?: string }).code === 'SQLITE_CONSTRAINT_PRIMARYKEY') continue
@@ -236,6 +240,8 @@ export interface PinRecord {
   allowedProjectIds: string | null
   autoOpenProjectId: number | null
   kioskMode: number  // SQLite stores boolean as 0/1
+  maxUses: number
+  useCount: number
 }
 
 /** Look up a PIN. Does NOT consume it. Returns null if unknown. */
@@ -247,29 +253,37 @@ export function findPin(code: string): PinRecord | null {
 }
 
 /**
- * Atomically consume a PIN. Returns the freshly-locked PIN row, or
- * null if the PIN is unknown / already consumed / expired. Callers
- * proceed to create a member + device only when this succeeds.
+ * Atomically consume one use of a PIN. Returns the PIN row, or null
+ * if the PIN is unknown / fully consumed / expired.
  *
- * The UPDATE … WHERE consumedAt IS NULL ensures two simultaneous
- * enrolment attempts with the same code can't both win.
+ * Multi-use PINs (maxUses > 1) allow the same code to enroll the
+ * same person on multiple devices. `useCount` is incremented on each
+ * successful use; `consumedAt` is only set when the last use is
+ * consumed, so the existing "active PINs" query still works.
+ *
+ * The `useCount < maxUses` condition ensures two simultaneous
+ * enrollments can't both claim the last slot — SQLite serializes
+ * writes, so only one UPDATE will see `useCount < maxUses` true.
  */
 export function consumePin(code: string): PinRecord | null {
   const normalized = code.toUpperCase()
   const now = Date.now()
   const result = getDb().prepare(
-    `UPDATE pins SET consumedAt = ?
-     WHERE code = ? AND consumedAt IS NULL
-       AND (expiresAt IS NULL OR expiresAt > ?)`
+    `UPDATE pins
+        SET useCount = useCount + 1,
+            consumedAt = CASE WHEN useCount + 1 >= maxUses THEN ? ELSE NULL END
+      WHERE code = ?
+        AND useCount < maxUses
+        AND (expiresAt IS NULL OR expiresAt > ?)`
   ).run(now, normalized, now)
   if (result.changes === 0) return null
   return findPin(normalized)
 }
 
-/** Revoke an unconsumed PIN. No-op for already-consumed ones. */
+/** Revoke a PIN that still has uses remaining. No-op for fully consumed ones. */
 export function revokePin(code: string): boolean {
   const result = getDb().prepare(
-    `DELETE FROM pins WHERE code = ? AND consumedAt IS NULL`
+    `DELETE FROM pins WHERE code = ? AND useCount < maxUses`
   ).run(code.toUpperCase())
   return result.changes > 0
 }

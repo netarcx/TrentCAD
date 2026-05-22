@@ -3535,6 +3535,49 @@ body.slam-shake {
   border: 1px solid var(--border);
 }
 
+.enroll-step .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.enroll-step .link-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.enroll-step .link-btn:hover { opacity: 1; }
+
+.enroll-step .form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.enroll-step .form-group label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-secondary);
+}
+.enroll-step .form-error {
+  color: var(--red);
+  font-size: 13px;
+  padding: 8px 12px;
+  border: 1px solid var(--red);
+  border-radius: var(--radius);
+  background: rgba(239, 68, 68, 0.08);
+}
+.enroll-step .form-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 /* Step 2: GitHub sign-in block. Quieter than a hero button so it
    doesn't compete with the name field above it. */
 .enroll-github-row {

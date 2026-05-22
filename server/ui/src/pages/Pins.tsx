@@ -21,6 +21,8 @@ interface PinRow {
   allowedProjectIds: number[]
   autoOpenProjectId: number | null
   kioskMode: boolean
+  maxUses: number
+  useCount: number
 }
 
 interface IssuedPin {
@@ -48,6 +50,7 @@ export default function Pins() {
   const [role, setRole] = useState<PinRow['role']>('student')
   const [displayName, setDisplayName] = useState('')
   const [githubUsername, setGithubUsername] = useState('')
+  const [maxUses, setMaxUses] = useState(3)
   const [caps, setCaps] = useState<CapabilityValue>(EMPTY_CAPABILITY_VALUE)
   const [justIssued, setJustIssued] = useState<IssuedPin | null>(null)
   // Toggle the just-issued PIN display between the new full-URL form
@@ -81,6 +84,7 @@ export default function Pins() {
         allowedProjectIds: caps.allowedProjectIds,
         autoOpenProjectId: caps.autoOpenProjectId,
         kioskMode: caps.kioskMode,
+        maxUses,
       })
       setJustIssued(res)
       setLinkView('url')
@@ -127,13 +131,13 @@ export default function Pins() {
   return (
     <>
       <h1>Enrollment PINs</h1>
-      <div className="sub">Generate a single-use code; hand it to the person enrolling.</div>
+      <div className="sub">Generate a code; hand it to the person enrolling. One PIN can enroll multiple devices.</div>
 
       {error && <div className="error">{error}</div>}
 
       <div className="card">
         <h3>Generate new PIN</h3>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 100px', gap: 12 }}>
           <div>
             <label>Role</label>
             <select value={role} onChange={e => setRole(e.target.value as PinRow['role'])}>
@@ -149,6 +153,16 @@ export default function Pins() {
           <div>
             <label>GitHub username (optional)</label>
             <input value={githubUsername} onChange={e => setGithubUsername(e.target.value)} placeholder="janesmith" />
+          </div>
+          <div>
+            <label>Max uses</label>
+            <select value={maxUses} onChange={e => setMaxUses(Number(e.target.value))}>
+              <option value={1}>1</option>
+              <option value={2}>2</option>
+              <option value={3}>3</option>
+              <option value={5}>5</option>
+              <option value={10}>10</option>
+            </select>
           </div>
         </div>
 
@@ -275,7 +289,7 @@ export default function Pins() {
       <div className="card">
         <h3>Active PINs</h3>
         {pins.length === 0 ? (
-          <div className="hint">No active PINs. They burn the instant they're used.</div>
+          <div className="hint">No active PINs.</div>
         ) : (
           <table>
             <thead>
@@ -283,6 +297,7 @@ export default function Pins() {
                 <th>Code</th>
                 <th>Role</th>
                 <th>For</th>
+                <th>Uses</th>
                 <th>Caps</th>
                 <th>Expires</th>
                 <th></th>
@@ -297,6 +312,7 @@ export default function Pins() {
                     {p.displayName || p.githubUsername || <span className="hint">anyone</span>}
                     {p.githubUsername && <span className="mono" style={{ marginLeft: 6, opacity: 0.7 }}>@{p.githubUsername}</span>}
                   </td>
+                  <td className="mono">{p.useCount}/{p.maxUses}</td>
                   <td className="mono" title={JSON.stringify(p.capabilities)}>
                     {capCount(p.capabilities)}/4
                     {p.allowedProjectIds.length > 0 && (

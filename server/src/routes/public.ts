@@ -69,7 +69,7 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
     // Burn the PIN atomically. Returns null on unknown / consumed / expired.
     const pinRow = consumePin(pin)
     if (!pinRow) {
-      return reply.code(401).send({ error: 'PIN is invalid, already used, or expired' })
+      return reply.code(401).send({ error: 'PIN is invalid, has no remaining uses, or has expired' })
     }
 
     const db = getDb()
@@ -243,7 +243,7 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
   // toward the lock". So a determined attacker can do 4 attempts
   // every 15 min indefinitely — but that's ~14 attempts/hour, which
   // against argon2id passwords is computationally cheap to ignore.
-  app.post<{ Body: { username?: string; password?: string; deviceLabel?: string } }>(
+  app.post<{ Body: { username?: string; password?: string; deviceLabel?: string; kind?: string; clientVersion?: string } }>(
     '/api/login',
     async (req, reply) => {
       const username = (req.body?.username ?? '').trim()
@@ -251,6 +251,7 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
       if (!username || !password) {
         return reply.code(400).send({ error: 'Username and password are required.' })
       }
+      const deviceKind = req.body?.kind === 'desktop' ? 'desktop' : 'web'
 
       const db = getDb()
       const now = Date.now()
@@ -382,11 +383,13 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
       // device-label-or-default policy.
       const token = generateToken()
       const tokenHash = await hashToken(token)
-      const deviceLabel = (req.body?.deviceLabel ?? '').trim() || 'web session'
+      const deviceLabel = (req.body?.deviceLabel ?? '').trim() || (deviceKind === 'desktop' ? 'device' : 'web session')
+      const clientVersion =
+        ((req.body?.clientVersion ?? '').replace(/^v/i, '').slice(0, 32).trim()) || null
       const deviceResult = db.prepare(
-        `INSERT INTO devices (memberId, label, tokenHash, createdAt, lastSeenAt, kind)
-         VALUES (?, ?, ?, ?, ?, 'web')`
-      ).run(member.id, deviceLabel, tokenHash, now, now)
+        `INSERT INTO devices (memberId, label, tokenHash, createdAt, lastSeenAt, kind, clientVersion)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(member.id, deviceLabel, tokenHash, now, now, deviceKind, clientVersion)
 
       const teamRow = db.prepare(`SELECT * FROM team WHERE id = 1`).get() as TeamRow
 

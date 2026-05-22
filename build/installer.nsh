@@ -1,4 +1,53 @@
 !include "LogicLib.nsh"
+!include "nsDialogs.nsh"
+
+; ── Installation options dialog ─────────────────────────────────────
+; Custom nsDialogs page injected right after the Welcome page. Two
+; checkboxes — desktop icon + taskbar pin — both checked by default,
+; both honored in customInstall below.
+;
+; Why a custom page rather than the standard MUI finish-page slots:
+; MUI2's finish page exposes one extra checkbox (SHOWREADME) on top
+; of electron-builder's "Run FrameCAD" toggle, and we need two
+; choices. A custom nsDialogs page also runs BEFORE install so the
+; user's selections are known when customInstall fires.
+Var FCADOptionsDialog
+Var FCADDesktopCheckbox
+Var FCADTaskbarCheckbox
+Var FCADDesktopChosen
+Var FCADTaskbarChosen
+
+!macro customWelcomePage
+  ; Keep the standard welcome page, then chain our options page.
+  !insertmacro MUI_PAGE_WELCOME
+  Page custom fcadOptionsShow fcadOptionsLeave
+!macroend
+
+Function fcadOptionsShow
+  !insertmacro MUI_HEADER_TEXT "Installation Options" "Choose how FrameCAD appears on your computer."
+  nsDialogs::Create 1018
+  Pop $FCADOptionsDialog
+  ${If} $FCADOptionsDialog == error
+    Abort
+  ${EndIf}
+
+  ${NSD_CreateLabel} 0 0 100% 24u "FrameCAD can add quick-launch shortcuts so you don't have to dig through the Start menu every time. Uncheck anything you don't want."
+
+  ${NSD_CreateCheckbox} 0 32u 100% 12u "&Create a desktop icon"
+  Pop $FCADDesktopCheckbox
+  ${NSD_Check} $FCADDesktopCheckbox
+
+  ${NSD_CreateCheckbox} 0 48u 100% 12u "&Pin FrameCAD to the taskbar"
+  Pop $FCADTaskbarCheckbox
+  ${NSD_Check} $FCADTaskbarCheckbox
+
+  nsDialogs::Show
+FunctionEnd
+
+Function fcadOptionsLeave
+  ${NSD_GetState} $FCADDesktopCheckbox $FCADDesktopChosen
+  ${NSD_GetState} $FCADTaskbarCheckbox $FCADTaskbarChosen
+FunctionEnd
 
 ; Override electron-builder's built-in "app is running" check — we handle
 ; it ourselves in customInit by force-killing the lingering process.
@@ -132,7 +181,54 @@
   ${Else}
     DetailPrint "GitHub CLI already installed."
   ${EndIf}
+
+  ; ── Apply the Options page choices ────────────────────────────────
+  ; Per-machine install runs elevated; we write the desktop shortcut
+  ; to the All Users desktop so every account on the box sees it.
+  ; SetShellVarContext stays "all" for the rest of the macro since
+  ; the uninstaller cleanup at the bottom also needs to find it.
+  SetShellVarContext all
+
+  ${If} $FCADDesktopChosen == ${BST_CHECKED}
+    DetailPrint "Creating desktop shortcut..."
+    CreateShortCut "$DESKTOP\FrameCAD.lnk" "$INSTDIR\FrameCAD.exe" "" "$INSTDIR\FrameCAD.exe" 0
+  ${EndIf}
+
+  ${If} $FCADTaskbarChosen == ${BST_CHECKED}
+    DetailPrint "Pinning FrameCAD to the taskbar..."
+    Call PinToTaskbar
+  ${EndIf}
 !macroend
+
+; Best-effort pin-to-taskbar via PowerShell + Shell.Application COM.
+; Works on Windows 10 and most Windows 11 builds (newer 11 22H2+ has
+; been progressively removing the verb; failure is silent). The
+; user can always right-click → Pin manually if this doesn't take.
+;
+; We write the PowerShell to %TEMP% rather than passing it inline
+; because nested quoting through nsExec → cmd → powershell is a
+; nightmare and the temp-file approach is debuggable if it breaks.
+Function PinToTaskbar
+  StrCpy $0 "$TEMP\framecad-pin-taskbar.ps1"
+  FileOpen $1 "$0" w
+  ; NSIS double-dollar escapes a literal `$` so PowerShell variables
+  ; come through correctly. `$\r$\n` is a literal CRLF in the file.
+  FileWrite $1 'try {$\r$\n'
+  FileWrite $1 '  $$shell = New-Object -ComObject Shell.Application$\r$\n'
+  FileWrite $1 '  $$folder = $$shell.NameSpace("$INSTDIR")$\r$\n'
+  FileWrite $1 '  if ($$folder -ne $$null) {$\r$\n'
+  FileWrite $1 '    $$item = $$folder.ParseName("FrameCAD.exe")$\r$\n'
+  FileWrite $1 '    if ($$item -ne $$null) {$\r$\n'
+  FileWrite $1 '      $$verb = $$item.Verbs() | Where-Object { $$_.Name.Replace("&","") -eq "Pin to taskbar" }$\r$\n'
+  FileWrite $1 '      if ($$verb) { $$verb.DoIt() }$\r$\n'
+  FileWrite $1 '    }$\r$\n'
+  FileWrite $1 '  }$\r$\n'
+  FileWrite $1 '} catch { }$\r$\n'
+  FileClose $1
+  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$0"'
+  Pop $1
+  Delete "$0"
+FunctionEnd
 
 !macro customUnInit
   ; Unregister COM add-in
@@ -140,4 +236,11 @@
 
   ; Remove add-in files
   RMDir /r "$INSTDIR\solidworks-addin"
+
+  ; Remove the desktop shortcut we created in customInstall (if the
+  ; user picked the checkbox). SetShellVarContext "all" matches the
+  ; install-side choice so we look in C:\Users\Public\Desktop, not
+  ; the uninstalling user's personal desktop.
+  SetShellVarContext all
+  Delete "$DESKTOP\FrameCAD.lnk"
 !macroend

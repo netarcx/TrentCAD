@@ -39,14 +39,6 @@ export function useGit() {
     setLocks(newLocks)
   }
 
-  const refresh = useCallback(async () => {
-    if (!project) return
-    try {
-      await fetchAll()
-    } catch (err) {
-      setError((err as Error).message)
-    }
-  }, [project])
 
   const createProject = useCallback(async (name: string, path: string, remote: string, isCotsProject?: boolean) => {
     setIsLoading(true)
@@ -224,7 +216,6 @@ export function useGit() {
     createNewPart,
     createNewAssembly,
     createSubsystem,
-    refresh,
     dismissError
   }
 }

@@ -526,7 +526,7 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
       return {
         token,
         expiresAt,
-        url: config.lfsServerUrl,
+        url: effectiveLfsUrl(),
         projectId,
         writable,
         quota: {

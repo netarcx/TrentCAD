@@ -534,7 +534,7 @@ export default function App() {
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'r') {
+      if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'r') {
         e.preventDefault()
         ;(async () => {
           try {

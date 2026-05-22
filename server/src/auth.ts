@@ -238,21 +238,6 @@ export interface PinRecord {
   kioskMode: number  // SQLite stores boolean as 0/1
 }
 
-/** Convenience: hydrate a raw PinRecord into structured caps + allowlist. */
-export function pinCapabilities(pin: PinRecord): {
-  capabilities: MemberCapabilities
-  allowedProjectIds: number[]
-  autoOpenProjectId: number | null
-  kioskMode: boolean
-} {
-  return {
-    capabilities: parseCapabilities(pin.capabilities),
-    allowedProjectIds: parseAllowedProjectIds(pin.allowedProjectIds),
-    autoOpenProjectId: pin.autoOpenProjectId,
-    kioskMode: pin.kioskMode === 1 && pin.autoOpenProjectId !== null,
-  }
-}
-
 /** Look up a PIN. Does NOT consume it. Returns null if unknown. */
 export function findPin(code: string): PinRecord | null {
   const row = getDb()

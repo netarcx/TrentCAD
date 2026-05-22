@@ -1422,7 +1422,11 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         // want to re-trigger that path. Easier to UPDATE in place.
         db.prepare(
           `UPDATE team SET name = 'My Team', gitHubOrg = '', projectPrefix = '',
-                            welcomeMessage = '', setupComplete = 0, updatedAt = ?
+                            welcomeMessage = '', setupComplete = 0,
+                            lfsUrl = NULL, gitHubPat = NULL,
+                            maxFileSizeMb = NULL, lfsAutotrackThresholdMb = NULL,
+                            blockedExtensionsJson = NULL, lfsTokenTtlMinutes = NULL,
+                            quotaGraceHours = NULL, updatedAt = ?
                       WHERE id = 1`
         ).run(Date.now())
         db.prepare(`DELETE FROM sqlite_sequence`).run()

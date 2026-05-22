@@ -491,7 +491,7 @@ export function detectRemoteGoneError(raw: string): string | null {
  * call on any project — silently no-ops when the project isn't on
  * the team server's registry or has no origin remote configured.
  */
-async function refreshLfsAuthForOpenProject(): Promise<Awaited<ReturnType<typeof refreshLfsAuth>> | null> {
+export async function refreshLfsAuthForOpenProject(): Promise<Awaited<ReturnType<typeof refreshLfsAuth>> | null> {
   try {
     const g = getGit()
     const remotes = await g.getRemotes(true)
@@ -805,7 +805,7 @@ function isLfsUnreachableError(raw: string): boolean {
  *  "retry without LFS" UI instead of the generic error path.
  *  Re-exported from `@shared/types` so the renderer and main
  *  process can't drift on the prefix string. */
-export const LFS_UNREACHABLE_ERROR_PREFIX = LFS_UNREACHABLE_SENTINEL
+const LFS_UNREACHABLE_ERROR_PREFIX = LFS_UNREACHABLE_SENTINEL
 
 /**
  * Detect git errors that mean "this is a private repo and we don't

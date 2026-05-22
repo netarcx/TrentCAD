@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { Upload, Sparkles, Tag, Settings, FileEdit, type LucideIcon } from 'lucide-react'
+import { Upload, Sparkles, Tag, Settings, type LucideIcon } from 'lucide-react'
 import type { HistoryEntry } from '@shared/types'
 
 interface Props {

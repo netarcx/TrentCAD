@@ -10,8 +10,8 @@ const STEPS = [
     body: 'A quick tour of the buttons you\'ll use every day. Takes about 30 seconds.'
   },
   {
-    title: 'Download',
-    body: 'Click "Download" before you start working to pull the latest team files. Your teammates publish through Upload — Download is how you receive their work.'
+    title: 'Sync',
+    body: 'Click "Sync" before you start working to pull the latest team files. Your teammates send changes through Publish — Sync is how you receive their work.'
   },
   {
     title: '+ Part / + Assembly',
@@ -22,8 +22,8 @@ const STEPS = [
     body: 'Before editing a file, click "Check Out" to lock it so nobody else can change it at the same time. Save your work in SolidWorks, then click "Check In" to release the lock for your teammates.'
   },
   {
-    title: 'Upload',
-    body: 'Once you\'re done for the day, click "Upload" to send your changes to the team. Optionally describe what you changed (or leave blank for a random label).'
+    title: 'Publish',
+    body: 'Once you\'re done for the day, click "Publish" to send your changes to the team. Optionally describe what you changed (or leave blank for a random label).'
   },
   {
     title: 'Need help?',

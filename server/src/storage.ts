@@ -96,10 +96,4 @@ export async function scanProjectStorage(projectId: number): Promise<number> {
   return dirSize(dir)
 }
 
-/** True iff the operator has wired LFS storage scanning into this
- *  process via LFS_STORAGE_DIR. When false, quota enforcement is
- *  skipped and the admin UI shows "Usage tracking off" alongside
- *  whatever quota was set. */
-export function storageScanningEnabled(): boolean {
-  return !!config.lfsStorageDir
-}
+

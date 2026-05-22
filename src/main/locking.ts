@@ -1,5 +1,5 @@
 import type { LockInfo } from '@shared/types'
-import { getGit } from './git'
+import { getGit, refreshLfsAuthForOpenProject } from './git'
 
 /**
  * Acquire a Git LFS lock on `filePath`. Idempotent when we already own
@@ -9,6 +9,7 @@ import { getGit } from './git'
  * as issue #1 (https://github.com/netarcx/FrameCAD/issues/1).
  */
 export async function checkOut(filePath: string): Promise<void> {
+  await refreshLfsAuthForOpenProject().catch(() => null)
   const g = getGit()
   try {
     await g.raw(['lfs', 'lock', filePath])
@@ -48,6 +49,7 @@ export async function forceCheckIn(filePath: string): Promise<void> {
  * the file isn't locked or is locked by someone else.
  */
 export async function checkIn(filePath: string): Promise<void> {
+  await refreshLfsAuthForOpenProject().catch(() => null)
   const g = getGit()
   try {
     await g.raw(['lfs', 'unlock', filePath])

@@ -434,11 +434,6 @@ export function syncManifest(): Promise<PartsManifest> {
   return p
 }
 
-export async function getPartNumber(relPath: string): Promise<string | null> {
-  const manifest = await loadManifest()
-  return manifest.entries[relPath]?.partNumber ?? null
-}
-
 export async function createNewPart(
   folder: string,
   description?: string

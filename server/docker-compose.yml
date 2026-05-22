@@ -1,199 +1,63 @@
-# docker compose up
-#
-# Self-hosted FrameCAD team server. Two containers:
-#   - `framecad-server` — the Node/Fastify admin + client API
-#   - `framecad-lfs`    — Giftless, the self-hosted Git-LFS object store
-#                         (replaces GitHub LFS so the team isn't billed
-#                         per GB / per bandwidth)
-#
-# Both share `./data` on the host and a single HMAC secret
-# (`LFS_JWT_SECRET`) so the team server can sign LFS auth tokens that
-# Giftless trusts. Operators set that secret + the public LFS URL in
-# `.env` next to this file — see `.env.example` for a starter.
-#
-# After `docker compose up -d`:
-#   - team server reachable at http://<host>:42130
-#   - LFS server reachable at http://<host>:42131
-#   - first-launch admin PIN appears in `docker compose logs -f`
-#     AND in ./data/SETUP_PIN.txt (bind-mounted from the host)
-#   - paste that PIN into FrameCAD desktop's "Enroll with Team" screen
-#
-# Persistence: SQLite + the setup-PIN file live under ./data on the
-# host; LFS objects under ./data/lfs-objects. Both bind mounts, not
-# named volumes, so the operator can rsync / borg without `docker exec`.
-# Wipe ./data to start over from scratch.
+# FrameCAD team server + self-hosted Git-LFS (Giftless).
+# See server/README.md for setup. Requires .env with LFS_JWT_SECRET.
 
 x-shared-env: &shared-env
-  # Symmetric HMAC secret shared between the team server (which signs
-  # LFS auth tokens) and giftless (which verifies them). MUST be the
-  # same on both services. Anything random and long enough is fine —
-  # operators set this in `.env` next to docker-compose.yml. When
-  # missing, /api/lfs/* returns 503 instead of pretending to work, and
-  # giftless rejects every request. Generate one with e.g.
-  #   openssl rand -hex 32
   LFS_JWT_SECRET: ${LFS_JWT_SECRET:?LFS_JWT_SECRET must be set in .env}
 
 services:
   framecad-server:
-    # Pulls the multi-arch image built by GitHub Actions on every
-    # push to main (see .github/workflows/build-installer.yml's
-    # `server-image` job). To pin a specific release, replace
-    # `:latest` with e.g. `:3.0.0`.
     image: ghcr.io/netarcx/framecad-server:latest
-    # Pre-built multi-arch image from GitHub Actions
-    # (`.github/workflows/build-installer.yml` → `server-image` job).
-    # To pin a specific release replace `:latest` with e.g. `:3.0.0`.
-    #
-    # `build:` is set too so `docker compose build` works directly —
-    # builds from local source and tags as the same name above, which
-    # then shadows the pull in the local cache. To switch back to the
-    # CI image, `docker compose pull`.
     build:
       context: .
     container_name: framecad-server
     restart: unless-stopped
-
-    # Expose the API + admin web UI on the host's port 42130. Change
-    # the left-hand number to remap, e.g. "8080:42130" to expose on 8080.
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     ports:
       - "42130:42130"
-
-    # Bind mount the data directory so the operator can read
-    # SETUP_PIN.txt and back up framecad.db without `docker exec`.
-    # Swap to a named volume (see the `volumes:` block at the bottom)
-    # if you'd rather Docker manage it.
     volumes:
       - ./data:/data
-      # Read-only mount of the LFS object store so the team server
-      # can scan per-project disk usage for quota enforcement. ONLY
-      # the giftless container should ever write here; this `:ro`
-      # flag makes that explicit and survives a misconfiguration.
       - ./data/lfs-objects:/lfs-storage:ro
-      # Read-only Docker socket so the admin Logs page can read
-      # container stdout/stderr from this stack (framecad-server +
-      # framecad-lfs). `:ro` means we can list/inspect/read logs but
-      # not start/stop/exec into other containers — defence-in-depth
-      # since the admin endpoint already allowlists the two container
-      # names. If you'd rather not expose docker.sock at all, comment
-      # this out; the Logs page will show "Docker socket unreachable"
-      # but everything else keeps working.
       - /var/run/docker.sock:/var/run/docker.sock:ro
-
     environment:
       <<: *shared-env
-      # Override any of these from the host environment or a .env file;
-      # values here are the documented defaults for clarity.
       PORT: 42130
       HOST: 0.0.0.0
       DATA_DIR: /data
       LOG_LEVEL: info
-      # Public-facing URL of the LFS server (giftless). Handed to the
-      # desktop client over /api/team so it knows where to point each
-      # project's .lfsconfig. Use a hostname clients can reach from
-      # their network — `localhost` only works for the operator's own
-      # machine. Override in .env (LFS_SERVER_URL).
       LFS_SERVER_URL: ${LFS_SERVER_URL:-http://localhost:42131}
-      # Path where the LFS object store is mounted INSIDE this
-      # container — must match the right-hand side of the volume
-      # binding above. The team server reads this dir to compute
-      # per-project usage for quota enforcement.
       LFS_STORAGE_DIR: /lfs-storage
-
-    # `compose` doesn't need the Dockerfile's HEALTHCHECK to be
-    # redeclared, but we surface a label for the user so `docker ps`
-    # shows what the service is.
     labels:
       org.opencontainers.image.title: FrameCAD Team Server
-      org.opencontainers.image.description: Self-hosted coordination server for FrameCAD desktop clients
 
-  # ── LFS bind-mount perms fixer ─────────────────────────────────────
-  # Giftless runs as UID 1000 inside its container but a freshly
-  # created `./data/lfs-objects` on the host is owned root:root 755.
-  # Giftless can read but not mkdir <project>/ — so every storage
-  # PUT crashes in `local_storage._create_path` with EACCES and the
-  # bind-mount stays empty. This one-shot busybox container chowns
-  # the mount to 1000:1000 then exits; giftless `depends_on` it with
-  # `service_completed_successfully` so it boots on a writeable
-  # directory every time, including the first `docker compose up`.
+  # Chowns lfs-objects to UID 1000 (Giftless) on first run.
   framecad-lfs-init:
     image: busybox:latest
     container_name: framecad-lfs-init
     user: "0:0"
     volumes:
       - ./data/lfs-objects:/lfs-storage
-    command: ["sh", "-c", "chown -R 1000:1000 /lfs-storage && echo 'lfs-storage perms ready'"]
+    command: ["sh", "-c", "chown -R 1000:1000 /lfs-storage"]
     restart: "no"
 
-  # ── Self-hosted Git-LFS ────────────────────────────────────────────
-  # Giftless serves the LFS object store for every project the team
-  # creates through FrameCAD, so CAD binaries never touch GitHub LFS
-  # (which charges per GB / per bandwidth). Auth is JWT signed by the
-  # framecad-server above; both sides share LFS_JWT_SECRET from .env.
   framecad-lfs:
     depends_on:
       framecad-lfs-init:
         condition: service_completed_successfully
-    # Build a small image on top of upstream datopian/giftless:0.6.2
-    # that overlays our LocalStorage multipart patch — upstream
-    # `get_multipart_actions` returns {} so the multipart transfer
-    # adapter silently no-ops against the filesystem, and the CF
-    # tunnel's 100MB body cap blocks every >100MB CAD assembly. The
-    # patch (see giftless-patches/) implements real multipart for
-    # LocalStorage so large files upload in chunks small enough to
-    # pass through the tunnel.
-    #
-    # `:0.6.2` (Dec 2024) is upstream's newest published tag; we
-    # rebuild manually when upstream releases (`:latest` is from 2021
-    # and broken — modern Python config doesn't apply).
     build:
       context: ./giftless-patches
     container_name: framecad-lfs
     restart: unless-stopped
-
-    # Same default port pattern as the team server's 42130. Operators
-    # can remap the left side without touching giftless's internals.
-    # Internal port matches external (42131) so there's no port-number
-    # confusion with whatever else might run on common ports like 5000.
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     ports:
       - "42131:42131"
-
     volumes:
-      # Object store. Survives container restarts because it's a host
-      # bind mount, not a Docker-managed volume. `du -sh ./data/lfs-objects`
-      # tells the operator how much GitHub-LFS quota they're saving.
       - ./data/lfs-objects:/lfs-storage
-
     environment:
       <<: *shared-env
-      # Inline giftless config as YAML in an env var. v0.6.2 reads
-      # GIFTLESS_CONFIG_STR and applies it on top of the defaults
-      # (see giftless/config.py::_compose_config). This avoids a
-      # separate config file mount + sed-substitution dance: compose
-      # interpolates ${LFS_JWT_SECRET} from .env at parse time, so the
-      # JWT secret reaches giftless without ever being written to disk.
-      #
-      # Schema notes for v0.6.2 (verified against the source):
-      # - JWT auth options use `private_key` directly; there is no
-      #   `private_key_env` variant in 0.6.x — env interpolation is
-      #   the caller's responsibility, which we handle via compose.
-      # - We register TWO transfer adapters:
-      #   * `basic` (single PUT) for old git-lfs clients (<3.5) and
-      #     any file small enough to fit in one body. Files <100MB
-      #     go through this lane through the CF tunnel without issue.
-      #   * `multipart-basic` (chunked uploads, git-lfs 3.5+) for the
-      #     >100MB files that would otherwise trip the CF tunnel's
-      #     body-size cap. Backed by the FrameCAD patch to
-      #     local_storage.py — see giftless-patches/.
-      #   Clients send a `transfers` array in their batch request;
-      #   Giftless picks the first one it supports. Modern clients
-      #   prefer multipart-basic; older clients fall back to basic.
-      # - max_part_size = 16 MiB: tradeoff between CF-cap headroom and
-      #   per-object parallelism. A 500 MB assembly becomes 32 parts,
-      #   which exactly matches `lfs.concurrenttransfers=32` on the
-      #   client — git-lfs 3.5+ uses that budget for both parallel
-      #   objects AND parallel parts within an object, so a single big
-      #   file saturates all 32 workers on its own. Per-part metadata
-      #   overhead (~600 B header) is negligible vs the 16 MB body.
       GIFTLESS_CONFIG_STR: |
         TRANSFER_ADAPTERS:
           basic:
@@ -215,29 +79,8 @@ services:
               algorithm: HS256
               private_key: ${LFS_JWT_SECRET}
               leeway: 10
-      # Verbose logs — the new admin Logs page reads container stdout
-      # and an actively-debugged LFS setup benefits from full request
-      # tracing more than it suffers from log volume. Flip back to
-      # "false" once the deployment is stable.
-      GIFTLESS_DEBUG: "true"
-
-    # The v0.6.2 image's default CMD binds uwsgi to a UNIX socket at
-    # `127.0.0.1:5000` (the `-s` flag), which is meant to be consumed
-    # by a uwsgi-protocol-speaking reverse proxy like nginx — NOT
-    # something git-lfs clients can talk to directly. For a compose-
-    # only deployment we need uwsgi to speak plain HTTP, which means
-    # overriding the CMD to use `--http` instead of `-s`.
-    #
-    # Both `entrypoint:` and `command:` are overridden together: the
-    # upstream entrypoint is `["tini", "uwsgi", "--"]` (tini as a
-    # signal-forwarding wrapper), and trying to override only the CMD
-    # leaves a stray `--` separator that uwsgi treats as end-of-options
-    # before our flags get parsed. Collapsing to a single `uwsgi`
-    # entrypoint sidesteps that. Loses tini's graceful-shutdown
-    # niceties but uwsgi's master handles SIGTERM correctly on its own.
-    #
-    # Module path verified against giftless v0.6.2:
-    # giftless/wsgi_entrypoint.py exports `app = init_app()`.
+      GIFTLESS_DEBUG: "false"
+    # Override upstream's UNIX-socket CMD to speak plain HTTP.
     entrypoint: ["uwsgi"]
     command:
       - --http
@@ -246,35 +89,13 @@ services:
       - giftless.wsgi_entrypoint:app
       - --master
       - --enable-threads
-      # 8 procs × 4 threads = 32 concurrent request handlers — matches
-      # the client's `lfs.concurrenttransfers=32` so server-side worker
-      # availability never becomes the bottleneck when one client is
-      # saturating the parallel-upload budget. UP2 has 12 cores so 8
-      # procs leaves headroom for everything else.
       - --processes
       - "8"
       - --threads
       - "4"
-      # Default uwsgi listen backlog is 100; with 32 client workers
-      # plus background admin/health pollers, that runs out and the
-      # kernel starts dropping SYNs. 4096 is conservative but matches
-      # the typical Linux `somaxconn` headroom.
       - --listen
       - "4096"
-      # Larger HTTP request buffer for the Authorization header (the
-      # multipart adapter overlays a per-part JWT that can be 600+ B
-      # before base64; default 4 KB is enough but more is harmless).
       - --buffer-size
       - "65535"
-
     labels:
       org.opencontainers.image.title: FrameCAD LFS Server
-      org.opencontainers.image.description: Self-hosted Git-LFS object store (Giftless) for FrameCAD projects
-
-# Uncomment to switch from bind mount to a Docker-managed named volume.
-# In that mode you'd `docker compose exec framecad-server cat /data/SETUP_PIN.txt`
-# to read the bootstrap PIN.
-#
-# volumes:
-#   framecad-data:
-#

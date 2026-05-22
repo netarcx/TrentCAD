@@ -133,14 +133,20 @@ services:
     depends_on:
       framecad-lfs-init:
         condition: service_completed_successfully
-    # Pin a specific version rather than `:latest` — the `:latest`
-    # tag on datopian/giftless hasn't been updated since July 2021
-    # and ships an ancient Python 3.7 image with a broken uwsgi.ini
-    # (bash-style `${PORT}` placeholders that uWSGI takes literally).
-    # `:0.6.2` (Dec 2024) is the newest published tag — modern Python,
-    # cleaner config. Bump this tag manually after testing newer
-    # releases; we deliberately don't follow `:latest`.
-    image: datopian/giftless:0.6.2
+    # Build a small image on top of upstream datopian/giftless:0.6.2
+    # that overlays our LocalStorage multipart patch — upstream
+    # `get_multipart_actions` returns {} so the multipart transfer
+    # adapter silently no-ops against the filesystem, and the CF
+    # tunnel's 100MB body cap blocks every >100MB CAD assembly. The
+    # patch (see giftless-patches/) implements real multipart for
+    # LocalStorage so large files upload in chunks small enough to
+    # pass through the tunnel.
+    #
+    # `:0.6.2` (Dec 2024) is upstream's newest published tag; we
+    # rebuild manually when upstream releases (`:latest` is from 2021
+    # and broken — modern Python config doesn't apply).
+    build:
+      context: ./giftless-patches
     container_name: framecad-lfs
     restart: unless-stopped
 
@@ -167,11 +173,24 @@ services:
       # JWT secret reaches giftless without ever being written to disk.
       #
       # Schema notes for v0.6.2 (verified against the source):
-      # - Transfer adapter factory is `basic_streaming` (older docs
-      #   referenced `basic_external`, which doesn't exist in 0.6.x).
       # - JWT auth options use `private_key` directly; there is no
       #   `private_key_env` variant in 0.6.x — env interpolation is
       #   the caller's responsibility, which we handle via compose.
+      # - We register TWO transfer adapters:
+      #   * `basic` (single PUT) for old git-lfs clients (<3.5) and
+      #     any file small enough to fit in one body. Files <100MB
+      #     go through this lane through the CF tunnel without issue.
+      #   * `multipart-basic` (chunked uploads, git-lfs 3.5+) for the
+      #     >100MB files that would otherwise trip the CF tunnel's
+      #     body-size cap. Backed by the FrameCAD patch to
+      #     local_storage.py — see giftless-patches/.
+      #   Clients send a `transfers` array in their batch request;
+      #   Giftless picks the first one it supports. Modern clients
+      #   prefer multipart-basic; older clients fall back to basic.
+      # - max_part_size = 50 MiB: well under CF's 100 MB cap, so even
+      #   a multi-GB assembly uploads in tens of parts rather than
+      #   hundreds, and each PUT stays comfortably inside the body
+      #   limit with headroom for slow/buffered uploads.
       GIFTLESS_CONFIG_STR: |
         TRANSFER_ADAPTERS:
           basic:
@@ -180,6 +199,13 @@ services:
               storage_class: giftless.storage.local_storage:LocalStorage
               storage_options:
                 path: /lfs-storage
+          multipart-basic:
+            factory: giftless.transfer.multipart:factory
+            options:
+              storage_class: giftless.storage.local_storage:LocalStorage
+              storage_options:
+                path: /lfs-storage
+              max_part_size: 52428800
         AUTH_PROVIDERS:
           - factory: giftless.auth.jwt:factory
             options:

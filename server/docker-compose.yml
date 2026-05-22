@@ -165,8 +165,11 @@ services:
               algorithm: HS256
               private_key: ${LFS_JWT_SECRET}
               leeway: 10
-      # Quiet by default; flip to "true" when chasing a 401.
-      GIFTLESS_DEBUG: "false"
+      # Verbose logs — the new admin Logs page reads container stdout
+      # and an actively-debugged LFS setup benefits from full request
+      # tracing more than it suffers from log volume. Flip back to
+      # "false" once the deployment is stable.
+      GIFTLESS_DEBUG: "true"
 
     # The v0.6.2 image's default CMD binds uwsgi to a UNIX socket at
     # `127.0.0.1:5000` (the `-s` flag), which is meant to be consumed

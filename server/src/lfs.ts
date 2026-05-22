@@ -94,10 +94,27 @@ export function mintLfsToken(args: {
   const exp = now + ttlSeconds
 
   // Project scope must match the URL prefix the desktop will hit on
-  // giftless: <lfs-url>/framecad/<id>/... Giftless reads the path as
-  // `org/repo` and checks the scopes claim contains a matching entry.
+  // giftless: <lfs-url>/framecad/<id>/... Giftless reads the path
+  // as `org/repo` and checks the scopes claim contains a matching
+  // entry.
+  //
+  // Giftless v0.6.x scope format is `obj:<org>/<repo>:<actions>`
+  // (resource path THEN comma-separated actions) — the previous
+  // `obj:<action>:<resource>` ordering we used was returning 403
+  // forbidden because the parser couldn't match `read:framecad/1`
+  // against URL `framecad/1`. We emit both formats below so
+  // existing deployments + any future Giftless version that
+  // tightens the parser continue to work; the new resource-first
+  // form is the canonical one.
   const scopeTarget = `framecad/${args.projectId}`
+  const actions = args.writable
+    ? 'read,write,verify'
+    : 'read,verify'
   const scopes = [
+    // Canonical 0.6.x format
+    `obj:${scopeTarget}:${actions}`,
+    // Legacy / belt-and-suspenders: split-action form some Giftless
+    // forks accept.
     `obj:verify:${scopeTarget}`,
     `obj:read:${scopeTarget}`,
     ...(args.writable ? [`obj:write:${scopeTarget}`] : []),

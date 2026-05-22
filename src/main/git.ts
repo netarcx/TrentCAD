@@ -11,6 +11,7 @@ import { loadAllMeta, annotateMeta } from './meta'
 import { getGitHubToken } from './auth'
 import { getBuildDefaultPrefix, getBuildDefaultTeamName, getBuildDefaultIssueRepo } from './branding'
 import { lookupProjectByRemote, getLfsToken, getPolicies } from './teamServer'
+import { preUploadLargeObjects } from './lfsMultipart'
 
 // Large binary or text-based CAD files that go through Git LFS. `-text` keeps
 // git from running line-ending conversion on the file; `merge=lfs` uses the
@@ -2011,6 +2012,40 @@ export async function publish(
       // token that expires partway through and git-lfs surfaces a
       // confusing 401 after gigabytes of wasted bandwidth.
       await refreshLfsAuthForOpenProject().catch(() => null)
+      // Pre-upload objects over Cloudflare's 100 MB body cap via
+      // Giftless's multipart-basic protocol. After this, the objects
+      // exist on the server and git-lfs's pre-push hook skips them.
+      if (lfsRouting.endpoint) {
+        try {
+          const remotes = await g.getRemotes(true)
+          const remote = remotes.find(r => r.name === 'origin')?.refs?.fetch ?? ''
+          const cfg = remote ? lookupProjectByRemote(remote) : null
+          if (cfg) {
+            const tok = await getLfsToken(cfg.projectId)
+            if (tok) {
+              const n = await preUploadLargeObjects({
+                projectDir,
+                files: stagable,
+                endpoint: lfsRouting.endpoint,
+                token: tok.token,
+                onProgress: (detail, pct) => onProgress?.({
+                  phase: 'uploading', files, detail,
+                  percent: typeof pct === 'number' ? pct : undefined,
+                }),
+                git: g,
+              })
+              if (n > 0) {
+                onProgress?.({
+                  phase: 'uploading', files,
+                  detail: `${n} large file${n === 1 ? '' : 's'} pre-uploaded via multipart`,
+                })
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('[LFS multipart] pre-upload failed, falling through to normal push:', (err as Error).message)
+        }
+      }
       const pushGit = buildPushGit()
       try {
         await pushGit.push()

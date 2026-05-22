@@ -811,10 +811,17 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const { lfsEnabled, mintLfsToken } = await import('../lfs.js')
-      const { config } = await import('../config.js')
-      if (!lfsEnabled() || !config.lfsServerUrl) {
+      // Use effectiveLfsUrl() (DB value > env var fallback) instead
+      // of reading the env var directly. Otherwise an admin who set
+      // the LFS URL on the Team Settings page would see the migrate-
+      // LFS script template the OLD env-var URL (which is the
+      // localhost docker-compose default for most deployments). Bug
+      // discovered 2026-05-22 when migration scripts pointed at
+      // localhost despite the admin UI showing https://lfs.swrobotics.com.
+      const effectiveUrl = effectiveLfsUrl()
+      if (!lfsEnabled() || !effectiveUrl) {
         return reply.code(503).send({
-          error: 'Self-hosted LFS is not configured on this server.',
+          error: 'Self-hosted LFS is not configured on this server. Set the LFS URL on Team Settings → Self-hosted LFS, or via the LFS_SERVER_URL env var.',
         })
       }
 
@@ -824,14 +831,14 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         projectId: project.id,
         writable: true,
       })
-      const lfsEndpoint = `${config.lfsServerUrl.replace(/\/+$/, '')}/framecad/${project.id}`
+      const lfsEndpoint = `${effectiveUrl.replace(/\/+$/, '')}/framecad/${project.id}`
       // Defence-in-depth: the lfsUrl validator on PATCH /api/admin/team
       // should already block bad URLs from reaching here, but if an
       // old DB row was set before the validator existed (or the env
       // var fallback is wonky), refuse to template a script with an
       // unsafe URL rather than handing the admin something that could
       // execute arbitrary shell when pasted.
-      if (!/^https?:\/\/[^\s"'<>`$]+$/.test(config.lfsServerUrl)) {
+      if (!/^https?:\/\/[^\s"'<>`$]+$/.test(effectiveUrl)) {
         return reply.code(500).send({
           error: 'LFS server URL is malformed — ask whoever runs the server to fix it in Team Settings.',
         })

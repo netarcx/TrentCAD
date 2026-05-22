@@ -263,16 +263,37 @@ async function ensureLfsRoutingForPush(
   const remoteUrl = origin?.refs?.fetch ?? origin?.refs?.push ?? ''
   const cfg = remoteUrl ? lookupProjectByRemote(remoteUrl) : null
 
+  // Detect LFS usage three different ways and OR them together. Any
+  // single signal triggers the routing path. Previously we relied
+  // only on `git lfs ls-files --all`, which silently returns 0 when
+  // git-lfs CLI is missing / mis-installed / hits any error — and a
+  // 0 result with no error made the helper skip the refuse path
+  // entirely, letting LFS pointers slip through to GitHub. The
+  // belt-and-suspenders detection means we ALWAYS catch LFS-using
+  // repos even when git-lfs is being weird about reporting.
   let lfsObjectsInWorkingTree = 0
+  let lfsConfiguredInRepo = false
   try {
-    // `--all` enumerates LFS pointers across all local refs, not just
-    // current HEAD. Without it, a feature branch with LFS pointers
-    // that the user is about to push would slip past the routing
-    // guard (push enumerates objects for every commit it sends, not
-    // just the current branch's HEAD).
     const out = await g.raw(['lfs', 'ls-files', '--all'])
     lfsObjectsInWorkingTree = out.split('\n').filter(l => l.trim().length > 0).length
   } catch { /* lfs not initialised or no pointers yet */ }
+  // Signal #2: any committed `.gitattributes` line that routes a
+  // file pattern through the lfs filter. This is the ground truth
+  // even if the git-lfs CLI is broken or absent. `git show HEAD:.gitattributes`
+  // returns the committed copy; we don't trust the worktree copy
+  // since it might be a fresh checkout that hasn't been initialized.
+  try {
+    const ga = await g.raw(['show', 'HEAD:.gitattributes']).catch(() => '')
+    if (/filter=lfs/i.test(ga)) lfsConfiguredInRepo = true
+  } catch { /* no commits yet or no .gitattributes */ }
+  // Signal #3: git-lfs's smudge filter installed in this repo's
+  // config. `git lfs install` writes filter.lfs.smudge into the
+  // local config; presence is a strong signal LFS is in use.
+  try {
+    const smudge = (await g.raw(['config', '--local', '--get', 'filter.lfs.smudge'])).trim()
+    if (smudge) lfsConfiguredInRepo = true
+  } catch { /* not set */ }
+  const repoUsesLfs = lfsObjectsInWorkingTree > 0 || lfsConfiguredInRepo
 
   if (cfg) {
     const endpoint = lfsEndpointForProject(cfg.lfsUrl, cfg.projectId)
@@ -286,57 +307,83 @@ async function ensureLfsRoutingForPush(
       onProgress?.({
         phase: 'preparing',
         files: [],
-        detail: 'Routing LFS to self-hosted server (writing .lfsconfig)…',
+        detail: `Routing LFS to ${endpoint}…`,
       })
       await writeLfsConfig(projectDir, remoteUrl)
       try { await g.add(['.lfsconfig']) } catch { /* best-effort */ }
     }
-    // Local `.git/config` `lfs.*url` overrides BEAT `.lfsconfig` in
-    // git-lfs's config-precedence order. Strip them so `.lfsconfig`
-    // is actually authoritative. `--unset-all` exits 5 when the key
-    // isn't there — that's expected and safe to ignore. Any OTHER
-    // exit code (1=invalid section/key, 4=write-locked config from
-    // a Windows AV scan, etc.) means we DIDN'T strip the override
-    // and the next push will silently route past `.lfsconfig`. Log
-    // those loudly so the failure mode is visible.
-    const tryUnset = async (key: string): Promise<void> => {
+    // SET (not unset) the local `.git/config` `lfs.url` to the
+    // correct endpoint. git-lfs reads from local config AFTER
+    // `.lfsconfig` per its precedence order — so a local override
+    // wins. Previously we tried to STRIP any existing override and
+    // let `.lfsconfig` take effect, but that lost the belt-and-
+    // suspenders: if anything still wrote to `.git/config` (a
+    // legacy `git lfs install` invocation, a forgotten manual edit),
+    // it'd silently win. SETTING the value to our correct endpoint
+    // means the local-config layer points to the right place no
+    // matter how it got populated.
+    const setLocal = async (key: string, value: string): Promise<void> => {
       try {
-        await g.raw(['config', '--local', '--unset-all', key])
+        await g.raw(['config', '--local', key, value])
       } catch (err) {
-        const msg = (err as Error).message || ''
-        // simple-git surfaces git's exit code in the error message.
-        // Exit 5 is "no such key" — safe to swallow. Anything else
-        // means the unset didn't take effect, which is a routing
-        // hazard the user needs to know about.
-        if (/exit code 5\b/i.test(msg)) return
-        console.warn(`[LFS routing] Could not unset ${key} from .git/config: ${msg}`)
+        console.warn(`[LFS routing] Could not set ${key} in .git/config: ${(err as Error).message}`)
       }
     }
-    await tryUnset('lfs.url')
-    await tryUnset('lfs.pushurl')
-    await tryUnset('lfs.origin.url')
+    await setLocal('lfs.url', endpoint)
+    await setLocal('lfs.pushurl', endpoint)
+    // Also strip the legacy per-remote override (`[lfs "<remote>"] url`)
+    // so an old entry pointing at github.com can't beat our setting.
     if (remoteUrl) {
-      // Per-remote overrides use the full URL as the section name in
-      // `.git/config`. Strip the one for our actual remote so nothing
-      // route-pins to GitHub's LFS endpoint.
-      await tryUnset(`lfs.${remoteUrl}.url`)
+      try {
+        await g.raw(['config', '--local', '--unset-all', `lfs.${remoteUrl}.url`])
+      } catch { /* not set — fine */ }
     }
+    // VERIFY the resolved endpoint with `git lfs env`. If git-lfs
+    // STILL reports a github.com endpoint after all the config
+    // setup, we have a routing problem we can't fix from here.
+    // Refuse the push loudly rather than letting it 403 against
+    // GitHub LFS. The `-c lfs.url=…` arg simulates exactly what
+    // the actual push will see, so a passing check here means the
+    // push will route correctly.
+    try {
+      const env = await g.raw(['-c', `lfs.url=${endpoint}`, 'lfs', 'env'])
+      const m = env.match(/^Endpoint=([^\s]+)/m)
+      const resolved = m?.[1] ?? ''
+      if (resolved && !resolved.startsWith(endpoint)) {
+        return {
+          endpoint,
+          lfsObjectsInWorkingTree,
+          refuseReason:
+            `LFS routing verification failed.\n\n` +
+            `FrameCAD configured the LFS endpoint as ${endpoint}, but git-lfs ` +
+            `resolves it to ${resolved}. Something in your git config or ` +
+            `environment is overriding the setting. Run \`git lfs env\` from ` +
+            `the project folder to see what's set, or ask your admin to ` +
+            `check the project's .git/config.`,
+        }
+      }
+    } catch { /* git-lfs not callable — fall through, the actual push will surface a clearer error */ }
     return { endpoint, lfsObjectsInWorkingTree, refuseReason: null }
   }
 
-  if (lfsObjectsInWorkingTree === 0) {
-    // No LFS in this repo's history — push can safely go straight to
-    // GitHub without any routing setup (nothing for git-lfs to upload).
+  // Project is NOT registered on the team server. Allow the push
+  // ONLY if there's no LFS involved at all — every detection signal
+  // must be cold. If ANY signal is hot, refuse: we'd rather block a
+  // legitimate non-LFS push that triggered a false positive than
+  // silently let LFS objects leak to GitHub LFS and blow the team's
+  // quota (the failure Trent's team has hit multiple times).
+  if (!repoUsesLfs) {
     return { endpoint: null, lfsObjectsInWorkingTree: 0, refuseReason: null }
   }
   return {
     endpoint: null,
     lfsObjectsInWorkingTree,
     refuseReason:
-      `This project has ${lfsObjectsInWorkingTree} LFS-tracked file` +
-      `${lfsObjectsInWorkingTree === 1 ? '' : 's'} that would be uploaded ` +
-      `by this publish, but it isn't registered on your team server. ` +
-      `FrameCAD doesn't push LFS objects to GitHub — they consume GitHub's ` +
+      `This project uses LFS but isn't registered on your team server, so ` +
+      `FrameCAD has nowhere safe to send the LFS objects.\n\n` +
+      `Detected: ${lfsObjectsInWorkingTree} LFS pointer${lfsObjectsInWorkingTree === 1 ? '' : 's'}` +
+      `${lfsConfiguredInRepo ? ' + LFS configured in .gitattributes / filter config' : ''}.\n\n` +
+      `FrameCAD never pushes LFS objects to GitHub — they consume GitHub's ` +
       `metered LFS quota and block the whole team when it runs out.\n\n` +
       `Ask your admin to register this project at the team admin UI ` +
       `(Projects → Add), then publish again. If this is a legacy repo with ` +

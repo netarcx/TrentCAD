@@ -909,6 +909,97 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   )
 
+  // ── LFS connectivity test ───────────────────────────────────────────
+  //
+  // Mint a real JWT and hit Giftless's batch endpoint to surface the
+  // actual HTTP status + body. Saves spelunking through container
+  // logs when troubleshooting "Client error" surfaces git-lfs prints
+  // without specifics. Authed admin-only because it issues a write
+  // token (short-lived) and leaks the LFS endpoint structure to the
+  // caller.
+  app.post('/api/admin/test-lfs', async (req, reply) => {
+    const { lfsEnabled, mintLfsToken } = await import('../lfs.js')
+    const effectiveUrl = effectiveLfsUrl()
+    if (!lfsEnabled() || !effectiveUrl) {
+      return reply.code(503).send({
+        ok: false,
+        error: 'Self-hosted LFS is not configured. Set the LFS URL on Team Settings → Self-hosted LFS or via LFS_SERVER_URL.',
+      })
+    }
+    // Pick any registered project to scope the token. If there are
+    // none yet, use projectId=0 — Giftless will still process the
+    // batch request and tell us if auth is the problem (the request
+    // is a verify-only operation, so no actual upload happens).
+    const projectRow = getDb().prepare(
+      `SELECT id FROM projects ORDER BY id ASC LIMIT 1`
+    ).get() as { id: number } | undefined
+    const projectId = projectRow?.id ?? 0
+    const { token } = mintLfsToken({
+      memberId: req.member!.id,
+      displayName: req.member!.displayName,
+      projectId,
+      writable: false,
+    })
+    const batchUrl = `${effectiveUrl.replace(/\/+$/, '')}/framecad/${projectId}/objects/batch`
+    // A minimal valid batch request — `download` operation on a single
+    // dummy oid. Giftless responds with object metadata OR an auth
+    // failure; either way we surface the verbatim HTTP status + body
+    // so the admin can diagnose.
+    const body = JSON.stringify({
+      operation: 'download',
+      transfers: ['basic'],
+      objects: [{
+        // SHA-256 of empty string — Giftless will look it up and
+        // return 404 if not found, which is FINE: it proves the
+        // auth handshake worked. A 401/403 means auth failed.
+        oid: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+        size: 0,
+      }],
+    })
+    let status = 0
+    let respBody = ''
+    let errMsg: string | null = null
+    try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 10000)
+      try {
+        const res = await fetch(batchUrl, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/vnd.git-lfs+json',
+            'Content-Type': 'application/vnd.git-lfs+json',
+            'User-Agent': 'framecad-server-lfs-test',
+          },
+          body,
+        })
+        status = res.status
+        respBody = (await res.text()).slice(0, 2048)
+      } finally {
+        clearTimeout(timer)
+      }
+    } catch (err) {
+      errMsg = (err as Error).message || 'network error'
+    }
+    // Interpret the result for the admin. Giftless returns 200 (with
+    // an "object not found" entry inside) when auth works but the
+    // requested oid doesn't exist — that's a SUCCESS for our purposes.
+    let verdict: 'ok' | 'unreachable' | 'auth-failed' | 'misconfigured' | 'unknown'
+    if (errMsg) verdict = 'unreachable'
+    else if (status === 200) verdict = 'ok'
+    else if (status === 401 || status === 403) verdict = 'auth-failed'
+    else if (status === 404 || status >= 500) verdict = 'misconfigured'
+    else verdict = 'unknown'
+    return {
+      verdict,
+      status,
+      batchUrl,
+      tokenScope: `framecad/${projectId}`,
+      body: respBody,
+      networkError: errMsg,
+    }
+  })
+
   // ── Container logs ─────────────────────────────────────────────────
   //
   // Admin-only snapshot endpoint that reads the last N lines of a

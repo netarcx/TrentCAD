@@ -59,6 +59,17 @@ export default function TeamSettings() {
   // SSO + per-repo access) covers things the team token might miss.
   const [hasMyGhPat, setHasMyGhPat] = useState(false)
   const [myPatInput, setMyPatInput] = useState('')
+  // LFS test-connection state. `null` = never tested this session;
+  // populated by the Test button with the verbatim Giftless response.
+  const [lfsTest, setLfsTest] = useState<null | {
+    verdict: 'ok' | 'unreachable' | 'auth-failed' | 'misconfigured' | 'unknown'
+    status: number
+    batchUrl: string
+    tokenScope: string
+    body: string
+    networkError: string | null
+  }>(null)
+  const [lfsTesting, setLfsTesting] = useState(false)
   // Theme picker — client-only setting, persisted to localStorage.
   // The choice 'system' follows the OS prefers-color-scheme.
   const [theme, setThemeState] = useState<ThemeChoice>(getStoredTheme())
@@ -389,6 +400,74 @@ export default function TeamSettings() {
             Heads up: localhost / 127.0.0.1 only works on the same machine as
             the server. Use the host's LAN IP or DNS name so students' Windows
             boxes can reach it.
+          </div>
+        )}
+        <div style={{ marginTop: 14, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button
+            className="secondary"
+            disabled={lfsTesting}
+            onClick={async () => {
+              setLfsTesting(true)
+              setLfsTest(null)
+              try {
+                const res = await api<typeof lfsTest extends null ? never : NonNullable<typeof lfsTest>>(
+                  'POST', '/api/admin/test-lfs',
+                )
+                setLfsTest(res as NonNullable<typeof lfsTest>)
+              } catch (err) {
+                setLfsTest({
+                  verdict: 'unreachable',
+                  status: 0,
+                  batchUrl: '',
+                  tokenScope: '',
+                  body: '',
+                  networkError: (err as ApiError).message,
+                })
+              } finally {
+                setLfsTesting(false)
+              }
+            }}
+          >
+            {lfsTesting ? 'Testing…' : 'Test LFS connection'}
+          </button>
+          <span className="hint" style={{ margin: 0 }}>
+            Server-to-server: mints a real JWT, hits the batch endpoint, shows the actual response.
+          </span>
+        </div>
+        {lfsTest && (
+          <div
+            className="hint"
+            style={{
+              marginTop: 10,
+              padding: 10,
+              borderRadius: 'var(--radius)',
+              background: 'var(--bg-input)',
+              border: `1px solid ${lfsTest.verdict === 'ok' ? 'var(--green)' : 'var(--red)'}`,
+            }}
+          >
+            <div style={{ marginBottom: 6 }}>
+              <strong style={{ color: lfsTest.verdict === 'ok' ? 'var(--green)' : 'var(--red)' }}>
+                {lfsTest.verdict === 'ok' && '✓ LFS server reachable + JWT auth working'}
+                {lfsTest.verdict === 'auth-failed' && '✗ JWT auth failed (401/403) — LFS_JWT_SECRET likely mismatched between framecad-server and the giftless container. `docker compose down && up -d` to re-sync .env.'}
+                {lfsTest.verdict === 'unreachable' && '✗ Couldn\'t reach the LFS server at all — check the URL, DNS, and reverse proxy.'}
+                {lfsTest.verdict === 'misconfigured' && '✗ LFS server responded but with an unexpected status — likely a Giftless config or storage-path issue. Check Logs → LFS server (Giftless).'}
+                {lfsTest.verdict === 'unknown' && '? Unexpected response shape.'}
+              </strong>
+            </div>
+            <div className="mono" style={{ fontSize: 12 }}>
+              <div>HTTP: <strong>{lfsTest.status || '(no response)'}</strong></div>
+              <div>URL: {lfsTest.batchUrl || '(none)'}</div>
+              <div>Scope: {lfsTest.tokenScope || '(none)'}</div>
+              {lfsTest.networkError && <div>Network: {lfsTest.networkError}</div>}
+              {lfsTest.body && (
+                <details style={{ marginTop: 6 }}>
+                  <summary>Response body ({lfsTest.body.length} chars)</summary>
+                  <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', margin: '6px 0 0 0', fontSize: 11 }}>
+                    {lfsTest.body}
+                  </pre>
+                </details>
+              )}
+            </div>
           </div>
         )}
       </div>

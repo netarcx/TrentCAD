@@ -1,58 +1,16 @@
 !include "LogicLib.nsh"
 !include "nsDialogs.nsh"
 
-; ── Installation options dialog ─────────────────────────────────────
-; Custom nsDialogs page injected right after the Welcome page. Two
-; checkboxes — desktop icon + taskbar pin — both checked by default,
-; both honored in customInstall below.
-;
-; Why a custom page rather than the standard MUI finish-page slots:
-; MUI2's finish page exposes one extra checkbox (SHOWREADME) on top
-; of electron-builder's "Run FrameCAD" toggle, and we need two
-; choices. A custom nsDialogs page also runs BEFORE install so the
-; user's selections are known when customInstall fires.
-Var FCADOptionsDialog
-Var FCADDesktopCheckbox
-Var FCADTaskbarCheckbox
-Var FCADDesktopChosen
-Var FCADTaskbarChosen
-
-!macro customWelcomePage
-  ; Keep the standard welcome page, then chain our options page.
-  !insertmacro MUI_PAGE_WELCOME
-  Page custom fcadOptionsShow fcadOptionsLeave
-!macroend
-
-Function fcadOptionsShow
-  ; MUI_HEADER_TEXT used to live here but electron-builder pulls
-  ; our installer.nsh BEFORE the MUI2 macros are defined — NSIS
-  ; couldn't find the macro at parse time and aborted the Windows
-  ; build (v3.0.20 → 3.0.25 had no .exe attached for this reason).
-  ; The in-page label below already explains what's going on; the
-  ; page header just falls back to NSIS defaults which is fine.
-  nsDialogs::Create 1018
-  Pop $FCADOptionsDialog
-  ${If} $FCADOptionsDialog == error
-    Abort
-  ${EndIf}
-
-  ${NSD_CreateLabel} 0 0 100% 24u "Installation options for FrameCAD. The desktop icon and taskbar pin are checked by default — uncheck anything you don't want."
-
-  ${NSD_CreateCheckbox} 0 32u 100% 12u "&Create a desktop icon"
-  Pop $FCADDesktopCheckbox
-  ${NSD_Check} $FCADDesktopCheckbox
-
-  ${NSD_CreateCheckbox} 0 48u 100% 12u "&Pin FrameCAD to the taskbar"
-  Pop $FCADTaskbarCheckbox
-  ${NSD_Check} $FCADTaskbarCheckbox
-
-  nsDialogs::Show
-FunctionEnd
-
-Function fcadOptionsLeave
-  ${NSD_GetState} $FCADDesktopCheckbox $FCADDesktopChosen
-  ${NSD_GetState} $FCADTaskbarCheckbox $FCADTaskbarChosen
-FunctionEnd
+; A previous version of this file tried to inject a custom nsDialogs
+; page (desktop-icon + taskbar-pin checkboxes) via `!macro
+; customWelcomePage` — but electron-builder has no `customWelcomePage`
+; hook, so the macro was never inserted, the Page declaration never
+; ran, and NSIS marked the page functions as unreferenced. That dead
+; code tripped `warning 6010` which electron-builder treats as fatal,
+; killing every Windows build from v3.0.20 through v3.0.27. The page
+; is now removed; the desktop shortcut + taskbar pin happen
+; unconditionally in customInstall below (matches the v3.0.20+
+; behavior anyway since the choice never reached customInstall).
 
 ; Override electron-builder's built-in "app is running" check — we handle
 ; it ourselves in customInit by force-killing the lingering process.
@@ -187,22 +145,20 @@ FunctionEnd
     DetailPrint "GitHub CLI already installed."
   ${EndIf}
 
-  ; ── Apply the Options page choices ────────────────────────────────
-  ; Per-machine install runs elevated; we write the desktop shortcut
-  ; to the All Users desktop so every account on the box sees it.
-  ; SetShellVarContext stays "all" for the rest of the macro since
-  ; the uninstaller cleanup at the bottom also needs to find it.
+  ; ── Desktop shortcut + taskbar pin ────────────────────────────────
+  ; Unconditional now — see the header comment at the top of this file
+  ; for why the user-choice dialog was removed. Per-machine install
+  ; runs elevated, so the desktop shortcut goes to the All Users
+  ; desktop where every account sees it. SetShellVarContext stays
+  ; "all" for the rest of the macro since the uninstaller cleanup at
+  ; the bottom also needs to find it.
   SetShellVarContext all
 
-  ${If} $FCADDesktopChosen == ${BST_CHECKED}
-    DetailPrint "Creating desktop shortcut..."
-    CreateShortCut "$DESKTOP\FrameCAD.lnk" "$INSTDIR\FrameCAD.exe" "" "$INSTDIR\FrameCAD.exe" 0
-  ${EndIf}
+  DetailPrint "Creating desktop shortcut..."
+  CreateShortCut "$DESKTOP\FrameCAD.lnk" "$INSTDIR\FrameCAD.exe" "" "$INSTDIR\FrameCAD.exe" 0
 
-  ${If} $FCADTaskbarChosen == ${BST_CHECKED}
-    DetailPrint "Pinning FrameCAD to the taskbar..."
-    Call PinToTaskbar
-  ${EndIf}
+  DetailPrint "Pinning FrameCAD to the taskbar..."
+  Call PinToTaskbar
 !macroend
 
 ; Best-effort pin-to-taskbar via PowerShell + Shell.Application COM.

@@ -34,10 +34,11 @@ nsis:
   perMachine: true
   allowToChangeInstallationDirectory: true
   deleteAppDataOnUninstall: true
-  # The custom Options page in installer.nsh handles the desktop
-  # shortcut prompt itself, so we disable electron-builder's
-  # automatic shortcut creation. Without this flag the user would
-  # always get a desktop shortcut regardless of what they ticked.
+  # installer.nsh creates the desktop shortcut itself, under
+  # SetShellVarContext all → the All Users desktop, so every account
+  # on the box sees it. electron-builder's automatic shortcut goes to
+  # the current-user desktop instead, so without this flag we'd end
+  # up with two.
   createDesktopShortcut: false
   include: build/installer.nsh
 mac:

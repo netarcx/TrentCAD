@@ -5,6 +5,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force a release even when package.json version is unchanged (e.g. re-running a failed build)'
+        type: boolean
+        default: false
 
 env:
   # Opt every JS-based action (checkout, setup-node, setup-dotnet,
@@ -15,6 +20,41 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # Gate the entire build/release pipeline on a real version bump.
+  # Trent's convention is to bump package.json's patch digit on every
+  # push that should ship; this job enforces it so a stream of small
+  # commits doesn't trigger three full electron-builder matrices per
+  # push. Manual `workflow_dispatch` with `force=true` overrides the
+  # gate for re-runs of a failed build.
+  detect-bump:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: check
+        shell: bash
+        run: |
+          NEW=$(node -p "require('./package.json').version")
+          OLD=$(git show HEAD~1:package.json 2>/dev/null | node -e "let s=''; process.stdin.on('data',d=>s+=d).on('end',()=>{ try { console.log(JSON.parse(s).version) } catch { console.log('') } })" || echo "")
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "force=true → releasing v$NEW"
+          elif [ -z "$OLD" ]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "first commit (no previous package.json) → releasing v$NEW"
+          elif [ "$OLD" != "$NEW" ]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "version bumped: $OLD → $NEW → releasing"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "version unchanged ($NEW) → skipping release. Bump package.json + server/package.json to publish."
+          fi
+
   # Compute which platforms to build for this run. All three (Windows,
   # macOS, Linux) on every push and on manual dispatch — Trent's
   # production install base spans all three (Windows for the CAD
@@ -23,6 +63,8 @@ jobs:
   # we compute it dynamically here and let `release` consume it via
   # `fromJSON`.
   prepare-matrix:
+    needs: detect-bump
+    if: needs.detect-bump.outputs.release == 'true'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.compute.outputs.matrix }}
@@ -38,6 +80,8 @@ jobs:
   # before any matrix job starts, electron-builder's GET succeeds on
   # every job and they all happily upload assets to the same release.
   prepare-release:
+    needs: detect-bump
+    if: needs.detect-bump.outputs.release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -62,7 +106,8 @@ jobs:
           fi
 
   release:
-    needs: [prepare-matrix, prepare-release]
+    needs: [detect-bump, prepare-matrix, prepare-release]
+    if: needs.detect-bump.outputs.release == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
@@ -163,15 +208,15 @@ jobs:
           path: build/solidworks-addin/
           retention-days: 90
 
-  # Team server image — pushed to GitHub Container Registry on every
-  # main-branch build, tagged with the package.json version + `latest`.
+  # Team server image — pushed to GitHub Container Registry when the
+  # package.json version bumps, tagged with that version + `latest`.
   # Self-hosters pull this via `docker compose` or `docker run`.
-  # No `needs:` — server-image doesn't depend on the desktop matrix /
-  # release artifacts. It used to gate on `prepare-release` for purely
-  # ordering reasons (release artifacts first, then docker tag); now
-  # that prepare-release is disabled, gating here would skip
-  # server-image too. Reads the version directly off package.json.
+  # Only depends on detect-bump — independent of the desktop matrix
+  # so a Windows-build failure doesn't block the server image (and a
+  # server-image failure doesn't block the desktop installer).
   server-image:
+    needs: detect-bump
+    if: needs.detect-bump.outputs.release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -106,12 +106,33 @@ services:
       org.opencontainers.image.title: FrameCAD Team Server
       org.opencontainers.image.description: Self-hosted coordination server for FrameCAD desktop clients
 
+  # ── LFS bind-mount perms fixer ─────────────────────────────────────
+  # Giftless runs as UID 1000 inside its container but a freshly
+  # created `./data/lfs-objects` on the host is owned root:root 755.
+  # Giftless can read but not mkdir <project>/ — so every storage
+  # PUT crashes in `local_storage._create_path` with EACCES and the
+  # bind-mount stays empty. This one-shot busybox container chowns
+  # the mount to 1000:1000 then exits; giftless `depends_on` it with
+  # `service_completed_successfully` so it boots on a writeable
+  # directory every time, including the first `docker compose up`.
+  framecad-lfs-init:
+    image: busybox:latest
+    container_name: framecad-lfs-init
+    user: "0:0"
+    volumes:
+      - ./data/lfs-objects:/lfs-storage
+    command: ["sh", "-c", "chown -R 1000:1000 /lfs-storage && echo 'lfs-storage perms ready'"]
+    restart: "no"
+
   # ── Self-hosted Git-LFS ────────────────────────────────────────────
   # Giftless serves the LFS object store for every project the team
   # creates through FrameCAD, so CAD binaries never touch GitHub LFS
   # (which charges per GB / per bandwidth). Auth is JWT signed by the
   # framecad-server above; both sides share LFS_JWT_SECRET from .env.
   framecad-lfs:
+    depends_on:
+      framecad-lfs-init:
+        condition: service_completed_successfully
     # Pin a specific version rather than `:latest` — the `:latest`
     # tag on datopian/giftless hasn't been updated since July 2021
     # and ships an ancient Python 3.7 image with a broken uwsgi.ini

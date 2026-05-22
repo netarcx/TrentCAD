@@ -21,6 +21,27 @@ interface TeamRow {
   welcomeMessage: string
   lfsUrl: string | null
   updatedAt: number
+  // v11 + v12 columns
+  gitHubPat?: string | null
+  maxFileSizeMb?: number
+  lfsAutotrackThresholdMb?: number
+  blockedExtensionsJson?: string
+  lfsTokenTtlMinutes?: number
+  quotaGraceHours?: number
+}
+
+/** Parse the JSON-encoded blockedExtensions column with a safety
+ *  net: an empty / corrupt value falls back to the v12 default
+ *  list so a botched manual DB edit doesn't blank the policy. */
+function parseBlockedExts(raw: string | undefined): string[] {
+  if (!raw) return []
+  try {
+    const v = JSON.parse(raw)
+    if (!Array.isArray(v)) return []
+    return v.filter((x): x is string => typeof x === 'string')
+  } catch {
+    return []
+  }
 }
 
 /**
@@ -265,9 +286,7 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
   })
 
   app.get('/api/team', async () => {
-    const team = getDb().prepare(`SELECT * FROM team WHERE id = 1`).get() as TeamRow & {
-      gitHubPat: string | null
-    }
+    const team = getDb().prepare(`SELECT * FROM team WHERE id = 1`).get() as TeamRow
     return {
       name: team.name,
       gitHubOrg: team.gitHubOrg,
@@ -285,6 +304,18 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
       // see it too (harmless — they'd know if private-repo clone
       // worked or not from the actual auth result).
       hasGitHubPat: !!team.gitHubPat,
+      // v12: tunable per-team policies. Desktop reads these on every
+      // snapshot refresh and uses them in place of the historical
+      // hardcoded constants. Defaults applied at the migration level
+      // match the old constants exactly, so a fresh deploy behaves
+      // byte-identically until an admin edits something.
+      policies: {
+        maxFileSizeMb: team.maxFileSizeMb ?? 256,
+        lfsAutotrackThresholdMb: team.lfsAutotrackThresholdMb ?? 50,
+        blockedExtensions: parseBlockedExts(team.blockedExtensionsJson),
+        lfsTokenTtlMinutes: team.lfsTokenTtlMinutes ?? 15,
+        quotaGraceHours: team.quotaGraceHours ?? 24,
+      },
     }
   })
 
@@ -365,7 +396,20 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
       // window the token drops to read-only. Cleaning up + dropping
       // back under the cap clears the timestamp so a future cross
       // gets its own fresh grace.
-      const GRACE_MS = 24 * 60 * 60 * 1000
+      // Grace window pulled from team policies (migration v12 default
+      // = 24 hours). Looked up per-request so an admin tweak in
+      // Settings → Limits & Policies takes effect on the very next
+      // token request, no restart needed.
+      const graceHoursRow = getDb().prepare(
+        `SELECT quotaGraceHours FROM team WHERE id = 1`
+      ).get() as { quotaGraceHours: number | null } | undefined
+      const graceHours =
+        (graceHoursRow?.quotaGraceHours != null
+          && graceHoursRow.quotaGraceHours >= 0
+          && graceHoursRow.quotaGraceHours <= 168)
+          ? graceHoursRow.quotaGraceHours
+          : 24
+      const GRACE_MS = graceHours * 60 * 60 * 1000
       const now = Date.now()
       const isOverCap = project.quotaBytes !== null
         && currentBytes >= project.quotaBytes

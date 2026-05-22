@@ -292,6 +292,32 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE team ADD COLUMN gitHubPat TEXT;
   `,
+  // v12: tunable policies that used to be hardcoded constants in the
+  // desktop client + server source. Moving them server-side means
+  // an admin can change "max file size" or "blocked extensions"
+  // from the Team Settings page without cutting a new desktop
+  // release. Defaults match the values the constants had on the
+  // day this migration shipped so existing deployments are
+  // byte-identical until an admin edits something.
+  //
+  // - maxFileSizeMb: hard refusal at publish time. Range 10-2048.
+  // - lfsAutotrackThresholdMb: files above this auto-route to LFS
+  //   via the publish-time self-heal. Must be < maxFileSizeMb.
+  // - blockedExtensionsJson: JSON array of extensions (no dot) the
+  //   publish guard refuses. Default mirrors src/main/git.ts's
+  //   BLOCKED_EXTS set as of v3.0.16.
+  // - lfsTokenTtlMinutes: lifetime of the JWT clients send to
+  //   Giftless. Range 5-120. Bumping helps slow uploads complete
+  //   on one token; lowering tightens the security window.
+  // - quotaGraceHours: how long a project can keep publishing
+  //   after crossing its storage cap. Range 0-168 (one week).
+  `
+  ALTER TABLE team ADD COLUMN maxFileSizeMb INTEGER NOT NULL DEFAULT 256;
+  ALTER TABLE team ADD COLUMN lfsAutotrackThresholdMb INTEGER NOT NULL DEFAULT 50;
+  ALTER TABLE team ADD COLUMN blockedExtensionsJson TEXT NOT NULL DEFAULT '["mp4","mov","avi","mkv","wmv","webm","m4v","flv","mpg","mpeg","3gp","mp3","wav","flac","aac","m4a","ogg","opus","rar","7z","tar","gz","tgz","bz2","xz","txz","iso","lz","lzma","z","exe","msi","dll","dmg","pkg","app","apk","deb","rpm","bat","cmd","com","ps1","sh","run","bin","url","webloc","desktop"]';
+  ALTER TABLE team ADD COLUMN lfsTokenTtlMinutes INTEGER NOT NULL DEFAULT 15;
+  ALTER TABLE team ADD COLUMN quotaGraceHours INTEGER NOT NULL DEFAULT 24;
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

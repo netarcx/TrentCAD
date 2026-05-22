@@ -23,10 +23,14 @@
 import { createHmac } from 'node:crypto'
 import { config } from './config.js'
 
-/** Lifetime of a minted LFS token. Long enough that a single `git lfs
- *  push` of a big assembly finishes inside the window, short enough
- *  that a stolen token is useless once the period ends. */
-const TOKEN_TTL_SECONDS = 15 * 60
+/** Default lifetime of a minted LFS token when the team row has no
+ *  override. Tunable per-team via Settings → Limits & Policies →
+ *  LFS token TTL (range 5-120 min). Long enough that a single
+ *  `git lfs push` of a big assembly finishes inside the window,
+ *  short enough that a stolen token is useless once the period
+ *  ends. The mint function reads the team value on every call so
+ *  changes take effect on the very next token request. */
+const DEFAULT_TOKEN_TTL_SECONDS = 15 * 60
 
 /** True iff the operator wired LFS up via env vars. When false, the
  *  /api/lfs/* routes return 503 instead of pretending to work — better
@@ -71,8 +75,23 @@ export function mintLfsToken(args: {
   if (!config.lfsJwtSecret) {
     throw new Error('LFS_JWT_SECRET is not configured')
   }
+  // Read the team's tunable TTL each call so an admin tweak in
+  // Settings → Policies takes effect on the very next token request,
+  // no server restart needed. Lazy-import db.ts to avoid a circular
+  // dep at module init.
+  let ttlSeconds = DEFAULT_TOKEN_TTL_SECONDS
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getDb } = require('./db.js') as typeof import('./db.js')
+    const row = getDb().prepare(
+      `SELECT lfsTokenTtlMinutes FROM team WHERE id = 1`
+    ).get() as { lfsTokenTtlMinutes: number | null } | undefined
+    if (row?.lfsTokenTtlMinutes && row.lfsTokenTtlMinutes >= 5 && row.lfsTokenTtlMinutes <= 120) {
+      ttlSeconds = row.lfsTokenTtlMinutes * 60
+    }
+  } catch { /* migration not run yet — use default */ }
   const now = Math.floor(Date.now() / 1000)
-  const exp = now + TOKEN_TTL_SECONDS
+  const exp = now + ttlSeconds
 
   // Project scope must match the URL prefix the desktop will hit on
   // giftless: <lfs-url>/framecad/<id>/... Giftless reads the path as

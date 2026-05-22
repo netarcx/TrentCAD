@@ -299,6 +299,54 @@ export interface TeamConfig {
    *  desktop writes this into each project's `.lfsconfig` so all LFS
    *  traffic skips GitHub and lands on the team's own storage. */
   lfsUrl?: string
+  /** Tunable per-team policies that used to be hardcoded constants
+   *  in the desktop client. Server is the source of truth; the
+   *  desktop falls back to the constants below if the snapshot
+   *  isn't available (e.g. standalone mode). */
+  policies?: TeamPolicies
+}
+
+/**
+ * Per-team-server policy knobs. All values match the previous
+ * hardcoded constants on the day this shipped, so a fresh DB with
+ * no edits behaves byte-identically to the pre-policy versions.
+ */
+export interface TeamPolicies {
+  /** Hard refusal at publish time. Range 10–2048 MB. */
+  maxFileSizeMb: number
+  /** Files above this auto-route to LFS via the publish-time self-
+   *  heal. Must be < maxFileSizeMb. Range 1–maxFileSizeMb-1. */
+  lfsAutotrackThresholdMb: number
+  /** File extensions (no leading dot, lowercase) refused at publish.
+   *  Empty list = no blacklist; existing built-in remains as the
+   *  default after migration v12. */
+  blockedExtensions: string[]
+  /** Lifetime of the JWT clients use to talk to Giftless. Range
+   *  5–120 min. Server-enforced; bumping helps slow uploads finish
+   *  on one token, lowering tightens the leak-window. */
+  lfsTokenTtlMinutes: number
+  /** How many hours a project can keep publishing after crossing
+   *  its storage cap before writes are blocked. Range 0–168 (one
+   *  week). Server-enforced too. */
+  quotaGraceHours: number
+}
+
+/** Hardcoded fallbacks for desktop in standalone mode (not enrolled
+ *  with a team server). Values must match the historical constants
+ *  AND the migration v12 server-side defaults. */
+export const DEFAULT_TEAM_POLICIES: TeamPolicies = {
+  maxFileSizeMb: 256,
+  lfsAutotrackThresholdMb: 50,
+  blockedExtensions: [
+    'mp4', 'mov', 'avi', 'mkv', 'wmv', 'webm', 'm4v', 'flv', 'mpg', 'mpeg', '3gp',
+    'mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg', 'opus',
+    'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'txz', 'iso', 'lz', 'lzma', 'z',
+    'exe', 'msi', 'dll', 'dmg', 'pkg', 'app', 'apk', 'deb', 'rpm',
+    'bat', 'cmd', 'com', 'ps1', 'sh', 'run', 'bin',
+    'url', 'webloc', 'desktop',
+  ],
+  lfsTokenTtlMinutes: 15,
+  quotaGraceHours: 24,
 }
 
 /**

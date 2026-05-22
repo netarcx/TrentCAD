@@ -10,7 +10,7 @@ import { loadManifest, syncManifest, annotatePartNumbers } from './parts'
 import { loadAllMeta, annotateMeta } from './meta'
 import { getGitHubToken } from './auth'
 import { getBuildDefaultPrefix, getBuildDefaultTeamName, getBuildDefaultIssueRepo } from './branding'
-import { lookupProjectByRemote, getLfsToken } from './teamServer'
+import { lookupProjectByRemote, getLfsToken, getPolicies } from './teamServer'
 
 // Large binary or text-based CAD files that go through Git LFS. `-text` keeps
 // git from running line-ending conversion on the file; `merge=lfs` uses the
@@ -1543,18 +1543,19 @@ export async function publish(
     // commit; without this we'd happily push that bad commit on top of
     // new work).
     const projectDir = getProjectPath()
-    // 50 MB triggers the LFS self-heal (a non-LFS-tracked file at this
-    // size gets routed through LFS automatically — see below). 256 MB
-    // is the HARD cap regardless of LFS status: GitHub's 100 MB
-    // per-file wire limit doesn't apply because every file at this
-    // scale is LFS-tracked by then (the self-heal above routes it),
-    // and LFS objects upload to the self-hosted Giftless server
-    // which doesn't enforce GitHub's ceiling. The 256 MB ceiling is
-    // there to keep individual sub-assembly checkpoints reasonable —
-    // a single .sldasm above this is almost always a top-level robot
-    // assembly that should be split into subsystems.
-    const WARN_BYTES = 50 * 1024 * 1024
-    const HARD_BYTES = 256 * 1024 * 1024
+    // Thresholds come from team policies (Settings → Limits &
+    // Policies on the admin UI). DEFAULT_TEAM_POLICIES holds the
+    // historical 50 MB / 256 MB values for solo / not-enrolled
+    // mode + as a safety net when the snapshot is missing or older
+    // server versions don't return a `policies` block.
+    //
+    // WARN_BYTES triggers the LFS self-heal — files this size get
+    // auto-routed through LFS via `.gitattributes`. HARD_BYTES is
+    // the absolute refusal: anything above is split-into-sub-
+    // assemblies advice, served via the error message below.
+    const policies = getPolicies()
+    const WARN_BYTES = policies.lfsAutotrackThresholdMb * 1024 * 1024
+    const HARD_BYTES = policies.maxFileSizeMb * 1024 * 1024
 
     const candidatePaths = new Set<string>(files)
     try {
@@ -1656,7 +1657,7 @@ export async function publish(
       }
     }
 
-    // ── 256 MB hard cap ───────────────────────────────────────────
+    // ── Hard size cap ─────────────────────────────────────────────
     // Anything above the WARN threshold has been routed through LFS
     // by the self-heal above. Past HARD_BYTES we refuse the publish
     // regardless of LFS tracking — files this large are almost
@@ -1668,9 +1669,10 @@ export async function publish(
         `  - ${s.path} (${(s.size / 1024 / 1024).toFixed(0)} MB)`
       ).join('\n')
       const msg =
-        `${oversized.length} file(s) are over the 256 MB per-file limit:\n\n${list}\n\n` +
-        `FrameCAD caps individual files at 256 MB. Files this large usually ` +
-        `mean a top-level SolidWorks assembly that should be split into ` +
+        `${oversized.length} file(s) are over the ${policies.maxFileSizeMb} MB per-file limit:\n\n${list}\n\n` +
+        `FrameCAD caps individual files at ${policies.maxFileSizeMb} MB ` +
+        `(configurable in admin Settings → Limits & Policies). Files this large ` +
+        `usually mean a top-level SolidWorks assembly that should be split into ` +
         `sub-assemblies (use the design tree to identify subsystems and Save ` +
         `As → New Document for each), or a non-CAD file that shouldn't be in ` +
         `the repo (zip / installer / video).`
@@ -1686,24 +1688,16 @@ export async function publish(
     // wastes bandwidth + bloats history. Extension match is
     // case-insensitive against the trailing dot-segment.
     //
-    // NOT blocked: images (jpg/png/tif/...) and zip. Vendor STEP
-    // packages almost always ship as `*-STEP.zip`, and teams keep
-    // reference datasheet images / product photos / logos next to
-    // the parts they describe. The 256 MB per-file cap above is the
-    // backstop against accidental binary bloat.
-    const BLOCKED_EXTS = new Set<string>([
-      // Video
-      'mp4', 'mov', 'avi', 'mkv', 'wmv', 'webm', 'm4v', 'flv', 'mpg', 'mpeg', '3gp',
-      // Audio
-      'mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg', 'opus',
-      // Niche archives (zip stays allowed for vendor STEP packages)
-      'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'txz', 'iso', 'lz', 'lzma', 'z',
-      // Executables / installers
-      'exe', 'msi', 'dll', 'dmg', 'pkg', 'app', 'apk', 'deb', 'rpm',
-      'bat', 'cmd', 'com', 'ps1', 'sh', 'run', 'bin',
-      // URL shortcuts (browser-saved links, easy to drop in by accident)
-      'url', 'webloc', 'desktop',
-    ])
+    // Blocklist is server-controlled (admin Settings → Limits &
+    // Policies); the values seeded by migration v12 match the
+    // historical built-in list. Default explicitly does NOT include
+    // images or zip — vendor STEP packages ship as `*-STEP.zip`,
+    // teams keep reference datasheet images next to the parts they
+    // describe. The per-file size cap above is the actual backstop
+    // against accidental binary bloat.
+    const BLOCKED_EXTS = new Set<string>(
+      policies.blockedExtensions.map(e => e.toLowerCase())
+    )
     const blacklisted = sizes
       .map(s => ({ path: s.path, ext: path.extname(s.path).replace(/^\./, '').toLowerCase() }))
       .filter(s => s.ext && BLOCKED_EXTS.has(s.ext))

@@ -4,6 +4,14 @@ import { api, ApiError } from '../api'
 import { clearSession } from '../auth'
 import { getStoredTheme, setStoredTheme, type ThemeChoice } from '../theme'
 
+interface TeamPolicies {
+  maxFileSizeMb: number
+  lfsAutotrackThresholdMb: number
+  blockedExtensions: string[]
+  lfsTokenTtlMinutes: number
+  quotaGraceHours: number
+}
+
 interface Team {
   name: string
   gitHubOrg: string
@@ -11,6 +19,7 @@ interface Team {
   welcomeMessage: string
   lfsUrl: string
   hasGitHubPat: boolean
+  policies?: TeamPolicies
 }
 
 // Reasonable client-side validation for the LFS URL. Catches the
@@ -29,6 +38,16 @@ export default function TeamSettings() {
   // input shows "" by default; the user can leave it blank to keep
   // the existing token or type a new one to replace it.
   const [patInput, setPatInput] = useState('')
+  // Policy form state. Mirrors the team.policies block but stores the
+  // blockedExtensions as a comma-separated string for the textarea —
+  // we round-trip via splitOnCommas() on save.
+  const [policyForm, setPolicyForm] = useState({
+    maxFileSizeMb: 256,
+    lfsAutotrackThresholdMb: 50,
+    blockedExtensionsCsv: '',
+    lfsTokenTtlMinutes: 15,
+    quotaGraceHours: 24,
+  })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
@@ -44,7 +63,21 @@ export default function TeamSettings() {
 
   useEffect(() => {
     api<Team>('GET', '/api/team')
-      .then(setTeam)
+      .then(t => {
+        setTeam(t)
+        // Hydrate the policy form from the server response. Use
+        // sensible defaults for any missing field (older server
+        // versions that don't return policies).
+        if (t.policies) {
+          setPolicyForm({
+            maxFileSizeMb: t.policies.maxFileSizeMb ?? 256,
+            lfsAutotrackThresholdMb: t.policies.lfsAutotrackThresholdMb ?? 50,
+            blockedExtensionsCsv: (t.policies.blockedExtensions ?? []).join(', '),
+            lfsTokenTtlMinutes: t.policies.lfsTokenTtlMinutes ?? 15,
+            quotaGraceHours: t.policies.quotaGraceHours ?? 24,
+          })
+        }
+      })
       .catch(err => setError((err as ApiError).message))
   }, [])
 
@@ -59,24 +92,67 @@ export default function TeamSettings() {
       // We strip `hasGitHubPat` (server-computed boolean, not editable)
       // and only include `gitHubPat` when the user typed something
       // new (empty input = keep existing token, don't clobber).
-      const { hasGitHubPat: _hasPat, ...rest } = team
-      const payload: Record<string, string> = {
+      const { hasGitHubPat: _hasPat, policies: _policies, ...rest } = team
+      const payload: Record<string, unknown> = {
         ...rest,
         lfsUrl: team.lfsUrl.trim().replace(/\/+$/, ''),
       }
       if (patInput.trim() !== '') payload.gitHubPat = patInput.trim()
-      if (payload.lfsUrl && !LFS_URL_REGEX.test(payload.lfsUrl)) {
+      if ((payload.lfsUrl as string) && !LFS_URL_REGEX.test(payload.lfsUrl as string)) {
         setError('LFS URL must be a plain http:// or https:// URL (no quotes, spaces, or angle brackets).')
         return
       }
+      // Range-validate policies client-side so the user sees a
+      // friendlier error than the server's 400 echo. Server runs
+      // the same checks (these are belt-and-suspenders).
+      if (policyForm.maxFileSizeMb < 10 || policyForm.maxFileSizeMb > 2048) {
+        setError('Max file size must be between 10 and 2048 MB.')
+        return
+      }
+      if (policyForm.lfsAutotrackThresholdMb < 1
+          || policyForm.lfsAutotrackThresholdMb >= policyForm.maxFileSizeMb) {
+        setError('Auto-LFS threshold must be ≥ 1 MB and strictly less than Max file size.')
+        return
+      }
+      if (policyForm.lfsTokenTtlMinutes < 5 || policyForm.lfsTokenTtlMinutes > 120) {
+        setError('LFS token TTL must be between 5 and 120 minutes.')
+        return
+      }
+      if (policyForm.quotaGraceHours < 0 || policyForm.quotaGraceHours > 168) {
+        setError('Quota grace window must be between 0 and 168 hours.')
+        return
+      }
+      // Parse the CSV into a clean array — split on commas/spaces/
+      // newlines, strip leading dots, lowercase, dedupe. Server
+      // re-validates per-entry against [a-z0-9]+ so any junk hits
+      // a 400 response (which would surface in the catch below).
+      const blockedExtensions = Array.from(new Set(
+        policyForm.blockedExtensionsCsv
+          .split(/[\s,]+/)
+          .map(s => s.trim().replace(/^\./, '').toLowerCase())
+          .filter(Boolean)
+      ))
+      payload.maxFileSizeMb = policyForm.maxFileSizeMb
+      payload.lfsAutotrackThresholdMb = policyForm.lfsAutotrackThresholdMb
+      payload.blockedExtensions = blockedExtensions
+      payload.lfsTokenTtlMinutes = policyForm.lfsTokenTtlMinutes
+      payload.quotaGraceHours = policyForm.quotaGraceHours
+
       await api('PATCH', '/api/admin/team', payload)
       // Update local team state: cleaned lfsUrl + hasGitHubPat
       // reflects what we just sent. Wipe the PAT input on success
       // so a re-save doesn't accidentally re-send the same token.
       setTeam({
         ...team,
-        lfsUrl: payload.lfsUrl,
+        lfsUrl: payload.lfsUrl as string,
         hasGitHubPat: patInput.trim() !== '' ? true : team.hasGitHubPat,
+        policies: {
+          maxFileSizeMb: policyForm.maxFileSizeMb,
+          lfsAutotrackThresholdMb: policyForm.lfsAutotrackThresholdMb,
+          blockedExtensions,
+          lfsTokenTtlMinutes: policyForm.lfsTokenTtlMinutes,
+          quotaGraceHours: policyForm.quotaGraceHours,
+        },
       })
       if (patInput.trim() !== '') setPatInput('')
       setStatus('Saved. Connected clients pick this up on their next sync.')
@@ -208,6 +284,92 @@ export default function TeamSettings() {
         <button className="primary" onClick={save} disabled={busy}>
           {busy ? 'Saving…' : 'Save changes'}
         </button>
+      </div>
+
+      <div className="card">
+        <h3>Limits &amp; Policies</h3>
+        <div className="hint">
+          Values used to be hardcoded in the desktop client — moving them
+          here means tweaks take effect on every client's next snapshot
+          refresh without cutting a new release. All ranges are server-
+          enforced; bad values are rejected at save time.
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <label>Max file size (MB)</label>
+            <input
+              type="number"
+              min="10"
+              max="2048"
+              step="1"
+              value={policyForm.maxFileSizeMb}
+              onChange={e => setPolicyForm({ ...policyForm, maxFileSizeMb: Number.parseInt(e.target.value, 10) || 0 })}
+            />
+            <div className="hint" style={{ marginTop: 4 }}>
+              Hard refusal at publish. Range 10–2048.
+            </div>
+          </div>
+          <div>
+            <label>Auto-LFS threshold (MB)</label>
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={policyForm.lfsAutotrackThresholdMb}
+              onChange={e => setPolicyForm({ ...policyForm, lfsAutotrackThresholdMb: Number.parseInt(e.target.value, 10) || 0 })}
+            />
+            <div className="hint" style={{ marginTop: 4 }}>
+              Files larger than this auto-route to LFS. Must be &lt; max.
+            </div>
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <label>LFS token TTL (minutes)</label>
+            <input
+              type="number"
+              min="5"
+              max="120"
+              step="1"
+              value={policyForm.lfsTokenTtlMinutes}
+              onChange={e => setPolicyForm({ ...policyForm, lfsTokenTtlMinutes: Number.parseInt(e.target.value, 10) || 0 })}
+            />
+            <div className="hint" style={{ marginTop: 4 }}>
+              Lifetime of LFS upload tokens. Range 5–120.
+            </div>
+          </div>
+          <div>
+            <label>Quota grace window (hours)</label>
+            <input
+              type="number"
+              min="0"
+              max="168"
+              step="1"
+              value={policyForm.quotaGraceHours}
+              onChange={e => setPolicyForm({ ...policyForm, quotaGraceHours: Number.parseInt(e.target.value, 10) || 0 })}
+            />
+            <div className="hint" style={{ marginTop: 4 }}>
+              Hours a project can publish over its storage cap. Range 0–168.
+            </div>
+          </div>
+        </div>
+        <label>Blocked file extensions</label>
+        <textarea
+          rows={3}
+          value={policyForm.blockedExtensionsCsv}
+          onChange={e => setPolicyForm({ ...policyForm, blockedExtensionsCsv: e.target.value })}
+          placeholder="exe, mp4, mov, rar, 7z, …"
+        />
+        <div className="hint" style={{ marginTop: 4 }}>
+          Comma- or space-separated. No leading dots. Default refuses videos /
+          audio / executables / niche archives. Images and zip are explicitly
+          allowed (vendor STEP packages ship as .zip).
+        </div>
+        <div style={{ marginTop: 14 }}>
+          <button className="primary" onClick={save} disabled={busy}>
+            {busy ? 'Saving…' : 'Save policies'}
+          </button>
+        </div>
       </div>
 
       <div className="card">

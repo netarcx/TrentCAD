@@ -963,9 +963,16 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
      *  on behalf of admins. Empty string clears it. Audit logs only
      *  record set/clear, never the value. */
     gitHubPat?: string
+    // v12 policy knobs — all range-validated below, see migration v12
+    // for the rationale and defaults.
+    maxFileSizeMb?: number
+    lfsAutotrackThresholdMb?: number
+    blockedExtensions?: string[]
+    lfsTokenTtlMinutes?: number
+    quotaGraceHours?: number
   } }>('/api/admin/team', async (req, reply) => {
     const updates: string[] = []
-    const values: Array<string | null> = []
+    const values: Array<string | number | null> = []
     let patChanged: 'set' | 'cleared' | null = null
     for (const field of [
       'name', 'gitHubOrg', 'projectPrefix', 'welcomeMessage', 'lfsUrl', 'gitHubPat',
@@ -1006,6 +1013,81 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
           values.push(raw)
         }
       }
+    }
+
+    // v12 policy knobs. Range-validate each before persisting; pull
+    // the threshold/max-size pair together so we can enforce
+    // threshold < maxSize as one atomic decision rather than
+    // sequentially.
+    const maxSizeReq = req.body?.maxFileSizeMb
+    const thresholdReq = req.body?.lfsAutotrackThresholdMb
+    if (typeof maxSizeReq === 'number') {
+      if (!Number.isInteger(maxSizeReq) || maxSizeReq < 10 || maxSizeReq > 2048) {
+        return reply.code(400).send({
+          error: 'maxFileSizeMb must be an integer between 10 and 2048.',
+        })
+      }
+      updates.push('maxFileSizeMb = ?')
+      values.push(maxSizeReq)
+    }
+    if (typeof thresholdReq === 'number') {
+      if (!Number.isInteger(thresholdReq) || thresholdReq < 1) {
+        return reply.code(400).send({
+          error: 'lfsAutotrackThresholdMb must be a positive integer.',
+        })
+      }
+      // Cross-check against the effective max-file-size (the value
+      // we're about to persist OR the current row's value if unchanged).
+      const currentMax = (getDb().prepare(
+        `SELECT maxFileSizeMb FROM team WHERE id = 1`
+      ).get() as { maxFileSizeMb: number } | undefined)?.maxFileSizeMb ?? 256
+      const effectiveMax = typeof maxSizeReq === 'number' ? maxSizeReq : currentMax
+      if (thresholdReq >= effectiveMax) {
+        return reply.code(400).send({
+          error: `lfsAutotrackThresholdMb (${thresholdReq}) must be less than maxFileSizeMb (${effectiveMax}).`,
+        })
+      }
+      updates.push('lfsAutotrackThresholdMb = ?')
+      values.push(thresholdReq)
+    }
+    if (Array.isArray(req.body?.blockedExtensions)) {
+      const cleaned: string[] = []
+      for (const ext of req.body!.blockedExtensions!) {
+        if (typeof ext !== 'string') continue
+        const lower = ext.trim().replace(/^\./, '').toLowerCase()
+        if (!lower) continue
+        // No dots, slashes, or anything that isn't a plausible
+        // filename extension. Refuse anything weird before it
+        // becomes a future support headache.
+        if (!/^[a-z0-9]+$/.test(lower)) {
+          return reply.code(400).send({
+            error: `blockedExtensions: "${ext}" is not a valid extension (alphanumeric only, no dots or slashes).`,
+          })
+        }
+        if (!cleaned.includes(lower)) cleaned.push(lower)
+      }
+      updates.push('blockedExtensionsJson = ?')
+      values.push(JSON.stringify(cleaned))
+    }
+    const ttlReq = req.body?.lfsTokenTtlMinutes
+    if (typeof ttlReq === 'number') {
+      if (!Number.isInteger(ttlReq) || ttlReq < 5 || ttlReq > 120) {
+        return reply.code(400).send({
+          error: 'lfsTokenTtlMinutes must be an integer between 5 and 120.',
+        })
+      }
+      updates.push('lfsTokenTtlMinutes = ?')
+      values.push(ttlReq)
+    }
+    const graceReq = req.body?.quotaGraceHours
+    if (typeof graceReq === 'number') {
+      if (!Number.isInteger(graceReq) || graceReq < 0 || graceReq > 168) {
+        return reply.code(400).send({
+          error: 'quotaGraceHours must be an integer between 0 and 168 (one week).',
+        })
+      }
+      updates.push('quotaGraceHours = ?')
+      values.push(graceReq)
     }
     if (updates.length === 0) return { success: true }
     updates.push('updatedAt = ?')

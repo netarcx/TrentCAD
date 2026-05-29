@@ -80,6 +80,19 @@ interface AppConfig {
     serverUrl: string
     token: string
   }
+  /**
+   * Google OAuth enrollment for the Drive storage backend. Set by
+   * `googleSignIn`; cleared by `googleSignOut`. We persist only the
+   * long-lived refresh token (plus a cached email/name for display) —
+   * access tokens are short-lived and re-minted on demand. Same
+   * reasoning as the team-server token above: the user already has
+   * full filesystem access, so local-at-rest hardening buys nothing.
+   */
+  googleAuth?: {
+    refreshToken: string
+    email?: string
+    name?: string
+  }
 }
 
 function getConfigPath(): string {
@@ -194,6 +207,41 @@ export async function setTeamServerSettings(
     config.teamServer = { serverUrl: settings.serverUrl, token: settings.token }
   } else {
     delete config.teamServer
+  }
+  await writeConfig(config)
+}
+
+export interface GoogleAuthSettings {
+  refreshToken: string
+  email?: string
+  name?: string
+}
+
+export async function getGoogleAuthSettings(): Promise<GoogleAuthSettings | null> {
+  const config = await readConfig()
+  const g = config.googleAuth
+  // Same defensive shape check as the team-server reader: a hand-edited
+  // or partially-written JSON could leave a non-string here, which the
+  // OAuth client would choke on. Treat anything malformed as "signed
+  // out" so the user is asked to re-auth instead of crashing main.
+  if (!g || typeof g.refreshToken !== 'string' || !g.refreshToken.trim()) {
+    return null
+  }
+  return { refreshToken: g.refreshToken, email: g.email, name: g.name }
+}
+
+export async function setGoogleAuthSettings(
+  settings: GoogleAuthSettings | null,
+): Promise<void> {
+  const config = await readConfig()
+  if (settings) {
+    config.googleAuth = {
+      refreshToken: settings.refreshToken,
+      email: settings.email,
+      name: settings.name,
+    }
+  } else {
+    delete config.googleAuth
   }
   await writeConfig(config)
 }

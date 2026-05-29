@@ -23,6 +23,8 @@ import {
 } from './global-admin'
 import { addRecentProject, getRecentProjects, getCachedBrowseConfig, setProjectPinned, removeRecentProject, resetAllAppState } from './config'
 import * as teamServer from './teamServer'
+import * as googleAuth from './google-auth'
+import * as driveProject from './drive-project'
 import { setRestProject, clearRestProject, stopRestServer, queuePendingCreate, setRestMainWindow } from './rest'
 import { getThumbnail, clearThumbnailCache } from './thumbnails'
 import type { ProjectConfig } from '@shared/types'

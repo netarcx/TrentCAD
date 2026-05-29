@@ -6,6 +6,16 @@ export interface ProjectConfig {
   /** When true, kept in the recent-projects list permanently and shown
    *  before unpinned entries on the Open Project picker. */
   pinned?: boolean
+  /** Storage backend for this project. 'git' (the historical default —
+   *  Git + LFS) or 'drive' (Google Drive). Absent = 'git' for any
+   *  recent-project entry written before the Drive backend shipped. */
+  backend?: 'git' | 'drive'
+  /** Drive backend only: the Shared Drive folder id that IS this
+   *  project, and the Shared Drive it lives in. Mirrors what the
+   *  `.framecad/drive-manifest.json` records, surfaced here so the
+   *  renderer and recent-projects list don't have to read the manifest. */
+  driveFolderId?: string
+  sharedDriveId?: string
 }
 
 export type FileState = 'synced' | 'modified' | 'untracked' | 'locked-by-you' | 'locked-by-other'
@@ -212,6 +222,29 @@ export interface GitHubAuthStatus {
   ghCliAvailable: boolean
   loggedIn: boolean
   username?: string
+}
+
+/** Google account sign-in state for the Drive storage backend.
+ *  `signedIn` is false before the OAuth loopback flow completes or
+ *  after sign-out; email/name are cached for display in the UI. */
+export interface GoogleAuthStatus {
+  signedIn: boolean
+  email?: string
+  name?: string
+}
+
+/** A Google Shared Drive the signed-in user can see. Projects live as
+ *  top-level folders inside one of these. */
+export interface DriveSharedDrive {
+  id: string
+  name: string
+}
+
+/** A folder inside a Shared Drive — used by the "join project" picker
+ *  to choose which top-level folder becomes the local project. */
+export interface DriveFolder {
+  id: string
+  name: string
 }
 
 export interface AdminConfig {
@@ -622,6 +655,27 @@ export interface IpcApi {
   teamPingServer(): Promise<'reachable' | 'unreachable' | 'not-enrolled'>
   /** Subscribe to push notifications when the cached snapshot changes. */
   onTeamSnapshot(callback: (snapshot: TeamSnapshot) => void): () => void
+
+  // ── Google Drive storage backend ──
+  /** Current Google sign-in state (cached; no network). */
+  googleAuthStatus(): Promise<GoogleAuthStatus>
+  /** Launch the OAuth loopback flow in the system browser; resolves
+   *  once the user grants access. */
+  googleSignIn(): Promise<GoogleAuthStatus>
+  /** Revoke + forget the Google refresh token. */
+  googleSignOut(): Promise<void>
+  /** Shared Drives the signed-in user can see. */
+  driveListSharedDrives(): Promise<DriveSharedDrive[]>
+  /** Top-level folders inside a Shared Drive (the project picker). */
+  driveListFolders(sharedDriveId: string): Promise<DriveFolder[]>
+  /** Download a Drive folder into a local dir and open it as the active
+   *  project. Emits join-progress events while downloading. */
+  driveJoinProject(args: {
+    folderId: string
+    sharedDriveId: string
+    localPath: string
+    name: string
+  }): Promise<ProjectConfig>
 }
 
 /**

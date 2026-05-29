@@ -315,7 +315,26 @@ const api: IpcApi = {
       callback(progress as Parameters<typeof callback>[0])
     ipcRenderer.on('join-progress', handler)
     return () => ipcRenderer.removeListener('join-progress', handler)
-  }
+  },
+
+  // Google Drive storage backend
+  googleAuthStatus: () =>
+    ipcRenderer.invoke('google-auth-status'),
+
+  googleSignIn: () =>
+    ipcRenderer.invoke('google-sign-in'),
+
+  googleSignOut: () =>
+    ipcRenderer.invoke('google-sign-out'),
+
+  driveListSharedDrives: () =>
+    ipcRenderer.invoke('drive-list-shared-drives'),
+
+  driveListFolders: (sharedDriveId) =>
+    ipcRenderer.invoke('drive-list-folders', sharedDriveId),
+
+  driveJoinProject: (args) =>
+    ipcRenderer.invoke('drive-join-project', args)
 }
 
 contextBridge.exposeInMainWorld('api', api)

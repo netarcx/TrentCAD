@@ -21,9 +21,33 @@ export interface DriveManifest {
 
 const MANIFEST_DIR = '.framecad'
 const MANIFEST_NAME = 'drive-manifest.json'
+const STAGING_NAME = 'drive-staging.json'
 
 function manifestPath(projectDir: string): string {
   return path.join(projectDir, MANIFEST_DIR, MANIFEST_NAME)
+}
+
+/**
+ * One background-uploaded ("staged") copy of a local file. The bytes live
+ * in the project's hidden `.framecad-staging/<deviceTag>/` folder on Drive,
+ * invisible to other clients' sync, until the user publishes — at which
+ * point the staged file is promoted into place by a metadata-only move.
+ * `stagedHash` is the SHA-256 of the bytes that were uploaded, so publish
+ * can tell whether the staged copy is still current.
+ */
+export interface StagedEntry {
+  stagedFileId: string
+  stagedHash: string
+  stagedSize: number
+  stagedAt: number
+}
+
+export interface DriveStagingState {
+  /** Random per-install tag; names this device's staging subfolder. */
+  deviceTag: string
+  /** Drive folder id of `.framecad-staging/<deviceTag>` (null until created). */
+  stagingFolderId: string | null
+  files: Record<string, StagedEntry>
 }
 
 export async function loadManifest(projectDir: string): Promise<DriveManifest | null> {
@@ -51,6 +75,32 @@ export function createEmptyManifest(projectFolderId: string, sharedDriveId: stri
     lastSyncedAt: Date.now(),
     files: {}
   }
+}
+
+function stagingPath(projectDir: string): string {
+  return path.join(projectDir, MANIFEST_DIR, STAGING_NAME)
+}
+
+export async function loadStagingState(projectDir: string): Promise<DriveStagingState | null> {
+  try {
+    const data = await fs.readFile(stagingPath(projectDir), 'utf-8')
+    return JSON.parse(data) as DriveStagingState
+  } catch {
+    return null
+  }
+}
+
+export async function saveStagingState(projectDir: string, state: DriveStagingState): Promise<void> {
+  const dir = path.join(projectDir, MANIFEST_DIR)
+  await fs.mkdir(dir, { recursive: true })
+  const dest = stagingPath(projectDir)
+  const tmp = dest + '.tmp'
+  await fs.writeFile(tmp, JSON.stringify(state, null, 2))
+  await fs.rename(tmp, dest)
+}
+
+export function createEmptyStagingState(deviceTag: string): DriveStagingState {
+  return { deviceTag, stagingFolderId: null, files: {} }
 }
 
 export function computeFileHash(filePath: string): Promise<string> {

@@ -823,6 +823,47 @@ export default function ProjectSetup({ onJoinProject, onJoinDriveProject, onOpen
           </div>
         )}
 
+        {/* Locally-downloaded Google Drive projects. These live only in
+            recentProjects (Drive projects aren't in teamSnapshot.projects,
+            which is keyed on a GitHub repo URL) and carry no `remote`, so
+            the team-projects list above never surfaces them. Without this
+            section a Drive project you joined once becomes unreachable —
+            you'd have to re-download it. Click a row to reopen it from its
+            local folder (the open-project handler detects the Drive
+            manifest and reopens it as a Drive project). */}
+        {(() => {
+          const driveProjects = recentProjects.filter(p => p.backend === 'drive')
+          if (driveProjects.length === 0) return null
+          return (
+            <div className="project-list" style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, opacity: 0.7, margin: '0 0 6px 2px' }}>
+                Your Google Drive projects
+              </div>
+              {driveProjects.map(p => (
+                <button
+                  key={p.path}
+                  type="button"
+                  className="project-list-row"
+                  disabled={isLoading}
+                  title={p.path}
+                  onClick={() => onOpenProject(p.path)}
+                >
+                  <div className="project-list-row-main">
+                    <div className="project-list-row-name">
+                      <HardDrive size={14} strokeWidth={1.75} style={{ verticalAlign: '-2px', marginRight: 6 }} />
+                      {p.name}
+                    </div>
+                    <div className="project-list-row-path" title={p.path}>{p.path}</div>
+                  </div>
+                  <div className="project-list-row-status">
+                    <span className="pill pill-local">✓ Local</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )
+        })()}
+
         {/* Google Drive backend — secondary entry point. Requires team
             enrollment because Drive check-out/check-in locks use the
             team server identity. */}

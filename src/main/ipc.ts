@@ -82,6 +82,44 @@ function debounce<T extends (...args: unknown[]) => unknown>(fn: T, ms: number):
   }) as unknown as T
 }
 
+// --- Background pre-upload (Drive backend) ----------------------------------
+// After a checked-out file has been idle this long, upload its bytes to the
+// hidden staging area so publish only has to do a metadata move. Idle-based
+// so we don't waste bandwidth on every intermediate SolidWorks save.
+const STAGE_DEBOUNCE_MS = Math.max(2000, parseInt(process.env.FRAMECAD_STAGE_DEBOUNCE_MS ?? '', 10) || 15000)
+const stageTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function scheduleStage(rootDir: string, changedPath: string): void {
+  const rel = path.relative(rootDir, changedPath).replace(/\\/g, '/')
+  if (!rel || rel.startsWith('..') || rel.startsWith('.')) return
+  const prev = stageTimers.get(rel)
+  if (prev) clearTimeout(prev)
+  stageTimers.set(rel, setTimeout(() => {
+    stageTimers.delete(rel)
+    void tryStage(rel)
+  }, STAGE_DEBOUNCE_MS))
+}
+
+async function tryStage(rel: string): Promise<void> {
+  if (!driveProject.isOpen() || publishingNow) return
+  // Only pre-upload files this user has checked out — the lock guarantees
+  // nobody else is publishing that path, so staging it is safe.
+  try {
+    const locks = await teamServer.listDriveLocks(driveProjectKey())
+    const me = teamServer.currentSnapshot().me
+    if (!locks.some(l => l.filePath === rel && l.ownerMemberId === me?.id)) return
+  } catch {
+    return // offline / not enrolled — skip background staging
+  }
+  await driveProject.stageFile(rel).catch(err => {
+    // Best effort: a failed pre-upload just means publish falls back to a full
+    // upload. Log it (rather than swallowing silently) so a persistent problem
+    // — quota, permissions, auth — is diagnosable instead of an invisible
+    // "why is publish slow?".
+    console.warn(`[drive] background staging failed for ${rel}:`, (err as Error)?.message ?? err)
+  })
+}
+
 function notifyFileChange(win: BrowserWindow): void {
   if (win.isDestroyed()) return
   // Drive projects have no git index / parts manifest sync — just diff
@@ -127,10 +165,17 @@ function startWatching(dirPath: string, win: BrowserWindow): void {
     ignoreInitial: true,
     depth: 10
   })
-  watcher.on('all', debouncedNotify)
+  watcher.on('all', (event, changedPath) => {
+    debouncedNotify()
+    if ((event === 'add' || event === 'change') && typeof changedPath === 'string' && driveProject.isOpen()) {
+      scheduleStage(dirPath, changedPath)
+    }
+  })
 }
 
 function stopWatching(): void {
+  for (const t of stageTimers.values()) clearTimeout(t)
+  stageTimers.clear()
   if (watcher) {
     watcher.close()
     watcher = null

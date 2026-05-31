@@ -368,6 +368,14 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX locks_projectKey_idx ON locks(projectKey);
   `,
+  // v16: Google Drive backend Shared Drive allowlist. Admins can set
+  // this centrally in the team server UI so enrolled desktops do not
+  // need a new installer when the approved CAD Shared Drive changes.
+  // Comma-separated Shared Drive IDs; blank means clients fall back
+  // to their installer-baked allowlist.
+  `
+  ALTER TABLE team ADD COLUMN googleSharedDriveIds TEXT NOT NULL DEFAULT '';
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

@@ -19,6 +19,7 @@ interface TeamRow {
   gitHubOrg: string
   projectPrefix: string
   welcomeMessage: string
+  googleSharedDriveIds?: string
   lfsUrl: string | null
   updatedAt: number
   // v11 + v12 columns
@@ -349,6 +350,7 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
       gitHubOrg: team.gitHubOrg,
       projectPrefix: team.projectPrefix,
       welcomeMessage: team.welcomeMessage,
+      googleSharedDriveIds: team.googleSharedDriveIds ?? '',
       updatedAt: team.updatedAt,
       // Empty string when LFS isn't configured on this server (neither
       // the team row nor the env var has a value). Clients detect that

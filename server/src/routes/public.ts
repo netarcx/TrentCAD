@@ -40,6 +40,7 @@ interface TeamRow {
   gitHubOrg: string
   projectPrefix: string
   welcomeMessage: string
+  googleSharedDriveIds?: string
   updatedAt: number
 }
 
@@ -221,6 +222,7 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
         gitHubOrg: team.gitHubOrg,
         projectPrefix: team.projectPrefix,
         welcomeMessage: team.welcomeMessage,
+        googleSharedDriveIds: team.googleSharedDriveIds ?? '',
       },
     }
   })
@@ -418,6 +420,7 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
           gitHubOrg: teamRow.gitHubOrg,
           projectPrefix: teamRow.projectPrefix,
           welcomeMessage: teamRow.welcomeMessage,
+          googleSharedDriveIds: teamRow.googleSharedDriveIds ?? '',
         },
       }
     },

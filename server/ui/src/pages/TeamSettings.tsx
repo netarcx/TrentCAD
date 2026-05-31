@@ -17,6 +17,7 @@ interface Team {
   gitHubOrg: string
   projectPrefix: string
   welcomeMessage: string
+  googleSharedDriveIds: string
   lfsUrl: string
   hasGitHubPat: boolean
   policies?: TeamPolicies
@@ -32,6 +33,7 @@ export default function TeamSettings() {
   const navigate = useNavigate()
   const [team, setTeam] = useState<Team>({
     name: '', gitHubOrg: '', projectPrefix: '', welcomeMessage: '', lfsUrl: '',
+    googleSharedDriveIds: '',
     hasGitHubPat: false,
   })
   // PAT input is write-only — server never echoes the value back. The
@@ -122,6 +124,17 @@ export default function TeamSettings() {
         ...rest,
         lfsUrl: team.lfsUrl.trim().replace(/\/+$/, ''),
       }
+      const sharedDriveIds = team.googleSharedDriveIds
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+      for (const id of sharedDriveIds) {
+        if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+          setError(`Google Shared Drive ID "${id}" is invalid. Use comma-separated Drive IDs only.`)
+          return
+        }
+      }
+      payload.googleSharedDriveIds = Array.from(new Set(sharedDriveIds)).join(',')
       if (patInput.trim() !== '') payload.gitHubPat = patInput.trim()
       if ((payload.lfsUrl as string) && !LFS_URL_REGEX.test(payload.lfsUrl as string)) {
         setError('LFS URL must be a plain http:// or https:// URL (no quotes, spaces, or angle brackets).')
@@ -180,6 +193,7 @@ export default function TeamSettings() {
       setTeam({
         ...team,
         lfsUrl: payload.lfsUrl as string,
+        googleSharedDriveIds: payload.googleSharedDriveIds as string,
         hasGitHubPat: patInput.trim() !== '' ? true : team.hasGitHubPat,
         policies: {
           maxFileSizeMb,
@@ -376,6 +390,29 @@ export default function TeamSettings() {
             Clear token
           </button>
         )}
+      </div>
+
+      <div className="card">
+        <h3>Google Drive</h3>
+        <div className="hint">
+          Restrict Drive-backend projects to specific Google Shared Drives.
+          Enrolled desktop clients use this server value on their next
+          snapshot refresh; leave blank to use the installer-baked
+          allowlist. Use the Shared Drive ID, not the folder URL.
+        </div>
+        <label>Allowed Shared Drive IDs</label>
+        <textarea
+          rows={3}
+          value={team.googleSharedDriveIds}
+          onChange={e => setTeam({ ...team, googleSharedDriveIds: e.target.value })}
+          placeholder="0AExampleSharedDriveId, 0AAnotherSharedDriveId"
+          spellCheck={false}
+          autoCapitalize="off"
+        />
+        <div className="hint" style={{ marginTop: 4 }}>
+          Comma-separated. Once set, FrameCAD only lists, joins, syncs, and
+          publishes projects in these Shared Drives.
+        </div>
       </div>
 
       <div className="card">

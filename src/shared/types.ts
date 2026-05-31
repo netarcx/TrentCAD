@@ -339,6 +339,10 @@ export interface TeamConfig {
    *  desktop writes this into each project's `.lfsconfig` so all LFS
    *  traffic skips GitHub and lands on the team's own storage. */
   lfsUrl?: string
+  /** Comma-separated Google Shared Drive IDs approved for Drive-backend
+   *  projects. When non-empty, enrolled desktop clients use this as
+   *  the Drive allowlist instead of the installer-baked fallback. */
+  googleSharedDriveIds?: string
   /** Tunable per-team policies that used to be hardcoded constants
    *  in the desktop client. Server is the source of truth; the
    *  desktop falls back to the constants below if the snapshot

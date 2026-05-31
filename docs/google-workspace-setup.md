@@ -126,7 +126,10 @@ $env:FRAMECAD_GOOGLE_SHARED_DRIVE_IDS = "0AExampleSharedDriveId"
 For GitHub Actions installer builds, add repository secrets named
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and
 `FRAMECAD_GOOGLE_SHARED_DRIVE_IDS`. Those values are embedded in the app binary
-so students do not need to set them.
+so students do not need to set them. Enrolled clients can also receive the
+Shared Drive allowlist from the team server: open the server admin UI and set
+**Team Settings → Google Drive → Allowed Shared Drive IDs**. The server value
+wins when it is non-empty; the installer value is the fallback.
 
 ## Things to know
 

@@ -5,6 +5,7 @@ import path from 'path'
 import { Readable } from 'stream'
 import { pipeline } from 'stream/promises'
 import { getAuthClient } from './google-auth'
+import { currentSnapshot } from './teamServer'
 import {
   loadManifest,
   saveManifest,
@@ -18,7 +19,7 @@ import type { FileEntry, FileState } from '@shared/types'
 
 declare const __FRAMECAD_GOOGLE_SHARED_DRIVE_IDS__: string
 
-const SHARED_DRIVE_ALLOWLIST = parseSharedDriveIds(
+const BUILD_SHARED_DRIVE_ALLOWLIST = parseSharedDriveIds(
   (typeof __FRAMECAD_GOOGLE_SHARED_DRIVE_IDS__ !== 'undefined'
     ? __FRAMECAD_GOOGLE_SHARED_DRIVE_IDS__
     : '') ||
@@ -35,8 +36,14 @@ function parseSharedDriveIds(raw: string): Set<string> {
   )
 }
 
+function effectiveSharedDriveAllowlist(): Set<string> {
+  const serverIds = parseSharedDriveIds(currentSnapshot().team?.googleSharedDriveIds ?? '')
+  return serverIds.size > 0 ? serverIds : BUILD_SHARED_DRIVE_ALLOWLIST
+}
+
 function sharedDriveAllowed(sharedDriveId: string): boolean {
-  return SHARED_DRIVE_ALLOWLIST.size === 0 || SHARED_DRIVE_ALLOWLIST.has(sharedDriveId)
+  const allowlist = effectiveSharedDriveAllowlist()
+  return allowlist.size === 0 || allowlist.has(sharedDriveId)
 }
 
 function assertSharedDriveAllowed(sharedDriveId: string): void {

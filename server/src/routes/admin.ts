@@ -1143,6 +1143,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     gitHubOrg?: string
     projectPrefix?: string
     welcomeMessage?: string
+    googleSharedDriveIds?: string
     lfsUrl?: string
     /** GitHub Personal Access Token used by the server to create repos
      *  on behalf of admins. Empty string clears it. Audit logs only
@@ -1161,6 +1162,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     let patChanged: 'set' | 'cleared' | null = null
     for (const field of [
       'name', 'gitHubOrg', 'projectPrefix', 'welcomeMessage', 'lfsUrl', 'gitHubPat',
+      'googleSharedDriveIds',
     ] as const) {
       if (typeof req.body?.[field] === 'string') {
         const raw = req.body[field]!.trim()
@@ -1193,6 +1195,20 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
           updates.push(`gitHubPat = ?`)
           values.push(raw || null)
           patChanged = raw ? 'set' : 'cleared'
+        } else if (field === 'googleSharedDriveIds') {
+          const ids = raw
+            .split(',')
+            .map(s => s.trim())
+            .filter(Boolean)
+          for (const id of ids) {
+            if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+              return reply.code(400).send({
+                error: `Google Shared Drive ID "${id}" is invalid. Use comma-separated Drive IDs only.`,
+              })
+            }
+          }
+          updates.push(`${field} = ?`)
+          values.push(Array.from(new Set(ids)).join(','))
         } else {
           updates.push(`${field} = ?`)
           values.push(raw)
@@ -1431,6 +1447,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
           `UPDATE team SET name = 'My Team', gitHubOrg = '', projectPrefix = '',
                             welcomeMessage = '', setupComplete = 0,
                             lfsUrl = NULL, gitHubPat = NULL,
+                            googleSharedDriveIds = '',
                             maxFileSizeMb = NULL, lfsAutotrackThresholdMb = NULL,
                             blockedExtensionsJson = NULL, lfsTokenTtlMinutes = NULL,
                             quotaGraceHours = NULL, updatedAt = ?

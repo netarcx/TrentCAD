@@ -125,6 +125,10 @@ export interface LocalChange {
 const IGNORED_PATTERNS = [
   /^\.framecad[\\/]/,
   /^\.git[\\/]/,
+  // COTS/ is a read-only mirror of a separate Drive library (see
+  // syncCotsDrive). It must never be published back into the project's
+  // own Drive folder — the git backend gitignores it for the same reason.
+  /^COTS[\\/]/,
   /(^|[\\/])node_modules([\\/]|$)/,
   /(^|[\\/])\./,
   /~\$/,

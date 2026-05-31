@@ -388,7 +388,10 @@ async function buildTree(
     return entries
   }
 
-  const IGNORED = ['.framecad', '.git', 'node_modules']
+  // COTS/ is a separate read-only library mirrored in by syncCotsDrive;
+  // keep it out of the project file tree (the git backend hides it the
+  // same way via the COTS subpath) so it isn't treated as project parts.
+  const IGNORED = ['.framecad', '.git', 'node_modules', 'COTS']
 
   for (const entry of dirEntries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (entry.name.startsWith('.') || IGNORED.includes(entry.name)) continue
@@ -792,6 +795,47 @@ export async function pushMetadataFile(projectDir: string, relPath: string): Pro
     localSize: stat.size
   }
   await saveManifest(projectDir, manifest)
+}
+
+/**
+ * Mirror a read-only COTS library Drive folder into the project's `COTS/`
+ * subfolder. Replaces the git-clone COTS flow for Drive projects: the
+ * library lives in its own Drive folder (set by the admin), and every
+ * client downloads it on open / sync. Files are downloaded in parallel;
+ * a file already present at the same byte size is skipped (COTS parts are
+ * immutable once published, so size match is a safe "already have it").
+ * Best-effort per file — one failure doesn't abort the rest.
+ */
+export async function syncCotsDrive(
+  projectDir: string,
+  cotsFolderId: string,
+  sharedDriveId: string
+): Promise<{ success: boolean; downloaded: number; error?: string }> {
+  if (!cotsFolderId || !sharedDriveId) {
+    return { success: false, downloaded: 0, error: 'No COTS Drive folder configured' }
+  }
+  assertSharedDriveAllowed(sharedDriveId)
+  let drive: drive_v3.Drive
+  try { drive = await getDrive() } catch (err) {
+    return { success: false, downloaded: 0, error: (err as Error).message }
+  }
+  try {
+    const files = await listAllFiles(drive, cotsFolderId, '', sharedDriveId)
+    const cotsRoot = path.join(projectDir, 'COTS')
+    let downloaded = 0
+    await mapPool(files, DRIVE_TRANSFER_CONCURRENCY, async file => {
+      const destPath = path.join(cotsRoot, ...file.relativePath.split('/'))
+      try {
+        const stat = await fs.stat(destPath)
+        if (stat.size === file.size) return // already have this exact file
+      } catch { /* not present — download it */ }
+      await downloadOne(drive, file.driveFileId, destPath)
+      downloaded++
+    })
+    return { success: true, downloaded }
+  } catch (err) {
+    return { success: false, downloaded: 0, error: (err as Error).message }
+  }
 }
 
 export interface PublishChangesResult {

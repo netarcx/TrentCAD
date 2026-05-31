@@ -200,6 +200,18 @@ function stopWatching(): void {
   }
 }
 
+// Mirror the COTS library into a Drive project's COTS/ folder in the
+// background (best effort). Reads the admin-configured COTS Drive folder;
+// no-op when none is set or the server/admin config is unreachable.
+async function syncDriveCotsBestEffort(dir: string): Promise<void> {
+  try {
+    const cfg = await adminOps.loadAdminConfig()
+    if (cfg.cotsDriveFolderId && cfg.cotsSharedDriveId) {
+      await driveOps.syncCotsDrive(dir, cfg.cotsDriveFolderId, cfg.cotsSharedDriveId)
+    }
+  } catch { /* COTS is optional — never block project open on it */ }
+}
+
 export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   let currentProject: ProjectConfig | null = null
 
@@ -265,6 +277,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
       setRestProject(currentProject)
       const win = getMainWindow()
       if (win) startWatching(dirPath, win)
+      void syncDriveCotsBestEffort(dirPath)
       return currentProject
     }
     driveProject.close()
@@ -950,6 +963,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     currentProject = config
     setRestProject(currentProject)
     if (win) startWatching(config.path, win)
+    void syncDriveCotsBestEffort(config.path)
     return config
   })
 

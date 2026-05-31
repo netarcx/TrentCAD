@@ -20,6 +20,14 @@ export interface AdminConfig {
   cotsRepoUrl?: string
   cotsBranch?: string
   /**
+   * Drive-backend COTS library: the Shared Drive folder id (and the
+   * Shared Drive it lives in) holding the shared COTS parts. FrameCAD
+   * mirrors it into the project's `COTS/` subfolder on open + sync. The
+   * Drive equivalent of cotsRepoUrl/cotsBranch above.
+   */
+  cotsDriveFolderId?: string
+  cotsSharedDriveId?: string
+  /**
    * Set to true when THIS project is itself a COTS library. Disables the
    * part-numbering layer (no parts.json, no auto-assign, no + Part / + Assembly
    * buttons) since COTS files have their own external numbering authority.

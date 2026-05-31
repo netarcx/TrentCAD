@@ -1,6 +1,7 @@
 import path from 'path'
 import { promises as fs } from 'fs'
-import { getProjectPath, getGit } from './git'
+import { getProjectPath } from './git'
+import { isDriveBackend, pushSharedFile } from './persistence'
 
 export interface AdminConfig {
   defaultPartPrefix?: string
@@ -115,8 +116,17 @@ async function applyLfsConfig(url: string | undefined): Promise<boolean> {
  */
 export async function saveAndPublishAdminConfig(config: AdminConfig): Promise<void> {
   await writeAdminConfig(config)
+
+  // Drive backend: no git, no LFS. Upload admin.json straight to the Drive
+  // project folder so teammates pick it up on their next sync.
+  if (isDriveBackend()) {
+    await pushSharedFile(relAdminPath(), '[admin] Update settings')
+    return
+  }
+
   const lfsChanged = await applyLfsConfig(config.lfsUrl)
 
+  const { getGit } = await import('./git')
   const g = getGit()
   await g.raw(['add', relAdminPath()])
   if (lfsChanged) {

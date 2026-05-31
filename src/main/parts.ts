@@ -1,7 +1,8 @@
 import path from 'path'
 import fs from 'fs/promises'
 import type { FileEntry, PartsManifest, PartEntry, PartType } from '@shared/types'
-import { getProjectPath, pullPartsJson, pushPartsJson } from './git'
+import { getProjectPath } from './git'
+import { pullSharedFile, pushSharedFile } from './persistence'
 import { getBuildDefaultPrefix } from './branding'
 
 const MANIFEST_FILE = 'parts.json'
@@ -409,14 +410,14 @@ async function syncManifestImpl(): Promise<PartsManifest> {
  * the same way createNewPart does.
  */
 export async function setLegacyMode(enabled: boolean): Promise<void> {
-  await pullPartsJson()
+  await pullSharedFile(MANIFEST_FILE)
   const projectDir = getProjectPath()
   const snapshot = await fs.readFile(path.join(projectDir, MANIFEST_FILE), 'utf-8').catch(() => null)
   const manifest = await loadManifest()
   manifest.legacyMode = !!enabled
   await saveManifest(manifest)
   try {
-    await pushPartsJson(enabled ? 'legacy mode on' : 'legacy mode off')
+    await pushSharedFile(MANIFEST_FILE, enabled ? 'legacy mode on' : 'legacy mode off')
   } catch (err) {
     if (snapshot !== null) {
       await fs.writeFile(path.join(projectDir, MANIFEST_FILE), snapshot)
@@ -443,7 +444,7 @@ export async function createNewPart(
   }
   // Pull the latest parts.json from the team so we don't reserve a number
   // someone else already took
-  await pullPartsJson()
+  await pullSharedFile(MANIFEST_FILE)
 
   const projectDir = getProjectPath()
   const snapshot = await fs.readFile(path.join(projectDir, MANIFEST_FILE), 'utf-8').catch(() => null)
@@ -480,7 +481,7 @@ export async function createNewPart(
 
   await saveManifest(manifest)
   try {
-    await pushPartsJson(partNumber)
+    await pushSharedFile(MANIFEST_FILE, partNumber)
   } catch (err) {
     // Push failed — restore the previous manifest so we don't leave a
     // ghost reservation that other team members don't know about
@@ -500,7 +501,7 @@ export async function createNewAssembly(
   if (await isCotsProject()) {
     throw new Error('COTS library projects do not use part numbers')
   }
-  await pullPartsJson()
+  await pullSharedFile(MANIFEST_FILE)
 
   const projectDir = getProjectPath()
   const snapshot = await fs.readFile(path.join(projectDir, MANIFEST_FILE), 'utf-8').catch(() => null)
@@ -543,7 +544,7 @@ export async function createNewAssembly(
 
   await saveManifest(manifest)
   try {
-    await pushPartsJson(partNumber)
+    await pushSharedFile(MANIFEST_FILE, partNumber)
   } catch (err) {
     if (snapshot !== null) {
       await fs.writeFile(path.join(projectDir, MANIFEST_FILE), snapshot)

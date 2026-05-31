@@ -2,7 +2,9 @@ import path from 'path'
 import fs from 'fs/promises'
 import type { BulkMetaPatch, ManufacturingMethod, ManufacturingQueueItem, PartMeta, ProjectTotals, ReleaseState } from '@shared/types'
 export type { BulkMetaPatch }
-import { getProjectPath, getGit, pullRemoteFile, commitAndPushFile } from './git'
+import { getProjectPath } from './git'
+import { pullSharedFile, pushSharedFile } from './persistence'
+import { currentSnapshot } from './teamServer'
 import { isSwAlive, queuePendingExport } from './export-queue'
 
 const META_DIR = '.framecad'
@@ -30,7 +32,7 @@ async function flushMetaCommit(): Promise<void> {
     ? messages[0]
     : `[meta] ${messages.length} changes\n\n${messages.map(m => `- ${m}`).join('\n')}`
   try {
-    await commitAndPushFile(metaRelPath(), combined)
+    await pushSharedFile(metaRelPath(), combined)
   } catch (err) {
     // Log but don't crash — the local file is already saved. Next
     // mutation or manual publish will pick it up.
@@ -144,8 +146,14 @@ export async function findOrphanMetaPaths(manifestPaths: Set<string>): Promise<s
   return Object.keys(all).filter(p => !manifestPaths.has(p))
 }
 
-async function gitUsername(): Promise<string> {
+// Who to attribute a metadata change to. On the Drive backend there's no git
+// identity — use the enrolled team-member display name. Falls back to the git
+// user.name only when a git project is open, then to 'unknown'.
+async function currentUsername(): Promise<string> {
+  const teamName = currentSnapshot().me?.displayName
+  if (teamName) return teamName
   try {
+    const { getGit } = await import('./git')
     const value = (await getGit().getConfig('user.name')).value
     return value || 'unknown'
   } catch {
@@ -163,7 +171,7 @@ async function modifyAndSync(
   mutator: (entry: PartMeta) => void,
   commitMessage: string
 ): Promise<void> {
-  await pullRemoteFile(metaRelPath())
+  await pullSharedFile(metaRelPath())
   const all = await loadAllMeta()
   const entry = all[filePath] || {}
   mutator(entry)
@@ -220,11 +228,11 @@ export async function setReleaseState(
   state: ReleaseState,
   note?: string
 ): Promise<void> {
-  const by = await gitUsername()
+  const by = await currentUsername()
   const at = new Date().toISOString()
   const trimmedNote = note?.trim() || undefined
 
-  await pullRemoteFile(metaRelPath())
+  await pullSharedFile(metaRelPath())
   const all = await loadAllMeta()
   all[filePath] = {
     ...(all[filePath] || {}),
@@ -259,7 +267,7 @@ export async function setReleaseState(
 export async function addComment(filePath: string, text: string): Promise<void> {
   const trimmed = text.trim()
   if (!trimmed) throw new Error('Comment cannot be empty')
-  const author = await gitUsername()
+  const author = await currentUsername()
   await modifyAndSync(
     filePath,
     entry => {
@@ -350,10 +358,10 @@ export async function bulkUpdateMeta(updates: Record<string, BulkMetaPatch>): Pr
   const entries = Object.entries(updates).filter(([, p]) => p && Object.keys(p).length > 0)
   if (entries.length === 0) return 0
 
-  const by = await gitUsername()
+  const by = await currentUsername()
   const now = new Date().toISOString()
 
-  await pullRemoteFile(metaRelPath())
+  await pullSharedFile(metaRelPath())
   const all = await loadAllMeta()
 
   let touched = 0

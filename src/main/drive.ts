@@ -678,6 +678,122 @@ export async function gcStaging(projectDir: string): Promise<void> {
   })
 }
 
+// ---------------------------------------------------------------------------
+// Shared metadata files (parts.json, .framecad/parts-meta.json, admin.json)
+//
+// These carry team-shared state that the git backend propagated via commit +
+// push. On Drive they are synced explicitly, immediately (not via the
+// debounced publish flow), because part-number reservation must be visible to
+// teammates the instant it happens. Files under .framecad/ are normally
+// excluded from the publish/sync walk, so managing them here by exact relPath
+// is what gives them a sync path at all. Each write is download-latest →
+// mutate (by the caller) → upload-now, recorded in the same manifest the
+// publish flow uses so it never double-handles them.
+// ---------------------------------------------------------------------------
+
+// Resolve the Drive file id for a project-relative path WITHOUT creating any
+// folders (unlike ensureFolderPath). Returns null if any path segment or the
+// file itself doesn't exist on Drive yet.
+async function findDriveFileId(
+  drive: drive_v3.Drive,
+  manifest: DriveManifest,
+  relPath: string
+): Promise<string | null> {
+  const segments = relPath.split('/')
+  const name = segments.pop()!
+  let parentId = manifest.projectFolderId
+  for (const seg of segments) {
+    const res = await drive.files.list({
+      q: `'${parentId}' in parents and name = '${escapeQueryValue(seg)}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+      driveId: manifest.sharedDriveId,
+      corpora: 'drive',
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true,
+      fields: 'files(id)',
+      pageSize: 1
+    })
+    const id = res.data.files?.[0]?.id
+    if (!id) return null
+    parentId = id
+  }
+  const res = await drive.files.list({
+    q: `'${parentId}' in parents and name = '${escapeQueryValue(name)}' and trashed = false`,
+    driveId: manifest.sharedDriveId,
+    corpora: 'drive',
+    includeItemsFromAllDrives: true,
+    supportsAllDrives: true,
+    fields: 'files(id)',
+    pageSize: 1
+  })
+  return res.data.files?.[0]?.id ?? null
+}
+
+/**
+ * Pull the latest Drive copy of one tracked metadata file over the local copy
+ * so a read-modify-write sees teammates' latest first. Best effort: no-op if
+ * not signed in, no manifest, or the file isn't on Drive yet — the caller then
+ * just mutates whatever is on disk.
+ */
+export async function pullMetadataFile(projectDir: string, relPath: string): Promise<void> {
+  const manifest = await loadManifest(projectDir)
+  if (!manifest || !sharedDriveAllowed(manifest.sharedDriveId)) return
+  let drive: drive_v3.Drive
+  try { drive = await getDrive() } catch { return }
+  const fileId = manifest.files[relPath]?.driveFileId ?? await findDriveFileId(drive, manifest, relPath)
+  if (!fileId) return
+  try {
+    const meta = await drive.files.get({ fileId, fields: 'modifiedTime', supportsAllDrives: true })
+    const destPath = path.join(projectDir, ...relPath.split('/'))
+    const { hash, mtimeMs, size } = await downloadOne(drive, fileId, destPath)
+    manifest.files[relPath] = {
+      driveFileId: fileId,
+      driveRevisionId: '',
+      driveModifiedTime: meta.data.modifiedTime ?? new Date(mtimeMs).toISOString(),
+      localContentHash: hash,
+      localModifiedTime: mtimeMs,
+      localSize: size
+    }
+    await saveManifest(projectDir, manifest)
+  } catch { /* keep local copy on any failure */ }
+}
+
+/**
+ * Upload the local copy of one metadata file to Drive immediately (create or
+ * update), recording it in the manifest. Throws on failure so callers that
+ * reserve part numbers can roll back, mirroring the git push-or-rollback path.
+ */
+export async function pushMetadataFile(projectDir: string, relPath: string): Promise<void> {
+  const manifest = await loadManifest(projectDir)
+  if (!manifest) throw new Error('No Drive manifest — this project is not a Drive project.')
+  assertSharedDriveAllowed(manifest.sharedDriveId)
+  const drive = await getDrive()
+  const localPath = path.join(projectDir, ...relPath.split('/'))
+
+  const slash = relPath.lastIndexOf('/')
+  const relDir = slash >= 0 ? relPath.slice(0, slash) : ''
+  const name = slash >= 0 ? relPath.slice(slash + 1) : relPath
+  const folderCache = new Map<string, string>([['', manifest.projectFolderId]])
+  const parentId = await ensureFolderPath(drive, manifest.sharedDriveId, manifest.projectFolderId, relDir, folderCache)
+
+  const existingId = manifest.files[relPath]?.driveFileId ?? await findDriveFileId(drive, manifest, relPath)
+  const resp = await uploadMedia(localPath, media =>
+    existingId
+      ? drive.files.update({ fileId: existingId, media, supportsAllDrives: true, fields: 'id, modifiedTime' }, { timeout: DRIVE_TRANSFER_TIMEOUT_MS })
+      : drive.files.create({ requestBody: { name, parents: [parentId] }, media, supportsAllDrives: true, fields: 'id, modifiedTime' }, { timeout: DRIVE_TRANSFER_TIMEOUT_MS })
+  )
+
+  const [stat, hash] = await Promise.all([fs.stat(localPath), computeFileHash(localPath)])
+  manifest.files[relPath] = {
+    driveFileId: resp.data.id!,
+    driveRevisionId: '',
+    driveModifiedTime: resp.data.modifiedTime ?? new Date().toISOString(),
+    localContentHash: hash,
+    localModifiedTime: stat.mtimeMs,
+    localSize: stat.size
+  }
+  await saveManifest(projectDir, manifest)
+}
+
 export interface PublishChangesResult {
   uploaded: number
   deleted: number

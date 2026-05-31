@@ -78,6 +78,29 @@ export function useGit() {
     }
   }, [])
 
+  // Join a Google Drive project: download the chosen Drive folder into
+  // a local dir, then transition straight into the project view (the
+  // main process already set currentProject + started the watcher).
+  const joinDriveProject = useCallback(async (args: {
+    folderId: string
+    sharedDriveId: string
+    localPath: string
+    name: string
+  }) => {
+    setIsLoading(true)
+    setError(null)
+    try {
+      const config = await window.api.driveJoinProject(args)
+      setProject(config)
+      await fetchAll()
+    } catch (err) {
+      setError((err as Error).message)
+      throw err
+    } finally {
+      setIsLoading(false)
+    }
+  }, [])
+
   const closeProject = useCallback(async () => {
     try { await window.api.closeProject() } catch { /* best effort */ }
     setProject(null)
@@ -213,6 +236,7 @@ export function useGit() {
     setSelectedFile,
     createProject,
     joinProject,
+    joinDriveProject,
     openProject,
     closeProject,
     sync,

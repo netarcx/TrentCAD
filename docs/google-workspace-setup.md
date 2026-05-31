@@ -89,7 +89,22 @@ This Shared Drive is where all CAD projects will live. Each project gets its own
 
 ## Step 7: Configure FrameCAD
 
-Set these environment variables before running FrameCAD:
+### Dev (recommended): a `.env` file
+
+Copy `.env.example` (at the repo root) to `.env` and fill in your two values:
+
+```
+GOOGLE_CLIENT_ID=your-client-id-here.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=GOCSPX-your-secret-here
+```
+
+`.env` is gitignored and loaded automatically at startup (`src/main/load-env.ts`),
+so `npm run dev` picks it up — you don't have to re-export anything in each shell.
+
+### Or: shell environment variables
+
+If you'd rather not use a file, export them before running FrameCAD (a real
+`export` takes precedence over `.env`):
 
 ```bash
 export GOOGLE_CLIENT_ID="your-client-id-here.apps.googleusercontent.com"

@@ -673,6 +673,23 @@ export function getProjectPath(): string {
   return projectPath
 }
 
+/**
+ * Drive-backed projects still use the shared filesystem helpers
+ * (parts, metadata, documents, thumbnails), but they are not Git
+ * repositories. Point those helpers at the local project directory
+ * without creating a SimpleGit instance; callers that truly need Git
+ * must continue to call getGit(), which will still fail.
+ */
+export function setFilesystemProjectPath(dirPath: string): void {
+  git = null
+  projectPath = dirPath
+}
+
+export function closeProject(): void {
+  git = null
+  projectPath = null
+}
+
 export async function createProject(name: string, dirPath: string, remote: string): Promise<void> {
   await fs.mkdir(dirPath, { recursive: true })
   await addSafeDirectory(dirPath)

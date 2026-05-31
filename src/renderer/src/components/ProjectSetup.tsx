@@ -1,13 +1,22 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Factory, Settings, UserPlus } from 'lucide-react'
+import { Factory, Settings, UserPlus, HardDrive } from 'lucide-react'
 import logoUrl from '../assets/logo.png'
 import TeamEnroll from './TeamEnroll'
+import DriveJoin from './DriveJoin'
 import { prepareSlamSnapshot, triggerWaterSlam } from '../lib/water-slam'
 import type { GlobalAdminConfig, ProjectConfig, TeamSnapshot } from '@shared/types'
 import { GITHUB_AUTH_REQUIRED_SENTINEL, LFS_UNREACHABLE_SENTINEL } from '@shared/types'
 
 interface Props {
   onJoinProject: (url: string, path: string, options?: { skipSmudge?: boolean }) => Promise<void>
+  /** Download + open a Google Drive project. Drives the Drive-backend
+   *  join flow (sign in → pick Shared Drive + folder → download). */
+  onJoinDriveProject: (args: {
+    folderId: string
+    sharedDriveId: string
+    localPath: string
+    name: string
+  }) => Promise<void>
   onOpenProject: (path: string) => Promise<void>
   /** Open a project and jump straight into the Manufacturing View
    *  (shop-floor mode). Disabled when there are no recent projects to
@@ -49,7 +58,7 @@ interface Props {
  *  - `join`: triggered when the user clicks an uncloned project in the
  *    list. Pre-fills URL + name, asks for save path, then clones.
  */
-type Mode = 'select' | 'join' | 'enroll'
+type Mode = 'select' | 'join' | 'enroll' | 'drive'
 
 // Module-scoped so the once-per-session welcome-logo intro animation
 // only plays the first time the welcome screen mounts in this process.
@@ -94,7 +103,7 @@ function installClickWaves(): void {
   )
 }
 
-export default function ProjectSetup({ onJoinProject, onOpenProject, onEnterManufacturingView, onOpenAdmin, isLoading, globalAdmin, prefilledJoinUrl, prefilledJoinSeq, teamSnapshot, onTeamRefresh, onDismissError }: Props) {
+export default function ProjectSetup({ onJoinProject, onJoinDriveProject, onOpenProject, onEnterManufacturingView, onOpenAdmin, isLoading, globalAdmin, prefilledJoinUrl, prefilledJoinSeq, teamSnapshot, onTeamRefresh, onDismissError }: Props) {
   const [mode, setMode] = useState<Mode>('select')
   // Form state used by the join screen (still alive — triggered
   // when the user clicks an uncloned project in the list). `path`
@@ -611,6 +620,16 @@ export default function ProjectSetup({ onJoinProject, onOpenProject, onEnterManu
     )
   }
 
+  if (mode === 'drive') {
+    return (
+      <DriveJoin
+        onBack={() => setMode('select')}
+        onJoinDriveProject={onJoinDriveProject}
+        isLoading={isLoading}
+      />
+    )
+  }
+
   if (mode === 'select') {
     return (
       <div className="setup-screen">
@@ -803,6 +822,24 @@ export default function ProjectSetup({ onJoinProject, onOpenProject, onEnterManu
             </button>
           </div>
         )}
+
+        {/* Google Drive backend — secondary entry point. Requires team
+            enrollment because Drive check-out/check-in locks use the
+            team server identity. */}
+        <div className="setup-mfg-row">
+          <button
+            type="button"
+            className="setup-mfg-button"
+            onClick={() => setMode('drive')}
+            disabled={!teamSnapshot?.enrolled}
+            title={teamSnapshot?.enrolled
+              ? "Join a project stored on your team's Google Shared Drive"
+              : 'Enroll with your team server before joining a Google Drive project'}
+          >
+            <HardDrive size={14} strokeWidth={1.75} />
+            <span>Join from Google Drive</span>
+          </button>
+        </div>
       </div>
     )
   }

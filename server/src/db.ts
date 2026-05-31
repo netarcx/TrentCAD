@@ -341,6 +341,33 @@ const MIGRATIONS: string[] = [
   ALTER TABLE pins ADD COLUMN useCount INTEGER NOT NULL DEFAULT 0;
   UPDATE pins SET useCount = 1 WHERE consumedAt IS NOT NULL;
   `,
+  // v15: server-side check-out/check-in locks for the Google Drive
+  // storage backend. The git/LFS backend uses `git lfs lock`, which
+  // Drive has no equivalent for — so locks move to the team server,
+  // the one component every client already talks to.
+  //
+  // `projectKey` is free-text, NOT a foreign key to `projects`. Drive
+  // projects are never registered in the `projects` table (that table
+  // is keyed on a GitHub repoUrl), so the lock is keyed on the Drive
+  // *folder id* instead — the same id the desktop stores in its
+  // drive-manifest.json. This keeps the locks feature fully decoupled
+  // from the GitHub-oriented project registry. `ownerName` is the
+  // member's display name denormalised at lock time so the lock list
+  // renders without a join (and survives the owner being renamed).
+  // ON DELETE CASCADE drops a member's locks if their account is
+  // removed, so a deleted member can never leave a file stuck locked.
+  `
+  CREATE TABLE locks (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    projectKey    TEXT NOT NULL,
+    filePath      TEXT NOT NULL,
+    ownerMemberId INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    ownerName     TEXT NOT NULL,
+    lockedAt      INTEGER NOT NULL,
+    UNIQUE(projectKey, filePath)
+  );
+  CREATE INDEX locks_projectKey_idx ON locks(projectKey);
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

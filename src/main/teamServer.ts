@@ -528,3 +528,47 @@ export async function getLfsToken(projectId: number): Promise<{
     return null
   }
 }
+
+// ── Drive-backend locks ─────────────────────────────────────────────
+// Check-out/check-in for Google Drive projects lives on the team
+// server (Drive has no `git lfs lock` equivalent). `projectKey` is the
+// Drive folder id; the desktop reads it from the project's
+// drive-manifest.json. See server migration v15 + client.ts.
+
+export interface DriveLock {
+  filePath: string
+  ownerMemberId: number
+  ownerName: string
+  lockedAt: number
+}
+
+/** All active locks for a Drive project. Empty when not enrolled. */
+export async function listDriveLocks(projectKey: string): Promise<DriveLock[]> {
+  if (!state.token) return []
+  const data = await fetchTeamApi<{ locks: DriveLock[] }>(
+    `/api/projects/${encodeURIComponent(projectKey)}/locks`,
+    { timeoutMs: 6000 },
+  )
+  return data.locks ?? []
+}
+
+/** Acquire a lock (check out). Throws with the holder's name on 409. */
+export async function acquireDriveLock(projectKey: string, filePath: string): Promise<void> {
+  await fetchTeamApi(
+    `/api/projects/${encodeURIComponent(projectKey)}/locks`,
+    { method: 'POST', body: { filePath }, timeoutMs: 6000 },
+  )
+}
+
+/** Release a lock (check in). `force` lets a mentor/admin break someone
+ *  else's lock; the server enforces who's allowed to. */
+export async function releaseDriveLock(
+  projectKey: string,
+  filePath: string,
+  force = false,
+): Promise<void> {
+  await fetchTeamApi(
+    `/api/projects/${encodeURIComponent(projectKey)}/locks`,
+    { method: 'DELETE', body: { filePath, force }, timeoutMs: 6000 },
+  )
+}

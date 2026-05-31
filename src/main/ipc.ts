@@ -25,15 +25,53 @@ import { addRecentProject, getRecentProjects, getCachedBrowseConfig, setProjectP
 import * as teamServer from './teamServer'
 import * as googleAuth from './google-auth'
 import * as driveProject from './drive-project'
+import * as driveOps from './drive'
 import { setRestProject, clearRestProject, stopRestServer, queuePendingCreate, setRestMainWindow } from './rest'
 import { getThumbnail, clearThumbnailCache } from './thumbnails'
-import type { ProjectConfig } from '@shared/types'
+import type { FileEntry, ProjectConfig } from '@shared/types'
 
 let watcher: ReturnType<typeof watch> | null = null
 let publishingNow = false
 
 export function isPublishing(): boolean {
   return publishingNow
+}
+
+/**
+ * The lock key for the currently-open Drive project — its Drive folder
+ * id (see server migration v15). Throws if called when no Drive project
+ * is open or the manifest somehow lacks a folder id, so a lock call
+ * never silently targets the wrong project.
+ */
+function driveProjectKey(): string {
+  const key = driveProject.currentConfig()?.driveFolderId
+  if (!key) throw new Error('No Drive project open (missing Drive folder id)')
+  return key
+}
+
+async function getDriveStatusWithLocks(): Promise<FileEntry[]> {
+  const files = await driveProject.status()
+  try {
+    const locks = await teamServer.listDriveLocks(driveProjectKey())
+    const me = teamServer.currentSnapshot().me
+    const lockMap = new Map(locks.map(l => [l.filePath, l]))
+    const applyLocks = (entries: FileEntry[]): void => {
+      for (const entry of entries) {
+        if (!entry.isDirectory) {
+          const lock = lockMap.get(entry.path)
+          if (lock) {
+            entry.lockedBy = lock.ownerName
+            entry.state = lock.ownerMemberId === me?.id ? 'locked-by-you' : 'locked-by-other'
+          }
+        }
+        if (entry.children) applyLocks(entry.children)
+      }
+    }
+    applyLocks(files)
+  } catch {
+    // Offline / not enrolled: show local status only.
+  }
+  return files
 }
 
 function debounce<T extends (...args: unknown[]) => unknown>(fn: T, ms: number): T {
@@ -46,6 +84,14 @@ function debounce<T extends (...args: unknown[]) => unknown>(fn: T, ms: number):
 
 function notifyFileChange(win: BrowserWindow): void {
   if (win.isDestroyed()) return
+  // Drive projects have no git index / parts manifest sync — just diff
+  // the working tree against the Drive manifest and push that.
+  if (driveProject.isOpen()) {
+    getDriveStatusWithLocks()
+      .then(files => { if (!win.isDestroyed()) win.webContents.send('file-change', files) })
+      .catch(() => {})
+    return
+  }
   partsOps.syncManifest()
     .then(() => gitOps.getStatus())
     .then(files => { if (!win.isDestroyed()) win.webContents.send('file-change', files) })
@@ -147,6 +193,18 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('open-project', async (_e, dirPath: string) => {
+    // Drive project? (folder carries a .framecad/drive-manifest.json).
+    // If so it owns this session — skip the git open flow entirely.
+    const driveConfig = await driveProject.open(dirPath).catch(() => null)
+    if (driveConfig) {
+      gitOps.setFilesystemProjectPath(dirPath)
+      currentProject = driveConfig
+      setRestProject(currentProject)
+      const win = getMainWindow()
+      if (win) startWatching(dirPath, win)
+      return currentProject
+    }
+    driveProject.close()
     await gitOps.openProject(dirPath)
     const name = path.basename(dirPath)
     const git = gitOps.getGit()
@@ -173,6 +231,22 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('sync', async () => {
+    if (driveProject.isOpen()) {
+      const win = getMainWindow()
+      const result = await driveProject.sync(progress => {
+        if (win && !win.isDestroyed()) win.webContents.send('publish-progress', progress)
+      })
+      if (result.success && result.filesUpdated > 0 && Notification.isSupported()) {
+        try {
+          new Notification({
+            title: 'FrameCAD — Downloaded',
+            body: `${result.filesUpdated} file${result.filesUpdated === 1 ? '' : 's'} updated from the team`,
+            silent: false
+          }).show()
+        } catch { /* not all platforms support */ }
+      }
+      return result
+    }
     const result = await gitOps.sync()
     if (result.success && result.filesUpdated > 0 && Notification.isSupported()) {
       try {
@@ -190,6 +264,12 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     const win = getMainWindow()
     publishingNow = true
     try {
+      if (driveProject.isOpen()) {
+        const result = await driveProject.publish(progress => {
+          if (win && !win.isDestroyed()) win.webContents.send('publish-progress', progress)
+        })
+        return result
+      }
       await metaOps.flushMetaCommit()
       const result = await gitOps.publish(message, (progress) => {
         if (win && !win.isDestroyed()) win.webContents.send('publish-progress', progress)
@@ -201,14 +281,25 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('get-status', async () => {
+    if (driveProject.isOpen()) return getDriveStatusWithLocks()
     return gitOps.getStatus()
   })
 
   ipcMain.handle('get-history', async (_e, limit?: number) => {
+    // Drive backend has no commit history (yet — revisions are a future
+    // enhancement). Return an empty feed so the UI renders cleanly.
+    if (driveProject.isOpen()) return []
     return gitOps.getHistory(limit)
   })
 
   ipcMain.handle('check-out', async (_e, filePath: string) => {
+    // Drive backend: locks live on the team server (no git lfs lock).
+    // Paths from the Drive status tree are already project-relative —
+    // no subpath translation, unlike the git path below.
+    if (driveProject.isOpen()) {
+      await teamServer.acquireDriveLock(driveProjectKey(), filePath)
+      return
+    }
     // Translate the (apparent project-root)-relative path the renderer
     // sends back to the git-relative form `git lfs lock` expects. No-op
     // when no subpath is configured.
@@ -216,23 +307,50 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('check-in', async (_e, filePath: string) => {
+    if (driveProject.isOpen()) {
+      await teamServer.releaseDriveLock(driveProjectKey(), filePath)
+      return
+    }
     await lockOps.checkIn(pathsOps.toGitRel(filePath))
   })
 
   ipcMain.handle('force-check-in', async (_e, filePath: string) => {
+    if (driveProject.isOpen()) {
+      await teamServer.releaseDriveLock(driveProjectKey(), filePath, true)
+      broadcastStatus(getMainWindow)
+      return
+    }
     await lockOps.forceCheckIn(pathsOps.toGitRel(filePath))
     broadcastStatus(getMainWindow)
   })
 
   ipcMain.handle('get-locks', async () => {
+    if (driveProject.isOpen()) {
+      try {
+        const locks = await teamServer.listDriveLocks(driveProjectKey())
+        // Map the server's lock shape to the LockInfo the renderer
+        // already understands (path / owner / id).
+        return locks.map(l => ({
+          path: l.filePath,
+          owner: l.ownerName,
+          id: String(l.ownerMemberId)
+        }))
+      } catch {
+        // Offline / server unreachable — no locks rather than a hard
+        // failure, matching how the git backend degrades.
+        return []
+      }
+    }
     return lockOps.getLocks()
   })
 
   ipcMain.handle('get-remote-ahead', async () => {
+    if (driveProject.isOpen()) return 0
     return gitOps.getRemoteAhead()
   })
 
   ipcMain.handle('get-local-ahead', async () => {
+    if (driveProject.isOpen()) return 0
     return gitOps.getLocalAhead()
   })
 
@@ -251,7 +369,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('open-file-explorer', async (_e, filePath: string) => {
-    const projectDir = gitOps.getProjectPath()
+    const projectDir = driveProject.currentDir() ?? gitOps.getProjectPath()
     shell.showItemInFolder(path.join(projectDir, filePath))
   })
 
@@ -316,6 +434,8 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('close-project', () => {
     currentProject = null
+    driveProject.close()
+    gitOps.closeProject()
     clearRestProject()
     stopWatching()
     clearThumbnailCache()
@@ -348,8 +468,11 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('generate-document', async (_e, type: DocType) => {
     try {
-      const cfg = await import('./git').then(m => m.getGit())
-      const raw = await cfg.raw(['config', '--get', 'user.name']).catch(() => '')
+      const raw = driveProject.isOpen()
+        ? (teamServer.currentSnapshot().me?.displayName ?? '')
+        : await import('./git')
+          .then(m => m.getGit())
+          .then(g => g.raw(['config', '--get', 'user.name']).catch(() => ''))
       const generatedBy = raw.trim() || 'FrameCAD'
       return generateDocument(type, generatedBy)
     } catch (err) {
@@ -732,6 +855,40 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   ipcMain.handle('team-sign-out', () => teamServer.signOut())
   ipcMain.handle('team-admin-ui-url', () => teamServer.adminUiUrl())
   ipcMain.handle('team-ping-server', () => teamServer.pingTeamServer())
+
+  // ── Google Drive storage backend ──
+  // Sign-in lives in the main process (loopback OAuth needs a localhost
+  // server + the system browser). The renderer only ever sees status.
+  ipcMain.handle('google-auth-status', () => googleAuth.googleAuthStatus())
+  ipcMain.handle('google-sign-in', () => googleAuth.googleSignIn())
+  ipcMain.handle('google-sign-out', () => googleAuth.googleSignOut())
+
+  ipcMain.handle('drive-list-shared-drives', () => driveOps.listSharedDrives())
+  ipcMain.handle('drive-list-folders', (_e, sharedDriveId: string) =>
+    driveOps.listDriveFolders(sharedDriveId))
+
+  ipcMain.handle('drive-join-project', async (_e, args: {
+    folderId: string
+    sharedDriveId: string
+    localPath: string
+    name: string
+  }) => {
+    const win = getMainWindow()
+    const config = await driveProject.join(
+      args.folderId,
+      args.sharedDriveId,
+      args.localPath,
+      args.name,
+      progress => {
+        if (win && !win.isDestroyed()) win.webContents.send('join-progress', progress)
+      }
+    )
+    gitOps.setFilesystemProjectPath(config.path)
+    currentProject = config
+    setRestProject(currentProject)
+    if (win) startWatching(config.path, win)
+    return config
+  })
 
   // Push snapshot updates to the renderer so the App-level cache
   // stays current without polling. Each render that subscribes via

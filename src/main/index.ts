@@ -1,3 +1,6 @@
+// MUST be first — populates process.env from a local .env before any
+// module that reads env vars at import time (e.g. google-auth.ts).
+import './load-env'
 import { app, BrowserWindow, Menu, dialog, ipcMain } from 'electron'
 import path from 'path'
 import { is } from '@electron-toolkit/utils'

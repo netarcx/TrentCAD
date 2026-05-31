@@ -592,4 +592,127 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     }
     return { projects: rows }
   })
+
+  // ── Drive-backend check-out / check-in locks ──
+  // These replace `git lfs lock` for projects on the Google Drive
+  // backend. `:key` is the Drive folder id (see migration v15 for why
+  // it's free-text and not a project FK). All three routes are already
+  // behind requireDevice via the /api/projects preHandler above.
+
+  interface LockRow {
+    filePath: string
+    ownerMemberId: number
+    ownerName: string
+    lockedAt: number
+  }
+
+  // List every active lock for a Drive project.
+  app.get<{ Params: { key: string } }>(
+    '/api/projects/:key/locks',
+    async req => {
+      const rows = getDb().prepare(
+        `SELECT filePath, ownerMemberId, ownerName, lockedAt
+           FROM locks WHERE projectKey = ?
+          ORDER BY lockedAt ASC`
+      ).all(req.params.key) as LockRow[]
+      return { locks: rows }
+    },
+  )
+
+  // Acquire a lock (check out). Idempotent for the current owner;
+  // 409 with the holder's name when someone else has it.
+  app.post<{ Params: { key: string }, Body: { filePath?: string } }>(
+    '/api/projects/:key/locks',
+    async (req, reply) => {
+      const member = req.member!
+      const filePath = (req.body?.filePath ?? '').trim()
+      if (!filePath) return reply.code(400).send({ error: 'filePath is required' })
+
+      const existing = getDb().prepare(
+        `SELECT filePath, ownerMemberId, ownerName, lockedAt
+           FROM locks WHERE projectKey = ? AND filePath = ?`
+      ).get(req.params.key, filePath) as LockRow | undefined
+
+      if (existing) {
+        // Already held by the caller → no-op success (lets a client
+        // safely re-assert a lock it thinks it owns).
+        if (existing.ownerMemberId === member.id) return { ok: true, lock: existing }
+        return reply.code(409).send({
+          error: `Already checked out by ${existing.ownerName}`,
+          lock: existing,
+        })
+      }
+
+      const now = Date.now()
+      const { logAudit } = await import('../db.js')
+      try {
+        getDb().prepare(
+          `INSERT INTO locks (projectKey, filePath, ownerMemberId, ownerName, lockedAt)
+           VALUES (?, ?, ?, ?, ?)`
+        ).run(req.params.key, filePath, member.id, member.displayName, now)
+      } catch {
+        // Lost a race against a concurrent acquire — re-read and report
+        // whoever won, rather than 500 on the UNIQUE violation.
+        const winner = getDb().prepare(
+          `SELECT filePath, ownerMemberId, ownerName, lockedAt
+             FROM locks WHERE projectKey = ? AND filePath = ?`
+        ).get(req.params.key, filePath) as LockRow | undefined
+        if (winner && winner.ownerMemberId === member.id) return { ok: true, lock: winner }
+        return reply.code(409).send({
+          error: winner ? `Already checked out by ${winner.ownerName}` : 'Lock conflict',
+          lock: winner,
+        })
+      }
+      logAudit({
+        actorId: member.id,
+        actorLabel: member.displayName,
+        action: 'lock.acquire',
+        target: `${req.params.key}:${filePath}`,
+      })
+      const lock: LockRow = {
+        filePath, ownerMemberId: member.id, ownerName: member.displayName, lockedAt: now,
+      }
+      return { ok: true, lock }
+    },
+  )
+
+  // Release a lock (check in). The owner can always release; a mentor
+  // or admin can force-release anyone's only when the client explicitly
+  // requests the "break lock" path. Releasing a non-existent lock is a
+  // no-op success so the client converges even after a server restart.
+  app.delete<{ Params: { key: string }, Body: { filePath?: string, force?: boolean } }>(
+    '/api/projects/:key/locks',
+    async (req, reply) => {
+      const member = req.member!
+      const filePath = (req.body?.filePath ?? '').trim()
+      if (!filePath) return reply.code(400).send({ error: 'filePath is required' })
+
+      const existing = getDb().prepare(
+        `SELECT filePath, ownerMemberId, ownerName, lockedAt
+           FROM locks WHERE projectKey = ? AND filePath = ?`
+      ).get(req.params.key, filePath) as LockRow | undefined
+      if (!existing) return { ok: true }
+
+      const isOwner = existing.ownerMemberId === member.id
+      const canForce = member.role === 'admin' || member.role === 'mentor'
+      const wantsForce = req.body?.force === true
+      if (!isOwner && (!wantsForce || !canForce)) {
+        return reply.code(403).send({ error: `Checked out by ${existing.ownerName}` })
+      }
+
+      getDb().prepare(
+        `DELETE FROM locks WHERE projectKey = ? AND filePath = ?`
+      ).run(req.params.key, filePath)
+
+      const { logAudit } = await import('../db.js')
+      logAudit({
+        actorId: member.id,
+        actorLabel: member.displayName,
+        action: isOwner ? 'lock.release' : 'lock.force-release',
+        target: `${req.params.key}:${filePath}`,
+        detail: isOwner ? undefined : `was held by ${existing.ownerName}`,
+      })
+      return { ok: true }
+    },
+  )
 }

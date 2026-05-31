@@ -65,6 +65,7 @@ export default function App() {
     setSelectedFile,
     createProject,
     joinProject,
+    joinDriveProject,
     openProject,
     closeProject,
     sync,
@@ -1078,6 +1079,7 @@ export default function App() {
         {kioskStuckBanner}
         <ProjectSetup
           onJoinProject={joinProject}
+          onJoinDriveProject={joinDriveProject}
           onOpenProject={openProject}
           onDismissError={dismissError}
           prefilledJoinUrl={deepLinkJoinUrl}

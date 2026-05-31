@@ -1,6 +1,6 @@
 # Google Drive backend — work-in-progress handoff
 
-Branch: **`feat/google-drive-backend`** (off `main` @ v4.2.1).
+Branch: **`feat/google-drive-backend`** (off `main` @ v5.0.0).
 Goal agreed with Trent: **full replacement** of Git/LFS with Google Drive, end-to-end,
 with **check-out/check-in locks moved to the team server**.
 

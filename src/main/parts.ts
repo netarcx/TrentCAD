@@ -1,7 +1,7 @@
 import path from 'path'
 import fs from 'fs/promises'
 import type { FileEntry, PartsManifest, PartEntry, PartType } from '@shared/types'
-import { getProjectPath } from './git'
+import { getProjectPath } from './project-paths'
 import { pullSharedFile, pushSharedFile } from './persistence'
 import { getBuildDefaultPrefix } from './branding'
 

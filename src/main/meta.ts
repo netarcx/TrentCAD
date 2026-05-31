@@ -2,7 +2,7 @@ import path from 'path'
 import fs from 'fs/promises'
 import type { BulkMetaPatch, ManufacturingMethod, ManufacturingQueueItem, PartMeta, ProjectTotals, ReleaseState } from '@shared/types'
 export type { BulkMetaPatch }
-import { getProjectPath } from './git'
+import { getProjectPath } from './project-paths'
 import { pullSharedFile, pushSharedFile } from './persistence'
 import { currentSnapshot } from './teamServer'
 import { isSwAlive, queuePendingExport } from './export-queue'

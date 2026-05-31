@@ -1,7 +1,7 @@
 import { nativeImage } from 'electron'
 import fs from 'fs/promises'
 import path from 'path'
-import { getProjectPath } from './git'
+import { getProjectPath } from './project-paths'
 
 /**
  * In-memory thumbnail cache keyed by `<size>:<absPath>:<mtimeMs>`. The

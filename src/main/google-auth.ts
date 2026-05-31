@@ -5,12 +5,21 @@ import { OAuth2Client } from 'google-auth-library'
 import { getGoogleAuthSettings, setGoogleAuthSettings } from './config'
 import type { GoogleAuthStatus } from '@shared/types'
 
+declare const __GOOGLE_CLIENT_ID__: string
+declare const __GOOGLE_CLIENT_SECRET__: string
+
 // Desktop OAuth credentials — set via environment variables or embed here
 // after creating credentials in Google Cloud Console.
 // Google explicitly documents that desktop app client secrets are not
 // confidential (they ship inside the binary), so embedding is fine.
-const CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? ''
-const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? ''
+const CLIENT_ID =
+  (typeof __GOOGLE_CLIENT_ID__ !== 'undefined' ? __GOOGLE_CLIENT_ID__ : '') ||
+  process.env.GOOGLE_CLIENT_ID ||
+  ''
+const CLIENT_SECRET =
+  (typeof __GOOGLE_CLIENT_SECRET__ !== 'undefined' ? __GOOGLE_CLIENT_SECRET__ : '') ||
+  process.env.GOOGLE_CLIENT_SECRET ||
+  ''
 const SCOPES = ['https://www.googleapis.com/auth/drive']
 
 let oauthClient: OAuth2Client | null = null

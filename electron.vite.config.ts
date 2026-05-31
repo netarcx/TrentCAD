@@ -29,6 +29,12 @@ const defIssueRepo = JSON.stringify(process.env.FRAMECAD_DEFAULT_ISSUE_REPO || '
 const defServerUrl = JSON.stringify(
   process.env.FRAMECAD_DEFAULT_SERVER_URL || 'https://framecad.swrobotics.com'
 )
+// Google OAuth desktop credentials for the Drive backend. These are
+// public-client credentials in a shipped desktop app, so they are not
+// treated as confidential at runtime; CI injects them during build and
+// local dev can still use .env / shell vars.
+const googleClientId = JSON.stringify(process.env.GOOGLE_CLIENT_ID || '')
+const googleClientSecret = JSON.stringify(process.env.GOOGLE_CLIENT_SECRET || '')
 
 export default defineConfig({
   main: {
@@ -44,7 +50,9 @@ export default defineConfig({
       __FRAMECAD_DEFAULT_TEAM_NAME__: defTeam,
       __FRAMECAD_DEFAULT_WELCOME_MESSAGE__: defWelcome,
       __FRAMECAD_DEFAULT_ISSUE_REPO__: defIssueRepo,
-      __FRAMECAD_DEFAULT_SERVER_URL__: defServerUrl
+      __FRAMECAD_DEFAULT_SERVER_URL__: defServerUrl,
+      __GOOGLE_CLIENT_ID__: googleClientId,
+      __GOOGLE_CLIENT_SECRET__: googleClientSecret
     }
   },
   preload: {
@@ -78,7 +86,9 @@ export default defineConfig({
       __FRAMECAD_DEFAULT_TEAM_NAME__: defTeam,
       __FRAMECAD_DEFAULT_WELCOME_MESSAGE__: defWelcome,
       __FRAMECAD_DEFAULT_ISSUE_REPO__: defIssueRepo,
-      __FRAMECAD_DEFAULT_SERVER_URL__: defServerUrl
+      __FRAMECAD_DEFAULT_SERVER_URL__: defServerUrl,
+      __GOOGLE_CLIENT_ID__: googleClientId,
+      __GOOGLE_CLIENT_SECRET__: googleClientSecret
     }
   }
 })

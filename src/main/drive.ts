@@ -16,6 +16,36 @@ import {
 } from './drive-manifest'
 import type { FileEntry, FileState } from '@shared/types'
 
+declare const __FRAMECAD_GOOGLE_SHARED_DRIVE_IDS__: string
+
+const SHARED_DRIVE_ALLOWLIST = parseSharedDriveIds(
+  (typeof __FRAMECAD_GOOGLE_SHARED_DRIVE_IDS__ !== 'undefined'
+    ? __FRAMECAD_GOOGLE_SHARED_DRIVE_IDS__
+    : '') ||
+  process.env.FRAMECAD_GOOGLE_SHARED_DRIVE_IDS ||
+  ''
+)
+
+function parseSharedDriveIds(raw: string): Set<string> {
+  return new Set(
+    raw
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean)
+  )
+}
+
+function sharedDriveAllowed(sharedDriveId: string): boolean {
+  return SHARED_DRIVE_ALLOWLIST.size === 0 || SHARED_DRIVE_ALLOWLIST.has(sharedDriveId)
+}
+
+function assertSharedDriveAllowed(sharedDriveId: string): void {
+  if (sharedDriveAllowed(sharedDriveId)) return
+  throw new Error(
+    'This Google Shared Drive is not approved for FrameCAD. Ask your admin to update FRAMECAD_GOOGLE_SHARED_DRIVE_IDS.'
+  )
+}
+
 async function getDrive(): Promise<drive_v3.Drive> {
   const auth = await getAuthClient()
   if (!auth) throw new Error('Not signed in to Google. Please sign in first.')
@@ -39,12 +69,13 @@ export async function listSharedDrives(): Promise<{ id: string; name: string }[]
     pageToken = res.data.nextPageToken ?? undefined
   } while (pageToken)
 
-  return results
+  return results.filter(d => sharedDriveAllowed(d.id))
 }
 
 export async function listDriveFolders(
   sharedDriveId: string
 ): Promise<{ id: string; name: string }[]> {
+  assertSharedDriveAllowed(sharedDriveId)
   const drive = await getDrive()
   const results: { id: string; name: string }[] = []
   let pageToken: string | undefined
@@ -129,6 +160,7 @@ export async function downloadProject(
   localPath: string,
   onProgress?: (progress: DownloadProgress) => void
 ): Promise<DriveManifest> {
+  assertSharedDriveAllowed(sharedDriveId)
   const drive = await getDrive()
 
   onProgress?.({ phase: 'Listing files', percent: 0 })
@@ -336,6 +368,7 @@ export async function publishChanges(
 ): Promise<PublishChangesResult> {
   const manifest = await loadManifest(projectDir)
   if (!manifest) throw new Error('No Drive manifest — this project is not a Drive project.')
+  assertSharedDriveAllowed(manifest.sharedDriveId)
   const drive = await getDrive()
 
   const changes = await getLocalChanges(projectDir, manifest)
@@ -426,6 +459,7 @@ export async function syncRemote(
 ): Promise<SyncRemoteResult> {
   const manifest = await loadManifest(projectDir)
   if (!manifest) throw new Error('No Drive manifest — this project is not a Drive project.')
+  assertSharedDriveAllowed(manifest.sharedDriveId)
   const drive = await getDrive()
 
   onProgress?.({ phase: 'Listing files', percent: 0 })

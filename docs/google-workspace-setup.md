@@ -91,15 +91,19 @@ This Shared Drive is where all CAD projects will live. Each project gets its own
 
 ### Dev (recommended): a `.env` file
 
-Copy `.env.example` (at the repo root) to `.env` and fill in your two values:
+Copy `.env.example` (at the repo root) to `.env` and fill in your values:
 
 ```
 GOOGLE_CLIENT_ID=your-client-id-here.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=GOCSPX-your-secret-here
+FRAMECAD_GOOGLE_SHARED_DRIVE_IDS=0AExampleSharedDriveId
 ```
 
 `.env` is gitignored and loaded automatically at startup (`src/main/load-env.ts`),
 so `npm run dev` picks it up — you don't have to re-export anything in each shell.
+`FRAMECAD_GOOGLE_SHARED_DRIVE_IDS` is optional for dev, but production builds
+should set it to the Shared Drive ID that contains FrameCAD projects. Multiple
+IDs can be comma-separated.
 
 ### Or: shell environment variables
 
@@ -109,15 +113,20 @@ If you'd rather not use a file, export them before running FrameCAD (a real
 ```bash
 export GOOGLE_CLIENT_ID="your-client-id-here.apps.googleusercontent.com"
 export GOOGLE_CLIENT_SECRET="GOCSPX-your-secret-here"
+export FRAMECAD_GOOGLE_SHARED_DRIVE_IDS="0AExampleSharedDriveId"
 ```
 
 On Windows (PowerShell):
 ```powershell
 $env:GOOGLE_CLIENT_ID = "your-client-id-here.apps.googleusercontent.com"
 $env:GOOGLE_CLIENT_SECRET = "GOCSPX-your-secret-here"
+$env:FRAMECAD_GOOGLE_SHARED_DRIVE_IDS = "0AExampleSharedDriveId"
 ```
 
-These will be embedded in the app binary in a future release so students don't need to set them.
+For GitHub Actions installer builds, add repository secrets named
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and
+`FRAMECAD_GOOGLE_SHARED_DRIVE_IDS`. Those values are embedded in the app binary
+so students do not need to set them.
 
 ## Things to know
 

@@ -173,6 +173,7 @@ jobs:
           FRAMECAD_DEFAULT_WELCOME_MESSAGE: ${{ secrets.TRENTCAD_DEFAULT_WELCOME_MESSAGE }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          FRAMECAD_GOOGLE_SHARED_DRIVE_IDS: ${{ secrets.FRAMECAD_GOOGLE_SHARED_DRIVE_IDS }}
 
       - name: Upload Windows installer artifact
         if: matrix.platform == 'win'

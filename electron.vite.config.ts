@@ -35,6 +35,11 @@ const defServerUrl = JSON.stringify(
 // local dev can still use .env / shell vars.
 const googleClientId = JSON.stringify(process.env.GOOGLE_CLIENT_ID || '')
 const googleClientSecret = JSON.stringify(process.env.GOOGLE_CLIENT_SECRET || '')
+// Optional comma-separated allowlist of Google Shared Drive IDs the
+// Drive backend may read/write. When set, every Drive operation is
+// blocked outside these IDs, protecting unrelated Shared Drives from
+// accidental project selection.
+const googleSharedDriveIds = JSON.stringify(process.env.FRAMECAD_GOOGLE_SHARED_DRIVE_IDS || '')
 
 export default defineConfig({
   main: {
@@ -52,7 +57,8 @@ export default defineConfig({
       __FRAMECAD_DEFAULT_ISSUE_REPO__: defIssueRepo,
       __FRAMECAD_DEFAULT_SERVER_URL__: defServerUrl,
       __GOOGLE_CLIENT_ID__: googleClientId,
-      __GOOGLE_CLIENT_SECRET__: googleClientSecret
+      __GOOGLE_CLIENT_SECRET__: googleClientSecret,
+      __FRAMECAD_GOOGLE_SHARED_DRIVE_IDS__: googleSharedDriveIds
     }
   },
   preload: {
@@ -88,7 +94,8 @@ export default defineConfig({
       __FRAMECAD_DEFAULT_ISSUE_REPO__: defIssueRepo,
       __FRAMECAD_DEFAULT_SERVER_URL__: defServerUrl,
       __GOOGLE_CLIENT_ID__: googleClientId,
-      __GOOGLE_CLIENT_SECRET__: googleClientSecret
+      __GOOGLE_CLIENT_SECRET__: googleClientSecret,
+      __FRAMECAD_GOOGLE_SHARED_DRIVE_IDS__: googleSharedDriveIds
     }
   }
 })

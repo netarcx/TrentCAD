@@ -572,3 +572,42 @@ export async function releaseDriveLock(
     { method: 'DELETE', body: { filePath, force }, timeoutMs: 6000 },
   )
 }
+
+// --- Drive publish history (replaces `git log` for Drive projects) ---
+
+/** One publish event from the team server, shaped like a HistoryEntry. */
+export interface DrivePublishEntry {
+  hash: string
+  message: string
+  author: string
+  date: string
+  files: string[]
+}
+
+/** Recent publishes for a Drive project, newest first. Empty when not
+ *  enrolled or the server is unreachable (History just shows nothing). */
+export async function listDrivePublishHistory(
+  projectKey: string,
+  limit = 100,
+): Promise<DrivePublishEntry[]> {
+  if (!state.token) return []
+  const data = await fetchTeamApi<{ entries: DrivePublishEntry[] }>(
+    `/api/projects/${encodeURIComponent(projectKey)}/history?limit=${limit}`,
+    { timeoutMs: 6000 },
+  )
+  return data.entries ?? []
+}
+
+/** Record a publish so it shows in History. Best effort — a failure here
+ *  must never fail the publish itself, so callers ignore rejections. */
+export async function recordDrivePublish(
+  projectKey: string,
+  message: string,
+  files: string[],
+): Promise<void> {
+  if (!state.token) return
+  await fetchTeamApi(
+    `/api/projects/${encodeURIComponent(projectKey)}/history`,
+    { method: 'POST', body: { message, files }, timeoutMs: 6000 },
+  )
+}

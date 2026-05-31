@@ -376,6 +376,29 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE team ADD COLUMN googleSharedDriveIds TEXT NOT NULL DEFAULT '';
   `,
+  // v17: publish history for the Google Drive backend. The git/LFS
+  // backend gets its history from `git log`; Drive has no commit graph
+  // (promote-by-move even changes a file's Drive id on each publish), so
+  // the team server records one row per publish — the one component
+  // every client already talks to. Same free-text `projectKey` = Drive
+  // folder id rationale as the locks table (v15): Drive projects aren't
+  // in the GitHub-keyed `projects` table. `filesJson` is a JSON array of
+  // the changed project-relative paths, denormalised so the History view
+  // renders without a join. `authorName` is the member's display name at
+  // publish time so it survives a later rename. ON DELETE CASCADE drops a
+  // member's publish rows if their account is removed.
+  `
+  CREATE TABLE publish_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    projectKey  TEXT NOT NULL,
+    authorId    INTEGER REFERENCES members(id) ON DELETE CASCADE,
+    authorName  TEXT NOT NULL,
+    message     TEXT NOT NULL DEFAULT '',
+    filesJson   TEXT NOT NULL DEFAULT '[]',
+    publishedAt INTEGER NOT NULL
+  );
+  CREATE INDEX publish_log_projectKey_idx ON publish_log(projectKey, publishedAt DESC);
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

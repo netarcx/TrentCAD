@@ -797,6 +797,9 @@ export async function pushMetadataFile(projectDir: string, relPath: string): Pro
 export interface PublishChangesResult {
   uploaded: number
   deleted: number
+  /** Project-relative paths changed in this publish (adds + deletes),
+   *  for the team-server publish-history record. */
+  changedPaths: string[]
 }
 
 /**
@@ -980,7 +983,11 @@ export async function publishChanges(
     }
 
     onProgress?.({ phase: 'Done', percent: 100 })
-    return { uploaded: adds.length, deleted: dels.length }
+    return {
+      uploaded: adds.length,
+      deleted: dels.length,
+      changedPaths: [...adds.map(c => c.relativePath), ...dels.map(c => c.relativePath)]
+    }
   } finally {
     stagingPaused = false
   }

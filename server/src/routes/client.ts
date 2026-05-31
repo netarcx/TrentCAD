@@ -717,4 +717,70 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
       return { ok: true }
     },
   )
+
+  // ── Drive-backend publish history ──
+  // Replaces `git log` for Drive projects (which have no commit graph).
+  // Same free-text `:key` = Drive folder id as the locks routes above,
+  // and behind the same /api/projects requireDevice preHandler.
+
+  interface PublishRow {
+    id: number
+    authorName: string
+    message: string
+    filesJson: string
+    publishedAt: number
+  }
+
+  // List recent publishes, newest first. `?limit=` caps the result
+  // (default 100, hard max 500 so a huge project can't OOM the response).
+  app.get<{ Params: { key: string }, Querystring: { limit?: string } }>(
+    '/api/projects/:key/history',
+    async req => {
+      const limit = Math.min(500, Math.max(1, parseInt(req.query.limit ?? '', 10) || 100))
+      const rows = getDb().prepare(
+        `SELECT id, authorName, message, filesJson, publishedAt
+           FROM publish_log WHERE projectKey = ?
+          ORDER BY publishedAt DESC, id DESC
+          LIMIT ?`
+      ).all(req.params.key, limit) as PublishRow[]
+      const entries = rows.map(r => ({
+        hash: String(r.id),
+        message: r.message,
+        author: r.authorName,
+        date: new Date(r.publishedAt).toISOString(),
+        files: safeParseFiles(r.filesJson),
+      }))
+      return { entries }
+    },
+  )
+
+  // Record one publish. Called by the desktop right after a successful
+  // Drive publish. `files` is the list of changed project-relative paths.
+  app.post<{ Params: { key: string }, Body: { message?: string, files?: string[] } }>(
+    '/api/projects/:key/history',
+    async (req) => {
+      const member = req.member!
+      const message = (req.body?.message ?? '').toString().slice(0, 2000)
+      const files = Array.isArray(req.body?.files)
+        ? req.body!.files.filter(f => typeof f === 'string').slice(0, 5000)
+        : []
+      const now = Date.now()
+      getDb().prepare(
+        `INSERT INTO publish_log (projectKey, authorId, authorName, message, filesJson, publishedAt)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(req.params.key, member.id, member.displayName, message, JSON.stringify(files), now)
+      return { ok: true }
+    },
+  )
+}
+
+// Parse a publish_log.filesJson blob into a string[], tolerating any
+// malformed row rather than failing the whole History response.
+function safeParseFiles(json: string): string[] {
+  try {
+    const v = JSON.parse(json)
+    return Array.isArray(v) ? v.filter((f: unknown) => typeof f === 'string') : []
+  } catch {
+    return []
+  }
 }

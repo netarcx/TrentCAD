@@ -18,7 +18,9 @@ import {
   downloadProject,
   publishChanges,
   syncRemote,
-  getLocalStatus
+  getLocalStatus,
+  stageFile as driveStageFile,
+  gcStaging as driveGcStaging
 } from './drive'
 import { loadManifest } from './drive-manifest'
 import { addRecentProject } from './config'
@@ -65,6 +67,8 @@ export async function open(dir: string): Promise<ProjectConfig | null> {
   }
   current = { dir, config }
   await addRecentProject(config).catch(() => { /* best effort */ })
+  // Sweep any staged copies left over from a previous session (best effort).
+  void driveGcStaging(dir).catch(() => { /* not signed in / offline */ })
   return config
 }
 
@@ -104,6 +108,16 @@ export async function join(
 export async function status(): Promise<FileEntry[]> {
   if (!current) return []
   return getLocalStatus(current.dir)
+}
+
+/**
+ * Background-upload one file's current bytes to the staging area so a later
+ * publish can promote it without re-uploading. Best effort and a no-op when
+ * no Drive project is open.
+ */
+export async function stageFile(relativePath: string): Promise<void> {
+  if (!current) return
+  await driveStageFile(current.dir, relativePath)
 }
 
 export async function sync(onProgress?: (p: PublishProgress) => void): Promise<{

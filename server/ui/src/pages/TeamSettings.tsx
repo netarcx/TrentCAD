@@ -131,6 +131,7 @@ export default function TeamSettings() {
       for (const id of sharedDriveIds) {
         if (!/^[A-Za-z0-9_-]+$/.test(id)) {
           setError(`Google Shared Drive ID "${id}" is invalid. Use comma-separated Drive IDs only.`)
+          setBusy(false)
           return
         }
       }
@@ -138,6 +139,7 @@ export default function TeamSettings() {
       if (patInput.trim() !== '') payload.gitHubPat = patInput.trim()
       if ((payload.lfsUrl as string) && !LFS_URL_REGEX.test(payload.lfsUrl as string)) {
         setError('LFS URL must be a plain http:// or https:// URL (no quotes, spaces, or angle brackets).')
+        setBusy(false)
         return
       }
       // Parse numeric fields from their string form-state. Empty
@@ -154,20 +156,24 @@ export default function TeamSettings() {
       // the same checks (these are belt-and-suspenders).
       if (!Number.isInteger(maxFileSizeMb) || maxFileSizeMb < 10 || maxFileSizeMb > 2048) {
         setError('Max file size must be an integer between 10 and 2048 MB.')
+        setBusy(false)
         return
       }
       if (!Number.isInteger(lfsAutotrackThresholdMb)
           || lfsAutotrackThresholdMb < 1
           || lfsAutotrackThresholdMb >= maxFileSizeMb) {
         setError('Auto-LFS threshold must be ≥ 1 MB and strictly less than Max file size.')
+        setBusy(false)
         return
       }
       if (!Number.isInteger(lfsTokenTtlMinutes) || lfsTokenTtlMinutes < 5 || lfsTokenTtlMinutes > 120) {
         setError('LFS token TTL must be an integer between 5 and 120 minutes.')
+        setBusy(false)
         return
       }
       if (!Number.isInteger(quotaGraceHours) || quotaGraceHours < 0 || quotaGraceHours > 168) {
         setError('Quota grace window must be an integer between 0 and 168 hours.')
+        setBusy(false)
         return
       }
       // Parse the CSV into a clean array — split on commas/spaces/

@@ -107,9 +107,21 @@ async function fetchUserInfo(
   const accessToken = typeof token === 'string' ? token : token.token
   if (!accessToken) return { email: '', name: '' }
 
-  const res = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-    headers: { Authorization: `Bearer ${accessToken}` }
-  })
+  // Bound the request so a network stall during sign-in can't hang the main
+  // process. The callers already treat a failure as "no profile" and proceed.
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 8000)
+  let res: Response
+  try {
+    res = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal: controller.signal
+    })
+  } catch {
+    return { email: '', name: '' }
+  } finally {
+    clearTimeout(timer)
+  }
   if (!res.ok) return { email: '', name: '' }
   const data = await res.json() as { email?: string; name?: string }
   return {

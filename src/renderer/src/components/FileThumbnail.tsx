@@ -12,6 +12,22 @@ import { useEffect, useState, type ReactNode } from 'react'
  */
 const rendererCache = new Map<string, string | null | Promise<string | null>>()
 
+// Cap concurrent getThumbnail IPC calls. Opening a 500+ file project mounts
+// that many FileThumbnail rows at once; firing every getThumbnail immediately
+// floods the IPC channel so status/sync/ping responses queue behind the
+// backlog and the window appears frozen for a burst. We run at most N at a
+// time and queue the rest locally — thumbnails still all load, just paced.
+const THUMB_MAX_CONCURRENT = 8
+let thumbActive = 0
+const thumbQueue: (() => void)[] = []
+
+function pumpThumbQueue(): void {
+  while (thumbActive < THUMB_MAX_CONCURRENT && thumbQueue.length > 0) {
+    const next = thumbQueue.shift()!
+    next()
+  }
+}
+
 function fetchThumbnail(path: string, size: number): Promise<string | null> {
   const key = `${size}:${path}`
   const cached = rendererCache.get(key)
@@ -19,15 +35,23 @@ function fetchThumbnail(path: string, size: number): Promise<string | null> {
     if (cached instanceof Promise) return cached
     return Promise.resolve(cached)
   }
-  const promise = window.api.getThumbnail(path, size)
-    .then(dataUrl => {
-      rendererCache.set(key, dataUrl)
-      return dataUrl
-    })
-    .catch(() => {
-      rendererCache.set(key, null)
-      return null
-    })
+  // Each unique key enters the queue exactly once; duplicate mounts await the
+  // same promise via the cache check above.
+  const promise = new Promise<string | null>(resolve => {
+    const run = (): void => {
+      thumbActive++
+      window.api.getThumbnail(path, size)
+        .then(dataUrl => { rendererCache.set(key, dataUrl); return dataUrl })
+        .catch(() => { rendererCache.set(key, null); return null })
+        .then(result => {
+          thumbActive--
+          pumpThumbQueue()
+          resolve(result)
+        })
+    }
+    thumbQueue.push(run)
+    pumpThumbQueue()
+  })
   rendererCache.set(key, promise)
   return promise
 }

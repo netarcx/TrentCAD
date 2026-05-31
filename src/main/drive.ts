@@ -63,10 +63,29 @@ function assertSharedDriveAllowed(sharedDriveId: string): void {
   )
 }
 
+// Default per-request timeout for Drive metadata calls (list / folder create /
+// trash / metadata update). Without it, googleapis waits forever on a hung /
+// half-open socket (flaky venue WiFi, captive portals), so any IPC handler
+// awaiting the call never returns and the app appears frozen. 30s converts an
+// infinite hang into a recoverable error that withRetry can retry.
+const DRIVE_META_TIMEOUT_MS = Math.max(
+  5000,
+  parseInt(process.env.FRAMECAD_DRIVE_TIMEOUT_MS ?? '', 10) || 30000
+)
+// Streaming transfers (file download / upload) legitimately take longer, so
+// they override the default with a generous cap that still bounds a dead
+// socket instead of hanging forever.
+const DRIVE_TRANSFER_TIMEOUT_MS = Math.max(
+  60000,
+  parseInt(process.env.FRAMECAD_DRIVE_TRANSFER_TIMEOUT_MS ?? '', 10) || 600000
+)
+
 async function getDrive(): Promise<drive_v3.Drive> {
   const auth = await getAuthClient()
   if (!auth) throw new Error('Not signed in to Google. Please sign in first.')
-  return google.drive({ version: 'v3', auth })
+  // `timeout` here is the gaxios default applied to every request on this
+  // client; streaming calls below pass their own larger timeout.
+  return google.drive({ version: 'v3', auth, timeout: DRIVE_META_TIMEOUT_MS })
 }
 
 // How many file transfers run at once. Drive throughput is dominated by
@@ -156,7 +175,7 @@ async function downloadOne(
     await withRetry(async () => {
       const res = await drive.files.get(
         { fileId: driveFileId, alt: 'media', supportsAllDrives: true },
-        { responseType: 'stream' }
+        { responseType: 'stream', timeout: DRIVE_TRANSFER_TIMEOUT_MS }
       )
       await pipeline(res.data as Readable, createWriteStream(tmpPath))
     })
@@ -475,6 +494,12 @@ async function ensureFolderPath(
 let stageChain: Promise<unknown> = Promise.resolve()
 let stagingPaused = false
 
+// Don't background-stage files larger than this (default 50 MB, env-tunable).
+const STAGE_MAX_BYTES = Math.max(
+  1_000_000,
+  parseInt(process.env.FRAMECAD_STAGE_MAX_BYTES ?? '', 10) || 50_000_000
+)
+
 function enqueueStage(fn: () => Promise<void>): Promise<void> {
   const run = stageChain.then(fn)
   stageChain = run.catch(() => { /* keep the chain alive after a failure */ })
@@ -521,12 +546,22 @@ export function stageFile(projectDir: string, relativePath: string): Promise<voi
     if (!manifest || !sharedDriveAllowed(manifest.sharedDriveId)) return
 
     const localPath = path.join(projectDir, ...relativePath.split('/'))
-    let hash: string
     let stat: Awaited<ReturnType<typeof fs.stat>>
     try {
-      ;[hash, stat] = await Promise.all([computeFileHash(localPath), fs.stat(localPath)])
+      stat = await fs.stat(localPath)
     } catch {
       return // file vanished between watcher event and stage
+    }
+    // Skip pre-staging very large files: hashing + uploading them in the
+    // background would tie up CPU/bandwidth for a long time, and publish's
+    // upload path handles them anyway. The speed win of staging is for the
+    // many small/medium parts.
+    if (stat.size > STAGE_MAX_BYTES) return
+    let hash: string
+    try {
+      hash = await computeFileHash(localPath)
+    } catch {
+      return // unreadable / vanished
     }
 
     const state = await getOrInitStagingState(projectDir)
@@ -542,13 +577,13 @@ export function stageFile(projectDir: string, relativePath: string): Promise<voi
             media,
             supportsAllDrives: true,
             fields: 'id'
-          })
+          }, { timeout: DRIVE_TRANSFER_TIMEOUT_MS })
         : drive.files.create({
             requestBody: { name: relativePath.split('/').pop()!, parents: [stagingFolderId] },
             media,
             supportsAllDrives: true,
             fields: 'id'
-          })
+          }, { timeout: DRIVE_TRANSFER_TIMEOUT_MS })
     )
 
     state.files[relativePath] = {
@@ -669,7 +704,13 @@ export async function publishChanges(
   // for any in-flight one to finish before we read staging state / promote.
   stagingPaused = true
   try {
-    await stageChain.catch(() => { /* ignore a failed background stage */ })
+    // Wait for in-flight background staging to settle before we read/promote —
+    // but never block publish forever on a wedged stage op. After the cap we
+    // proceed; any not-yet-staged file just takes the normal upload path.
+    await Promise.race([
+      stageChain.catch(() => { /* ignore a failed background stage */ }),
+      new Promise(resolve => setTimeout(resolve, 5000))
+    ])
     const staging = await loadStagingState(projectDir)
 
     const changes = await getLocalChanges(projectDir, manifest)
@@ -755,13 +796,13 @@ export async function publishChanges(
                 media,
                 supportsAllDrives: true,
                 fields: 'id, modifiedTime'
-              })
+              }, { timeout: DRIVE_TRANSFER_TIMEOUT_MS })
             : drive.files.create({
                 requestBody: { name, parents: [parentId] },
                 media,
                 supportsAllDrives: true,
                 fields: 'id, modifiedTime'
-              })
+              }, { timeout: DRIVE_TRANSFER_TIMEOUT_MS })
         )
         driveFileId = resp.data.id!
         driveModifiedTime = resp.data.modifiedTime ?? new Date().toISOString()

@@ -912,26 +912,47 @@ body.slam-shake {
 .toolbar-btn.has-unpushed {
   position: relative;
   border: 1px solid var(--accent);
-  box-shadow: 0 0 0 0 var(--accent-tint);
+}
+
+/* The pulsing ring is a separate, GPU-composited layer that animates only
+   `transform` + `opacity` — never `box-shadow`. Animating box-shadow forces
+   the compositor to repaint the button every frame, which kept a GPU process
+   pegged at ~15% the entire time a Sync/Publish button had pending updates
+   (i.e. "nothing happening" but a button quietly pulsing forever). transform/
+   opacity composite without repainting, so the same ring costs ~nothing. */
+.toolbar-btn.has-remote-updates::after,
+.toolbar-btn.has-unpushed::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  border: 1px solid var(--accent);
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(1);
+  transform-origin: center;
   animation: toolbar-btn-pulse 2s ease-in-out infinite;
 }
 
 .toolbar-btn.has-remote-updates:disabled,
 .toolbar-btn.has-unpushed:disabled {
-  animation: none;
   border-color: var(--border);
-  box-shadow: none;
+}
+.toolbar-btn.has-remote-updates:disabled::after,
+.toolbar-btn.has-unpushed:disabled::after {
+  animation: none;
+  opacity: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .toolbar-btn.has-remote-updates,
-  .toolbar-btn.has-unpushed { animation: none; }
+  .toolbar-btn.has-remote-updates::after,
+  .toolbar-btn.has-unpushed::after { animation: none; opacity: 0; }
 }
 
 @keyframes toolbar-btn-pulse {
-  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
-  70%  { box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 0%, transparent); }
-  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+  0%   { opacity: 0.55; transform: scale(1); }
+  70%  { opacity: 0;    transform: scale(1.18); }
+  100% { opacity: 0;    transform: scale(1.18); }
 }
 
 .toolbar-btn-badge {

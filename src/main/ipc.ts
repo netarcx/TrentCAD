@@ -120,14 +120,32 @@ async function tryStage(rel: string): Promise<void> {
   })
 }
 
+// Guard so only one Drive status pass (full-tree walk + hashing + lock fetch)
+// runs at a time. Without it, rapid watcher ticks during a SolidWorks save
+// pile up concurrent tree walks that saturate disk/CPU and stall the app. If
+// changes land while a pass is running, `driveStatusRerun` makes it run once
+// more afterward so the final state is never missed.
+let driveStatusInFlight = false
+let driveStatusRerun = false
+
+function runDriveStatus(win: BrowserWindow): void {
+  if (driveStatusInFlight) { driveStatusRerun = true; return }
+  driveStatusInFlight = true
+  getDriveStatusWithLocks()
+    .then(files => { if (!win.isDestroyed()) win.webContents.send('file-change', files) })
+    .catch(() => {})
+    .finally(() => {
+      driveStatusInFlight = false
+      if (driveStatusRerun && !win.isDestroyed()) { driveStatusRerun = false; runDriveStatus(win) }
+    })
+}
+
 function notifyFileChange(win: BrowserWindow): void {
   if (win.isDestroyed()) return
   // Drive projects have no git index / parts manifest sync — just diff
   // the working tree against the Drive manifest and push that.
   if (driveProject.isOpen()) {
-    getDriveStatusWithLocks()
-      .then(files => { if (!win.isDestroyed()) win.webContents.send('file-change', files) })
-      .catch(() => {})
+    runDriveStatus(win)
     return
   }
   partsOps.syncManifest()

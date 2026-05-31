@@ -181,23 +181,37 @@ export async function getLocalChanges(
 
   const changes: LocalChange[] = []
 
+  // Files whose mtime/size differ from the manifest need a SHA-256 to confirm a
+  // real content change. Hash them CONCURRENTLY rather than one-at-a-time — on a
+  // SolidWorks save that touches several large assemblies, serial hashing took
+  // tens of seconds per status refresh and made the app feel frozen.
+  const maybeModified: { relPath: string; local: { mtime: number; size: number } }[] = []
   for (const [relPath, local] of localFiles) {
     const entry = manifest.files[relPath]
     if (!entry) {
       changes.push({ relativePath: relPath, type: 'added', localSize: local.size, localModifiedTime: local.mtime })
       continue
     }
-
     if (local.mtime !== entry.localModifiedTime || local.size !== entry.localSize) {
-      let hash: string
+      maybeModified.push({ relPath, local })
+    }
+  }
+
+  const hashed = await Promise.all(
+    maybeModified.map(async ({ relPath, local }) => {
       try {
-        hash = await computeFileHash(path.join(projectDir, relPath))
+        const hash = await computeFileHash(path.join(projectDir, relPath))
+        return { relPath, local, hash }
       } catch {
-        continue
+        return null // file vanished / unreadable between walk and hash
       }
-      if (hash !== entry.localContentHash) {
-        changes.push({ relativePath: relPath, type: 'modified', localSize: local.size, localModifiedTime: local.mtime })
-      }
+    })
+  )
+  for (const r of hashed) {
+    if (!r) continue
+    const entry = manifest.files[r.relPath]
+    if (entry && r.hash !== entry.localContentHash) {
+      changes.push({ relativePath: r.relPath, type: 'modified', localSize: r.local.size, localModifiedTime: r.local.mtime })
     }
   }
 

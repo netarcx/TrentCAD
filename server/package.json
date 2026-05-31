@@ -1,6 +1,6 @@
 {
   "name": "framecad-server",
-  "version": "5.0.2",
+  "version": "5.0.3",
   "description": "Self-hosted team-coordination server for FrameCAD",
   "private": true,
   "type": "module",

@@ -20,7 +20,12 @@ const CLIENT_SECRET =
   (typeof __GOOGLE_CLIENT_SECRET__ !== 'undefined' ? __GOOGLE_CLIENT_SECRET__ : '') ||
   process.env.GOOGLE_CLIENT_SECRET ||
   ''
-const SCOPES = ['https://www.googleapis.com/auth/drive']
+const SCOPES = [
+  'https://www.googleapis.com/auth/drive',
+  'openid',
+  'email',
+  'profile'
+]
 
 let oauthClient: OAuth2Client | null = null
 let cachedStatus: GoogleAuthStatus = { signedIn: false }
@@ -70,7 +75,7 @@ export async function googleSignIn(): Promise<GoogleAuthStatus> {
   }
   client.setCredentials(tokens)
 
-  const userInfo = await fetchUserInfo(client)
+  const userInfo = await fetchUserInfo(client).catch(() => ({ email: '', name: '' }))
 
   await setGoogleAuthSettings({
     refreshToken: tokens.refresh_token,
@@ -98,12 +103,18 @@ export async function googleSignOut(): Promise<void> {
 async function fetchUserInfo(
   client: OAuth2Client
 ): Promise<{ email: string; name: string }> {
-  const res = await client.request<{ email?: string; name?: string }>({
-    url: 'https://www.googleapis.com/oauth2/v2/userinfo'
+  const token = await client.getAccessToken()
+  const accessToken = typeof token === 'string' ? token : token.token
+  if (!accessToken) return { email: '', name: '' }
+
+  const res = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+    headers: { Authorization: `Bearer ${accessToken}` }
   })
+  if (!res.ok) return { email: '', name: '' }
+  const data = await res.json() as { email?: string; name?: string }
   return {
-    email: res.data.email ?? '',
-    name: res.data.name ?? ''
+    email: data.email ?? '',
+    name: data.name ?? ''
   }
 }
 

@@ -11,14 +11,6 @@ on:
         type: boolean
         default: false
 
-env:
-  # Opt every JS-based action (checkout, setup-node, setup-dotnet,
-  # upload-artifact) into Node.js 24 instead of the runner's default
-  # Node 20. Node 20 hits end-of-life on the runner Sept 2026; this
-  # flag becomes the default June 2026. Setting it now silences the
-  # deprecation warnings and exercises the future runtime today.
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   # Gate the entire build/release pipeline on a real version bump.
   # Trent's convention is to bump package.json's patch digit on every
@@ -32,7 +24,7 @@ jobs:
       release: ${{ steps.check.outputs.release }}
       version: ${{ steps.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 2
       - id: check
@@ -88,7 +80,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: version
         run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
       - name: Ensure GitHub Release v${{ steps.version.outputs.version }} exists
@@ -118,9 +110,9 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '24'
 
@@ -128,7 +120,7 @@ jobs:
       # are Windows-specific and the add-in only loads inside SolidWorks).
       # Mac and Linux are admin-only builds — they get the Electron app
       # without the SW add-in.
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         if: matrix.platform == 'win'
         with:
           dotnet-version: '8.x'
@@ -177,7 +169,7 @@ jobs:
 
       - name: Upload Windows installer artifact
         if: matrix.platform == 'win'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: FrameCAD-Installer-Windows
           path: |
@@ -187,7 +179,7 @@ jobs:
 
       - name: Upload macOS installer artifact
         if: matrix.platform == 'mac'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: FrameCAD-Installer-macOS
           path: dist/*.dmg
@@ -195,7 +187,7 @@ jobs:
 
       - name: Upload Linux installer artifact
         if: matrix.platform == 'linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: FrameCAD-Installer-Linux
           path: |
@@ -205,7 +197,7 @@ jobs:
 
       - name: Upload add-in artifact
         if: matrix.platform == 'win'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: FrameCAD-SolidWorksAddin
           path: build/solidworks-addin/
@@ -225,7 +217,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Read version
         id: version

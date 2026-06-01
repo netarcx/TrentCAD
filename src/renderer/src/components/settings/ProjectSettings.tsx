@@ -5,7 +5,6 @@ import ErrorMsg from '../ErrorMsg'
 export default function ProjectSettings() {
   const [config, setConfig] = useState<AdminConfig>({})
   const [saving, setSaving] = useState(false)
-  const [syncingCots, setSyncingCots] = useState(false)
   const [legacyMode, setLegacyMode] = useState(false)
   const [legacyToggling, setLegacyToggling] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -36,26 +35,11 @@ export default function ProjectSettings() {
         ;(cleaned as Record<string, unknown>)[key] = v
       })
       await window.api.saveAdminConfig(cleaned)
-      setStatus('Saved and pushed to git. Teammates will see this on next sync.')
+      setStatus('Saved to the project. Teammates will see this on next sync.')
     } catch (err) {
       setError((err as Error).message)
     } finally {
       setSaving(false)
-    }
-  }
-
-  const handleSyncCots = async () => {
-    setSyncingCots(true)
-    setError(null)
-    setStatus(null)
-    try {
-      const result = await window.api.syncCots()
-      if (result.success) setStatus(result.cloned ? 'COTS repo cloned into COTS/' : 'COTS folder updated.')
-      else setError(result.error || 'COTS sync failed')
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setSyncingCots(false)
     }
   }
 
@@ -79,8 +63,8 @@ export default function ProjectSettings() {
   return (
     <>
       <p className="admin-warning">
-        These settings are committed and pushed to <em>this project's</em>
-        {' '}git repo on Save. Every teammate picks them up on their next sync.
+        These settings are saved to <em>this project</em> on Save. Every
+        teammate picks them up on their next sync.
       </p>
 
       <div className="admin-section">
@@ -105,10 +89,9 @@ export default function ProjectSettings() {
           placeholder='e.g. "COTS"'
         />
         <p className="admin-hint">
-          A sibling subfolder in this repo holding commercial off-the-shelf
-          parts. Setting this hides it from the project file tree without
-          requiring a separate COTS repo. Use the "COTS Library" section
-          below instead if your COTS lives in a different repo.
+          A sibling subfolder in this project holding commercial
+          off-the-shelf parts. Setting this hides it from the project file
+          tree.
         </p>
       </div>
 
@@ -155,35 +138,6 @@ export default function ProjectSettings() {
           per-part values stay in <code>parts-meta.json</code>;
           just turn the toggle back off to reveal them again.
         </p>
-      </div>
-
-      <div className="admin-section">
-        <h3>COTS Library</h3>
-        <p className="admin-hint">
-          Commercial Off-The-Shelf parts live in a separate Git repo and
-          are cloned into a <code>COTS/</code> subfolder. The folder is
-          gitignored so the two histories stay separate.
-        </p>
-        <label>COTS repo URL</label>
-        <input
-          value={config.cotsRepoUrl ?? ''}
-          onChange={e => set('cotsRepoUrl', e.target.value)}
-          placeholder="https://github.com/org/cots-library.git"
-        />
-        <label>COTS branch (optional)</label>
-        <input
-          value={config.cotsBranch ?? ''}
-          onChange={e => set('cotsBranch', e.target.value)}
-          placeholder="main"
-        />
-        <button
-          className="toolbar-btn"
-          onClick={handleSyncCots}
-          disabled={!config.cotsRepoUrl || syncingCots}
-          style={{ marginTop: 8 }}
-        >
-          {syncingCots ? 'Downloading...' : 'Download COTS now'}
-        </button>
       </div>
 
       <div className="admin-section-actions">

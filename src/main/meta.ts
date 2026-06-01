@@ -147,10 +147,17 @@ export async function findOrphanMetaPaths(manifestPaths: Set<string>): Promise<s
 }
 
 // Who to attribute a metadata change to. On the Drive backend there's no git
-// identity — use the enrolled team-member display name, falling back to
-// 'unknown' when not enrolled.
+// identity — attribution is the enrolled team-member display name. Refuse the
+// write when there's no identity rather than stamping 'unknown' into the
+// team-shared parts-meta.json (it gets pushed to Drive and every teammate sees
+// it permanently). Only the attribution-bearing writers (release state,
+// comments, bulk) call this — mass/cost/method are unaffected.
 async function currentUsername(): Promise<string> {
-  return currentSnapshot().me?.displayName || 'unknown'
+  const name = currentSnapshot().me?.displayName
+  if (!name) {
+    throw new Error('Enroll with your team before changing release state or commenting — these changes are attributed to you and shared with the whole team.')
+  }
+  return name
 }
 
 export async function getPartMeta(filePath: string): Promise<PartMeta> {

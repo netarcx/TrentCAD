@@ -77,7 +77,6 @@ export default function App() {
 
   const [identityChecked, setIdentityChecked] = useState(false)
   const [gitName, setGitName] = useState('')
-  const [gitEmail, setGitEmail] = useState('')
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [updateProgress, setUpdateProgress] = useState<number | null>(null)
   const [updateReady, setUpdateReady] = useState(false)
@@ -271,7 +270,13 @@ export default function App() {
     void (async () => {
       try {
         const recents = await window.api.getRecentProjects()
-        const match = recents.find(r => r.remote && r.remote === projectEntry.repoUrl)
+        // Match a downloaded project to the auto-open target by Drive folder id
+        // first (Drive recents have no GitHub remote), then fall back to the
+        // legacy GitHub remote match.
+        const match = recents.find(r =>
+          (projectEntry.driveFolderId && r.driveFolderId === projectEntry.driveFolderId) ||
+          (r.remote && r.remote === projectEntry.repoUrl)
+        )
         if (match) await openProject(match.path)
         // No local clone yet — gracefully fall through to the welcome
         // screen so the user (or admin) can pick "Team Projects" and
@@ -300,14 +305,13 @@ export default function App() {
   // get its first 'preparing' event wiped by the still-pending timer.
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
-    // Within a single phase, multiple sources emit progress events
-    // with different field subsets — simple-git progress (percent +
-    // stage), git-lfs stderr regex (percent + detail), and the
-    // GIT_LFS_PROGRESS tail (currentFile only). Plain `setPublishProgress(p)`
-    // would have the tail's currentFile-only event wipe out percent/
-    // files/detail. Shallow-merge within the same phase preserves
-    // each source's contribution; phase change still discards (the
-    // 'preparing' detail shouldn't bleed into 'uploading').
+    // Within a single phase, progress events can carry different field
+    // subsets (e.g. one event sets percent, another sets detail). Plain
+    // `setPublishProgress(p)` would let a partial event wipe out
+    // percent/files/detail set by an earlier one. Shallow-merge within
+    // the same phase preserves each event's contribution; phase change
+    // still discards (the 'preparing' detail shouldn't bleed into
+    // 'uploading').
     const merge = (p: PublishProgress) => (prev: PublishProgress | null): PublishProgress => {
       if (!prev || prev.phase !== p.phase) return p
       return { ...prev, ...p }
@@ -526,12 +530,20 @@ export default function App() {
     // Identity is the team-server display name now (set at enrollment).
     // getGitIdentity() returns that name; email is always '' on the
     // Drive-only backend. Read here purely for the header user badge.
-    window.api.getGitIdentity().then(({ name, email }) => {
+    window.api.getGitIdentity().then(({ name }) => {
       setGitName(name)
-      setGitEmail(email)
       setIdentityChecked(true)
     }).catch(() => setIdentityChecked(true))
   }, [])
+
+  // Re-sync the display name when the team snapshot lands. On a FIRST
+  // enrollment `me` is null at mount (so getGitIdentity returned ''), and the
+  // snapshot arrives a moment later via push — without this the header badge +
+  // read-only Profile stayed blank until the next app restart.
+  useEffect(() => {
+    const name = teamSnapshot?.me?.displayName
+    if (name) setGitName(name)
+  }, [teamSnapshot?.me?.displayName])
 
   useEffect(() => {
     const cleanups = [
@@ -606,15 +618,7 @@ export default function App() {
     }
   }
 
-  // Strip developer sentinels that the main process tags onto certain
-  // errors for the renderer's selective remediation paths
-  // (LFS_UNREACHABLE_SENTINEL / GITHUB_AUTH_REQUIRED_SENTINEL). Without
-  // this, the literal `GITHUB_AUTH_REQUIRED: This looks like a private
-  // GitHub repo…` leaks into the banner verbatim, which is unhelpful
-  // to a normal user.
-  const stripSentinels = (msg: string): string => msg
-    .replace(/(^|\s)(LFS_UNREACHABLE|GITHUB_AUTH_REQUIRED):\s*/g, '$1')
-  const displayError = error ? stripSentinels(error) : error
+  const displayError = error
   const errorBanner = error && (
     <div className="error-banner">
       <span className="error-banner-message" title={displayError ?? ''}>{displayError}</span>
@@ -783,85 +787,6 @@ export default function App() {
             <span className="publish-progress-pct">{publishProgress.percent}%</span>
           </div>
         )}
-        {/* Per-file detail — populated by the GIT_LFS_PROGRESS tail.
-            Renders below the overall bar so the user sees "X out of Y
-            files done, currently uploading Z at 30%" at a glance. The
-            minimized mini-bar (when the modal is hidden) deliberately
-            omits this; it's only useful when the user is actually
-            watching the modal. */}
-        {publishProgress.currentFile && publishProgress.currentFile.totalBytes > 0 && (() => {
-          const cf = publishProgress.currentFile
-          const filePct = Math.min(100, Math.round(
-            (cf.bytesTransferred / cf.totalBytes) * 100,
-          ))
-          const fileName = cf.path.split(/[/\\]/).pop() || cf.path
-          const fmt = (n: number): string => {
-            if (n < 1024) return `${n} B`
-            if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-            if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
-            return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
-          }
-          return (
-            <div className="publish-current-file">
-              <div className="publish-current-file-label" title={cf.path}>
-                <span className="publish-current-file-name">{fileName}</span>
-                <span className="publish-current-file-bytes">
-                  {fmt(cf.bytesTransferred)} / {fmt(cf.totalBytes)}
-                </span>
-              </div>
-              <div className="publish-current-file-bar">
-                <div
-                  className="publish-current-file-fill"
-                  style={{ width: `${filePct}%` }}
-                />
-              </div>
-            </div>
-          )
-        })()}
-        {publishProgress.quotaGrace === 'in-grace' && (() => {
-          // Show how much of the 24-hour grace window is left so the
-          // user knows when their write window expires. graceStartedAt
-          // is the timestamp recorded on the server when they first
-          // crossed the cap; we render hours-remaining client-side.
-          const start = publishProgress.quotaGraceStartedAt
-          let remaining = '24 hours'
-          if (typeof start === 'number') {
-            const ms = (start + 24 * 60 * 60 * 1000) - Date.now()
-            const hours = Math.max(0, Math.floor(ms / (60 * 60 * 1000)))
-            remaining = `${hours} hour${hours === 1 ? '' : 's'}`
-          }
-          return (
-            <div
-              className="error-banner"
-              style={{
-                background: 'rgba(252, 211, 77, 0.18)',
-                marginTop: 8,
-                marginBottom: 8,
-              }}
-            >
-              <span className="error-banner-message">
-                ⚠ Project is over its storage quota. You have ~{remaining}{' '}
-                left to delete files before further uploads get blocked.
-                Ask your admin to raise the cap if you need more room.
-              </span>
-            </div>
-          )
-        })()}
-        {publishProgress.quotaGrace === 'expired' && (
-          <div
-            className="error-banner"
-            style={{
-              background: 'rgba(251, 113, 133, 0.18)',
-              marginTop: 8,
-              marginBottom: 8,
-            }}
-          >
-            <span className="error-banner-message">
-              ⚠ Project quota grace window has expired. Uploads will fail
-              until usage drops back under the cap or your admin raises it.
-            </span>
-          </div>
-        )}
         {publishProgress.files && publishProgress.files.length > 0 && (
           <div className="publish-file-list">
             <div className="publish-file-list-header">
@@ -937,22 +862,22 @@ export default function App() {
           teamSnapshot={teamSnapshot}
           onTeamRefresh={team.refresh}
           onEnterManufacturingView={async () => {
-            try {
-              const recents = await window.api.getRecentProjects()
-              if (recents.length === 0) return
-              // Flip into manufacturing mode BEFORE awaiting openProject —
-              // otherwise the regular project view (with the sidebar)
-              // renders for the duration of the open, which the user
-              // sees as a sidebar that mysteriously hides a few seconds
-              // later when the kiosk shell finally takes over. The
-              // `manufacturingView && project` gate keeps the welcome
-              // screen up until project actually arrives.
-              setManufacturingView(true)
-              await openProject(recents[0].path)
-            } catch {
-              // openProject surfaces errors via the error banner
-              setManufacturingView(false)
-            }
+            const recents = await window.api.getRecentProjects()
+            // Open the most-recent DRIVE project (a stale pre-migration git
+            // recent at index 0 would just throw "isn't a FrameCAD project").
+            const target = recents.find(r => r.backend === 'drive') ?? recents[0]
+            if (!target) return
+            // Flip into manufacturing mode BEFORE awaiting openProject —
+            // otherwise the regular project view (with the sidebar) renders
+            // for the duration of the open, which the user sees as a sidebar
+            // that mysteriously hides when the kiosk shell takes over. The
+            // `manufacturingView && project` gate keeps the welcome screen up
+            // until project actually arrives.
+            setManufacturingView(true)
+            const ok = await openProject(target.path)
+            // Open failed (error already surfaced) — roll back so we don't
+            // strand in the kiosk shell with no project.
+            if (!ok) setManufacturingView(false)
           }}
           onOpenAdmin={openAdminOverlay}
           isLoading={isLoading}

@@ -77,15 +77,20 @@ export function useGit() {
     setError(null)
   }, [])
 
-  const openProject = useCallback(async (path: string) => {
+  const openProject = useCallback(async (path: string): Promise<boolean> => {
     setIsLoading(true)
     setError(null)
     try {
       const config = await window.api.openProject(path)
       setProject(config)
       await fetchAll()
+      return true
     } catch (err) {
+      // Surface the error in the UI AND tell the caller it failed, so a
+      // caller that flipped into a special view (e.g. manufacturing/kiosk
+      // shell) can roll back instead of stranding on a null project.
       setError((err as Error).message)
+      return false
     } finally {
       setIsLoading(false)
     }

@@ -569,7 +569,7 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
           <div className="admin-section">
             <h3>Active Check-outs</h3>
             <p className="admin-hint">
-              Every file currently checked out (LFS-locked) on the team's repo.
+              Every file currently checked out (locked) on the team server.
               Use <strong>Force release</strong> to undo someone else's check-out
               when they've forgotten to check it back in — they will lose any
               unpublished edits to that file, so use sparingly and only after
@@ -724,8 +724,8 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
                   Wipe everything stored on this computer — recent projects,
                   team connection, saved preferences (theme, onboarding,
                   operator initials, screensaver setting), update cache —
-                  and restart FrameCAD fresh. Your GitHub login and global
-                  git identity (~/.gitconfig) are left alone.
+                  and restart FrameCAD fresh. Your Google sign-in is left
+                  alone.
                 </p>
                 <button
                   className="toolbar-btn"

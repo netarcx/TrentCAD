@@ -13,6 +13,7 @@
  */
 
 import path from 'node:path'
+import { promises as fs } from 'node:fs'
 import type { FileEntry, ProjectConfig, PublishProgress } from '@shared/types'
 import {
   downloadProject,
@@ -24,6 +25,7 @@ import {
 } from './drive'
 import { loadManifest } from './drive-manifest'
 import { addRecentProject } from './config'
+import { getPolicies } from './teamServer'
 
 interface OpenDriveProject {
   dir: string
@@ -110,6 +112,49 @@ export async function status(): Promise<FileEntry[]> {
   return getLocalStatus(current.dir)
 }
 
+/** Flatten a status tree to the non-directory entries in the given states. */
+function collectFiles(entries: FileEntry[], states: Set<string>, out: string[] = []): string[] {
+  for (const e of entries) {
+    if (!e.isDirectory && states.has(e.state)) out.push(e.path)
+    if (e.children) collectFiles(e.children, states, out)
+  }
+  return out
+}
+
+/**
+ * Enforce the team's publish policy (per-file size cap + blocked extensions)
+ * before anything is uploaded. This is the real per-file backstop that used to
+ * live in the git publish guard; it was lost when the Git backend was removed,
+ * so a Drive publish had no size/extension check at all. Policies come from the
+ * team server (getPolicies falls back to DEFAULT_TEAM_POLICIES offline/standalone,
+ * matching the historical git behaviour). Throws — refusing the whole publish —
+ * if any pending file violates, listing every offender.
+ */
+async function assertPublishAllowed(dir: string): Promise<void> {
+  const policies = getPolicies()
+  const pending = collectFiles(await getLocalStatus(dir), new Set(['modified', 'untracked']))
+  const maxBytes = policies.maxFileSizeMb * 1024 * 1024
+  const blocked = new Set(policies.blockedExtensions.map(e => e.toLowerCase()))
+  const violations: string[] = []
+  for (const rel of pending) {
+    const dot = rel.lastIndexOf('.')
+    const ext = dot >= 0 ? rel.slice(dot + 1).toLowerCase() : ''
+    if (ext && blocked.has(ext)) {
+      violations.push(`${rel} — .${ext} files are blocked by your team's settings`)
+      continue
+    }
+    try {
+      const st = await fs.stat(path.join(dir, ...rel.split('/')))
+      if (st.size > maxBytes) {
+        violations.push(`${rel} — ${(st.size / 1024 / 1024).toFixed(1)} MB exceeds the ${policies.maxFileSizeMb} MB limit`)
+      }
+    } catch { /* file vanished between status and stat — skip */ }
+  }
+  if (violations.length) {
+    throw new Error(`Publish blocked by your team's settings:\n${violations.map(v => `  • ${v}`).join('\n')}`)
+  }
+}
+
 /**
  * Background-upload one file's current bytes to the staging area so a later
  * publish can promote it without re-uploading. Best effort and a no-op when
@@ -149,6 +194,8 @@ export async function publish(onProgress?: (p: PublishProgress) => void): Promis
   if (!current) return { success: false, error: 'No Drive project open' }
   try {
     onProgress?.({ phase: 'preparing', percent: 0 })
+    // Enforce per-file size cap + blocked extensions BEFORE uploading anything.
+    await assertPublishAllowed(current.dir)
     const result = await publishChanges(current.dir, prog => {
       onProgress?.({
         phase: prog.percent >= 100 ? 'done' : 'uploading',

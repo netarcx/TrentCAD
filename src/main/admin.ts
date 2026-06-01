@@ -6,24 +6,9 @@ import { pushSharedFile } from './persistence'
 export interface AdminConfig {
   defaultPartPrefix?: string
   /**
-   * Canonical Git remote URL for the main project. Stored so newly cloned
-   * setups can verify they're pointing at the right remote, and so admins
-   * can centrally update it (rewrites `origin` when applied).
-   */
-  mainRepoUrl?: string
-  /**
-   * Separate Git repository containing shared COTS (Commercial Off-The-Shelf)
-   * parts. FrameCAD clones this into a `COTS/` subfolder of the project on
-   * every open and refreshes it on Sync. The folder is gitignored in the
-   * main repo so the two histories never mix.
-   */
-  cotsRepoUrl?: string
-  cotsBranch?: string
-  /**
    * Drive-backend COTS library: the Shared Drive folder id (and the
    * Shared Drive it lives in) holding the shared COTS parts. FrameCAD
-   * mirrors it into the project's `COTS/` subfolder on open + sync. The
-   * Drive equivalent of cotsRepoUrl/cotsBranch above.
+   * mirrors it into the project's `COTS/` subfolder on open + sync.
    */
   cotsDriveFolderId?: string
   cotsSharedDriveId?: string

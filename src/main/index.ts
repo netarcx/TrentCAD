@@ -168,7 +168,7 @@ function createWindow(): void {
         defaultId: 0,
         cancelId: 0,
         title: 'Upload in progress',
-        message: 'FrameCAD is uploading parts to GitHub.',
+        message: 'FrameCAD is uploading parts to Google Drive.',
         detail: 'Closing now will interrupt the upload. Files that have already been uploaded will be safe, but anything still in flight will need to be re-uploaded on the next attempt.'
       })
       if (choice === 1) {

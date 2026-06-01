@@ -634,56 +634,6 @@ body.slam-shake {
   mix-blend-mode: difference;
 }
 
-/* Per-file progress detail (currentFile from GIT_LFS_PROGRESS).
-   Sits below the overall bar — slimmer, monospace bytes, separate
-   accent so the eye can follow both bars without conflation. */
-.publish-current-file {
-  margin-top: -8px;
-  margin-bottom: 14px;
-}
-
-.publish-current-file-label {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-bottom: 4px;
-}
-
-.publish-current-file-name {
-  font-weight: 500;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-
-.publish-current-file-bytes {
-  font-family: var(--mono, 'SF Mono', Consolas, monospace);
-  font-size: 11px;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.publish-current-file-bar {
-  position: relative;
-  height: 6px;
-  background: var(--bg-primary);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.publish-current-file-fill {
-  position: absolute;
-  inset: 0;
-  width: 0;
-  background: var(--accent-hover, var(--accent));
-  transition: width 0.15s;
-}
-
 .publish-file-list {
   background: var(--bg-primary);
   border: 1px solid var(--border);
@@ -721,43 +671,6 @@ body.slam-shake {
   font-style: italic;
   font-family: inherit;
   margin-top: 4px;
-}
-
-.deps-modal {
-  width: 480px;
-}
-
-.deps-modal h2 {
-  color: var(--red);
-}
-
-.deps-intro {
-  font-size: 13px;
-  color: var(--text-secondary);
-  margin-bottom: 16px;
-  line-height: 1.5;
-}
-
-.deps-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  margin-bottom: 8px;
-}
-
-.deps-row strong {
-  font-size: 14px;
-  color: var(--text-primary);
-}
-
-.deps-sub {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-top: 2px;
 }
 
 .app-version-corner {
@@ -899,77 +812,6 @@ body.slam-shake {
 .toolbar-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .toolbar-btn.primary { background: var(--accent); color: var(--bg-primary); }
 .toolbar-btn.primary:hover { background: var(--accent-hover); }
-
-/* "There's something on origin you haven't pulled yet" Sync-button
-   state. Soft pulsing ring + accent border, plus a count badge piggy-
-   backed onto the button. Disabled and reduced motion preferences
-   knock the animation out so it doesn't distract during sync itself. */
-/* `.has-remote-updates` highlights the Sync button when origin has
-   commits we haven't pulled. `.has-unpushed` mirrors that on the
-   Publish button when local has commits we haven't pushed. Same
-   visual treatment + same reduced-motion handling. */
-.toolbar-btn.has-remote-updates,
-.toolbar-btn.has-unpushed {
-  position: relative;
-  border: 1px solid var(--accent);
-}
-
-/* The pulsing ring is a separate, GPU-composited layer that animates only
-   `transform` + `opacity` — never `box-shadow`. Animating box-shadow forces
-   the compositor to repaint the button every frame, which kept a GPU process
-   pegged at ~15% the entire time a Sync/Publish button had pending updates
-   (i.e. "nothing happening" but a button quietly pulsing forever). transform/
-   opacity composite without repainting, so the same ring costs ~nothing. */
-.toolbar-btn.has-remote-updates::after,
-.toolbar-btn.has-unpushed::after {
-  content: '';
-  position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  border: 1px solid var(--accent);
-  pointer-events: none;
-  opacity: 0;
-  transform: scale(1);
-  transform-origin: center;
-  animation: toolbar-btn-pulse 2s ease-in-out infinite;
-}
-
-.toolbar-btn.has-remote-updates:disabled,
-.toolbar-btn.has-unpushed:disabled {
-  border-color: var(--border);
-}
-.toolbar-btn.has-remote-updates:disabled::after,
-.toolbar-btn.has-unpushed:disabled::after {
-  animation: none;
-  opacity: 0;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .toolbar-btn.has-remote-updates::after,
-  .toolbar-btn.has-unpushed::after { animation: none; opacity: 0; }
-}
-
-@keyframes toolbar-btn-pulse {
-  0%   { opacity: 0.55; transform: scale(1); }
-  70%  { opacity: 0;    transform: scale(1.18); }
-  100% { opacity: 0;    transform: scale(1.18); }
-}
-
-.toolbar-btn-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 16px;
-  padding: 0 5px;
-  margin-left: 4px;
-  background: var(--accent);
-  color: var(--bg-primary);
-  font-size: 10px;
-  font-weight: 700;
-  border-radius: 8px;
-  line-height: 1;
-}
 
 .toolbar-spacer { flex: 1; }
 

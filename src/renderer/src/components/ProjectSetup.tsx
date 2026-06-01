@@ -15,7 +15,7 @@ interface Props {
     localPath: string
     name: string
   }) => Promise<void>
-  onOpenProject: (path: string) => Promise<void>
+  onOpenProject: (path: string) => Promise<boolean>
   /** Open a project and jump straight into the Manufacturing View
    *  (shop-floor mode). Disabled when there are no recent projects to
    *  open. */

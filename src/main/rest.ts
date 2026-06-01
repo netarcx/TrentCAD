@@ -334,8 +334,13 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       case 'POST /api/publish': {
         const body = parseJson(await readBody(req)) as { message?: string } | null
         // Drive publish doesn't require a message (the team-server history
-        // entry just gets a blank label).
-        const driveResult = await serialWrite(() => driveProject.publish())
+        // entry just gets a blank label). Flush any deferred meta commit first
+        // (mirrors the IPC publish handler) so a just-made release-state/mass/
+        // cost edit ships with this publish instead of on the 60s timer.
+        const driveResult = await serialWrite(async () => {
+          await (await import('./meta')).flushMetaCommit()
+          return driveProject.publish()
+        })
         if (driveResult.success && (driveResult.changedPaths?.length ?? 0) > 0) {
           teamServer.recordDrivePublish(restDriveKey(), (body?.message ?? '').trim(), driveResult.changedPaths ?? [])
             .catch(() => { /* best effort */ })

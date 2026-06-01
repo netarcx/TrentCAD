@@ -135,12 +135,6 @@ export interface SyncResult {
   remoteGone?: boolean
 }
 
-export interface GitStatusFile {
-  path: string
-  index: string
-  working_dir: string
-}
-
 export type PartType = 'part' | 'assembly' | 'drawing'
 
 export interface PartEntry {
@@ -185,32 +179,12 @@ export interface PublishProgress {
   percent?: number
   detail?: string
   error?: string
-  /** Per-file detail for the LFS transfer that's currently active.
-   *  Populated during `phase === 'uploading'` when the git-lfs
-   *  GIT_LFS_PROGRESS hook is wired up. The renderer shows this
-   *  as a second progress line below the overall bar. Reads from
-   *  whichever object git-lfs reported most recently — concurrent
-   *  transfers (up to 12 at a time) all share this single field. */
-  currentFile?: {
-    path: string
-    bytesTransferred: number
-    totalBytes: number
-  }
-  /** True on the `phase === 'error'` event when the underlying git
-   *  error matched the "remote unreachable" pattern (could be
-   *  offline OR deleted on the server). Renderer cross-references
-   *  the team snapshot to decide whether to surface the
-   *  authoritative "deleted, back up files" copy. */
+  /** True on the `phase === 'error'` event when the underlying error
+   *  matched the "remote unreachable" pattern (could be offline OR
+   *  deleted on the server). Renderer cross-references the team
+   *  snapshot to decide whether to surface the authoritative
+   *  "deleted, back up files" copy. */
   remoteGone?: boolean
-  /** Quota grace status from the server's `/api/lfs/token` response
-   *  when the publish involved an LFS token mint. Renderer shows a
-   *  warning banner when 'in-grace' so the user knows they're in
-   *  the 24-hour window before writes get blocked. */
-  quotaGrace?: 'ok' | 'in-grace' | 'expired'
-  /** Timestamp (ms since epoch) when the grace window started.
-   *  Renderer derives the remaining-time display from this. Only
-   *  meaningful when `quotaGrace === 'in-grace'`. */
-  quotaGraceStartedAt?: number
 }
 
 /** Google account sign-in state for the Drive storage backend.
@@ -239,18 +213,7 @@ export interface DriveFolder {
 export interface AdminConfig {
   /** Per-project default part-number prefix (e.g. "26-2129") */
   defaultPartPrefix?: string
-  mainRepoUrl?: string
-  cotsRepoUrl?: string
-  cotsBranch?: string
   isCotsProject?: boolean
-  /**
-   * Optional override for where LFS object bytes are stored. When set,
-   * FrameCAD writes a `.lfsconfig` file at the project root pointing at
-   * this URL — git clone/pull/push respect it for LFS operations while
-   * the repo itself stays on GitHub. Blank = use GitHub LFS (default).
-   * Auth is left to the user via .netrc / git credential.
-   */
-  lfsUrl?: string
   /** Suppress the project-totals mass rollup (status bar, BOM summary).
    *  Useful for projects without a meaningful weight target. Default
    *  (undefined) = shown. */
@@ -273,13 +236,11 @@ export interface AdminConfig {
    */
   projectSubpath?: string
   /**
-   * Optional sibling subfolder inside the SAME repo that holds COTS
+   * Optional sibling subfolder inside the SAME project that holds COTS
    * parts. When set, the file tree hides this folder from project
    * views (it's not part of the active project) while still letting
-   * the BOM and Where-Used see those parts. Mutually exclusive with
-   * the `cotsRepoUrl` / `cotsBranch` "COTS lives in a separate repo"
-   * flow: if both are set, the separate-repo flow wins. Same format
-   * rules as `projectSubpath`.
+   * the BOM and Where-Used see those parts. Same format rules as
+   * `projectSubpath`.
    */
   cotsSubpath?: string
 }
@@ -419,6 +380,11 @@ export interface ProjectEntry {
    *  mean offline, not deleted). Optional so a legacy server that
    *  doesn't track remoteStatus still parses cleanly. */
   remoteStatus?: 'unknown' | 'ok' | 'missing'
+  /** Google Drive folder id for a Drive-backed project, when the server
+   *  records one. Lets the desktop match an auto-open/kiosk target to a
+   *  downloaded Drive project by folder id (Drive recents have no GitHub
+   *  remote). Optional — empty on GitHub-only/legacy project rows. */
+  driveFolderId?: string
 }
 
 /** What the renderer reads to decide what to render. Mirrors what the

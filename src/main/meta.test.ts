@@ -6,15 +6,26 @@ import { tmpdir } from 'os'
 let mockProjectPath = ''
 let mockUsername = 'tfox'
 
-// Mock git: getProjectPath / getGit + pull/push helpers used by meta.ts.
-// pullRemoteFile and commitAndPushFile are no-ops in tests (no real repo).
-vi.mock('./git', () => ({
+// meta.ts reads the project dir from ./project-paths, pulls/pushes shared
+// metadata via ./persistence (Drive), derives the author from the team
+// snapshot (./teamServer), and consults ./export-queue for the manufacturing
+// queue. Mock all four so the tests run against a local tmpdir with no
+// Drive/team round-trip and no Electron dependency.
+vi.mock('./project-paths', () => ({
   getProjectPath: () => mockProjectPath,
-  getGit: () => ({
-    getConfig: () => Promise.resolve({ value: mockUsername })
-  }),
-  pullRemoteFile: vi.fn().mockResolvedValue(undefined),
-  commitAndPushFile: vi.fn().mockResolvedValue(undefined)
+  setProjectPath: vi.fn(),
+  clearProjectPath: vi.fn()
+}))
+vi.mock('./persistence', () => ({
+  pullSharedFile: vi.fn().mockResolvedValue(undefined),
+  pushSharedFile: vi.fn().mockResolvedValue(undefined)
+}))
+vi.mock('./teamServer', () => ({
+  currentSnapshot: () => ({ me: { displayName: mockUsername } })
+}))
+vi.mock('./export-queue', () => ({
+  isSwAlive: () => false,
+  queuePendingExport: vi.fn()
 }))
 
 import * as meta from './meta'

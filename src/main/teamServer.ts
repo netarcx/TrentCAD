@@ -383,8 +383,7 @@ export function adminUiUrl(): string | null {
 
 /**
  * Return the team's tunable policies (file-size cap, blocked
- * extensions, LFS token TTL, grace window). Falls back to
- * DEFAULT_TEAM_POLICIES when:
+ * extensions, grace window). Falls back to DEFAULT_TEAM_POLICIES when:
  *   - the desktop isn't enrolled (standalone mode), or
  *   - the team server is on an older version that doesn't return
  *     a `policies` block in /api/team.
@@ -392,22 +391,19 @@ export function adminUiUrl(): string | null {
  * Individual missing fields fall back per-field, so a partial
  * server response can't blank a single value into the default
  * (e.g. server returns just maxFileSizeMb → we still use the
- * defaults for the other four).
+ * defaults for the rest).
  */
 export function getPolicies(): TeamPolicies {
   const p = state.team?.policies
   if (!p) return DEFAULT_TEAM_POLICIES
   return {
     maxFileSizeMb: p.maxFileSizeMb ?? DEFAULT_TEAM_POLICIES.maxFileSizeMb,
-    lfsAutotrackThresholdMb:
-      p.lfsAutotrackThresholdMb ?? DEFAULT_TEAM_POLICIES.lfsAutotrackThresholdMb,
     // Honor an explicit empty array — an admin may have intentionally
     // cleared the blocklist. Only fall back to defaults when the
     // field is missing entirely (older server response shape).
     blockedExtensions: Array.isArray(p.blockedExtensions)
       ? p.blockedExtensions
       : DEFAULT_TEAM_POLICIES.blockedExtensions,
-    lfsTokenTtlMinutes: p.lfsTokenTtlMinutes ?? DEFAULT_TEAM_POLICIES.lfsTokenTtlMinutes,
     quotaGraceHours: p.quotaGraceHours ?? DEFAULT_TEAM_POLICIES.quotaGraceHours,
   }
 }

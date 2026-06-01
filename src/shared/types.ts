@@ -323,11 +323,6 @@ export interface TeamConfig {
   gitHubOrg: string
   projectPrefix: string
   welcomeMessage: string
-  /** Base URL of the self-hosted Git-LFS server (Giftless) when the
-   *  team server is configured for it; empty string otherwise. The
-   *  desktop writes this into each project's `.lfsconfig` so all LFS
-   *  traffic skips GitHub and lands on the team's own storage. */
-  lfsUrl?: string
   /** Comma-separated Google Shared Drive IDs approved for Drive-backend
    *  projects. When non-empty, enrolled desktop clients use this as
    *  the Drive allowlist instead of the installer-baked fallback. */
@@ -345,22 +340,15 @@ export interface TeamConfig {
  * no edits behaves byte-identically to the pre-policy versions.
  */
 export interface TeamPolicies {
-  /** Hard refusal at publish time. Range 10–2048 MB. */
+  /** Hard refusal at publish time. Range 10–2048 MB. The real
+   *  per-file size backstop. */
   maxFileSizeMb: number
-  /** Files above this auto-route to LFS via the publish-time self-
-   *  heal. Must be < maxFileSizeMb. Range 1–maxFileSizeMb-1. */
-  lfsAutotrackThresholdMb: number
   /** File extensions (no leading dot, lowercase) refused at publish.
    *  Empty list = no blacklist; existing built-in remains as the
    *  default after migration v12. */
   blockedExtensions: string[]
-  /** Lifetime of the JWT clients use to talk to Giftless. Range
-   *  5–120 min. Server-enforced; bumping helps slow uploads finish
-   *  on one token, lowering tightens the leak-window. */
-  lfsTokenTtlMinutes: number
-  /** How many hours a project can keep publishing after crossing
-   *  its storage cap before writes are blocked. Range 0–168 (one
-   *  week). Server-enforced too. */
+  /** Vestigial since the Drive migration (no storage cap is enforced
+   *  anymore). Kept because the server still emits it. */
   quotaGraceHours: number
 }
 
@@ -369,7 +357,6 @@ export interface TeamPolicies {
  *  AND the migration v12 server-side defaults. */
 export const DEFAULT_TEAM_POLICIES: TeamPolicies = {
   maxFileSizeMb: 256,
-  lfsAutotrackThresholdMb: 50,
   blockedExtensions: [
     'mp4', 'mov', 'avi', 'mkv', 'wmv', 'webm', 'm4v', 'flv', 'mpg', 'mpeg', '3gp',
     'mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg', 'opus',
@@ -378,7 +365,6 @@ export const DEFAULT_TEAM_POLICIES: TeamPolicies = {
     'bat', 'cmd', 'com', 'ps1', 'sh', 'run', 'bin',
     'url', 'webloc', 'desktop',
   ],
-  lfsTokenTtlMinutes: 15,
   quotaGraceHours: 24,
 }
 

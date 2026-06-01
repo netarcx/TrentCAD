@@ -3,13 +3,29 @@ import path from 'path'
 import { promises as fs } from 'fs'
 import { tmpdir } from 'os'
 
-// parts.ts imports getProjectPath / pullPartsJson / pushPartsJson from ./git.
-// Mock those so we don't need a real git repo with a remote.
+// parts.ts reads the project dir from ./project-paths and pulls/pushes the
+// shared parts.json via ./persistence (Google Drive). Mock both so the tests
+// run against a local tmpdir with no Drive round-trip (and without pulling in
+// the drive/electron modules persistence depends on).
 let mockProjectPath = ''
-vi.mock('./git', () => ({
+vi.mock('./project-paths', () => ({
   getProjectPath: () => mockProjectPath,
-  pullPartsJson: vi.fn().mockResolvedValue(undefined),
-  pushPartsJson: vi.fn().mockResolvedValue(undefined)
+  setProjectPath: vi.fn(),
+  clearProjectPath: vi.fn()
+}))
+vi.mock('./persistence', () => ({
+  pullSharedFile: vi.fn().mockResolvedValue(undefined),
+  pushSharedFile: vi.fn().mockResolvedValue(undefined)
+}))
+// syncManifest lazily `import('./meta')`, which transitively pulls in
+// ./teamServer + ./export-queue (Electron-dependent). Stub those leaf deps so
+// the real meta module can load in a headless test without Electron.
+vi.mock('./teamServer', () => ({
+  currentSnapshot: () => ({ me: null })
+}))
+vi.mock('./export-queue', () => ({
+  isSwAlive: () => false,
+  queuePendingExport: vi.fn()
 }))
 
 // Pin the build-time team prefix so the part-numbering tests keep

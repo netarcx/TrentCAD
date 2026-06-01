@@ -11,23 +11,21 @@ import {
 interface SetupState {
   setupComplete: boolean
   teamInfoSet: boolean
-  lfsConfigured: boolean
-  lfsUrl: string
   projectCount: number
   memberCount: number
 }
 
-type Step = 'team' | 'lfs' | 'project' | 'member' | 'done'
+type Step = 'team' | 'project' | 'member' | 'done'
 
 /**
  * First-launch admin onboarding wizard.
  *
  * Walks a freshly-bootstrapped admin through the minimum a real team
- * needs: team name + GitHub org, LFS sanity-check, a first project,
- * and a first PIN for a teammate. Every step is skippable — the
- * admin can finish the wizard with all four still pending and the
- * server is in a perfectly usable state — but doing the steps now
- * means a single linear flow instead of hunting around the sidebar.
+ * needs: team name + GitHub org, a first project, and a first PIN for
+ * a teammate. Every step is skippable — the admin can finish the
+ * wizard with all still pending and the server is in a perfectly
+ * usable state — but doing the steps now means a single linear flow
+ * instead of hunting around the sidebar.
  *
  * Triggered by AdminShell when `/api/admin/setup-state` says the
  * team row hasn't been marked complete. Once "Finish" is clicked
@@ -45,12 +43,6 @@ export default function Wizard() {
   const [gitHubOrg, setGitHubOrg] = useState('')
   const [projectPrefix, setProjectPrefix] = useState('')
 
-  const [lfsUrl, setLfsUrl] = useState('')
-  const [lfsReachable, setLfsReachable] = useState<boolean | null>(null)
-  const [lfsChecking, setLfsChecking] = useState(false)
-  const [lfsSaving, setLfsSaving] = useState(false)
-  const [lfsTestDetail, setLfsTestDetail] = useState<string | null>(null)
-
   const [projectName, setProjectName] = useState('')
   const [projectRepoUrl, setProjectRepoUrl] = useState('')
   const [projectQuotaGb, setProjectQuotaGb] = useState('10')
@@ -66,7 +58,6 @@ export default function Wizard() {
     api<SetupState>('GET', '/api/admin/setup-state')
       .then(s => {
         setState(s)
-        setLfsUrl(s.lfsUrl ?? '')
         // Prefill team fields from existing values so re-entering the
         // wizard doesn't wipe out what the admin already typed.
         // (Empty server defaults will just leave the inputs blank.)
@@ -106,62 +97,11 @@ export default function Wizard() {
         gitHubOrg,
         projectPrefix,
       })
-      setStep('lfs')
+      setStep('project')
     } catch (err) {
       setError((err as ApiError).message)
     } finally {
       setBusy(false)
-    }
-  }
-
-  async function saveLfsUrl(): Promise<void> {
-    if (lfsUrl.trim() === (state?.lfsUrl ?? '')) return
-    setLfsSaving(true)
-    setError(null)
-    try {
-      await api('PATCH', '/api/admin/team', { lfsUrl: lfsUrl.trim() })
-      // Optimistically update local snapshot so re-testing reads the
-      // new value without a full setup-state refetch.
-      setState(s => s ? { ...s, lfsUrl: lfsUrl.trim() } : s)
-    } catch (err) {
-      setError((err as ApiError).message)
-    } finally {
-      setLfsSaving(false)
-    }
-  }
-
-  async function checkLfs(): Promise<void> {
-    // Save any pending edit first so the test runs against the value
-    // the admin sees (and what other clients will use). This also
-    // means clicking Test after editing implicitly persists the URL.
-    if (lfsUrl.trim() !== (state?.lfsUrl ?? '')) {
-      await saveLfsUrl()
-    }
-    if (!lfsUrl.trim()) {
-      setLfsReachable(false)
-      setLfsTestDetail('No URL configured')
-      return
-    }
-    setLfsChecking(true)
-    setLfsTestDetail(null)
-    try {
-      // Server-side reachability check — the team server can hit the
-      // LFS URL even when the admin's browser can't (different
-      // network, CORS-blocked, etc.).
-      const res = await api<{ reachable: boolean; status?: number; error?: string }>(
-        'POST', '/api/admin/lfs/test', { url: lfsUrl.trim() }
-      )
-      setLfsReachable(res.reachable)
-      setLfsTestDetail(
-        res.reachable
-          ? `HTTP ${res.status ?? '?'} — server is responding`
-          : (res.error || 'No HTTP response')
-      )
-    } catch (err) {
-      setLfsReachable(false)
-      setLfsTestDetail((err as ApiError).message)
-    } finally {
-      setLfsChecking(false)
     }
   }
 
@@ -236,7 +176,7 @@ export default function Wizard() {
     return null
   }
 
-  const stepIndex = ['team', 'lfs', 'project', 'member'].indexOf(step)
+  const stepIndex = ['team', 'project', 'member'].indexOf(step)
 
   return (
     <div className="wizard">
@@ -244,7 +184,7 @@ export default function Wizard() {
         <div className="wizard-header">
           <div className="wizard-brand">FrameCAD</div>
           <div className="wizard-progress">
-            {['Team', 'LFS', 'Project', 'Member'].map((label, i) => (
+            {['Team', 'Project', 'Member'].map((label, i) => (
               <div
                 key={label}
                 className={`wizard-dot${
@@ -288,7 +228,7 @@ export default function Wizard() {
               placeholder="frc2129-"
             />
             <div className="wizard-nav">
-              <button className="link" onClick={() => setStep('lfs')}>
+              <button className="link" onClick={() => setStep('project')}>
                 Skip for now
               </button>
               <button
@@ -297,61 +237,6 @@ export default function Wizard() {
                 disabled={busy || !teamName.trim()}
               >
                 {busy ? 'Saving…' : 'Continue'}
-              </button>
-            </div>
-          </>
-        )}
-
-        {step === 'lfs' && (
-          <>
-            <h2>Self-hosted file storage</h2>
-            <div className="hint">
-              FrameCAD ships with its own Git-LFS server so CAD files don't
-              hit GitHub's metered storage. Set the URL clients on your
-              network will use to reach it, then verify it's responding.
-            </div>
-            <label>LFS server URL</label>
-            <input
-              value={lfsUrl}
-              onChange={e => setLfsUrl(e.target.value)}
-              onBlur={saveLfsUrl}
-              placeholder="http://framecad.school.local:42131"
-              autoFocus
-            />
-            <div className="hint" style={{ marginTop: 4 }}>
-              {lfsSaving
-                ? 'Saving…'
-                : `Use the hostname or LAN IP your students can hit from their laptops. \`localhost\` only works for an admin running everything on one machine.`}
-            </div>
-            <div style={{ marginTop: 14 }}>
-              <button
-                className="secondary"
-                onClick={checkLfs}
-                disabled={!lfsUrl.trim() || lfsChecking || lfsSaving}
-              >
-                {lfsChecking ? 'Checking…' : 'Test connection'}
-              </button>
-              {lfsReachable === true && (
-                <span className="success-inline">✓ Reachable</span>
-              )}
-              {lfsReachable === false && (
-                <span className="error-inline">✗ Could not reach</span>
-              )}
-              {lfsTestDetail && (
-                <div className="hint" style={{ marginTop: 6 }}>
-                  {lfsTestDetail}
-                </div>
-              )}
-            </div>
-            <div className="wizard-nav">
-              <button className="link" onClick={() => setStep('team')}>
-                Back
-              </button>
-              <button className="primary" onClick={async () => {
-                await saveLfsUrl()
-                setStep('project')
-              }}>
-                Continue
               </button>
             </div>
           </>
@@ -388,8 +273,8 @@ export default function Wizard() {
               placeholder="blank = unlimited"
             />
             <div className="hint" style={{ marginTop: 4 }}>
-              Hard cap on how much CAD data this project can push to the
-              LFS server. 10 GB is plenty for a robot's worth of files;
+              Hard cap on how much CAD data this project can store in
+              Google Drive. 10 GB is plenty for a robot's worth of files;
               tweak later from the Projects page.
             </div>
             <div className="wizard-nav">

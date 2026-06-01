@@ -10,7 +10,7 @@
  * and surface a boolean so callers can show "✗ Failed" feedback.
  *
  * Original implementation lived inline in `Pins.tsx`; extracted here
- * so the Projects page (migrate-LFS modal) can reuse the same
+ * so other pages (e.g. the Projects page) can reuse the same
  * safety behaviour.
  */
 export async function copyToClipboard(text: string): Promise<boolean> {

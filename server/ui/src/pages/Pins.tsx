@@ -111,8 +111,7 @@ export default function Pins() {
   }
 
   // copyToClipboard helper now lives in `../lib/copyToClipboard.ts`
-  // so the Projects page (migrate-LFS modal) can reuse the same
-  // safe-fallback logic.
+  // so other pages can reuse the same safe-fallback logic.
 
   /** Which copy button (if any) is currently showing the "Copied!"
    *  feedback. Keyed by PIN code so we can highlight a specific row

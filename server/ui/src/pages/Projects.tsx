@@ -154,52 +154,6 @@ export default function Projects() {
     }
   }
 
-  // Modal state for the LFS-migration script. We surface the
-  // generated commands inline so the admin can copy them to a
-  // workstation that has the repo + can reach the LFS endpoint.
-  const [migrateScript, setMigrateScript] = useState<{
-    projectName: string
-    lfsEndpoint: string
-    tokenLifetimeMinutes: number
-    scripts: { posix: string; powershell: string }
-    shell: 'posix' | 'powershell'
-  } | null>(null)
-  // Copy-button feedback for the migrate-LFS modal — mirrors the
-  // PIN page's pattern so both surfaces show "✓ Copied!" /
-  // "✗ Failed" rather than failing silently on LAN HTTP where
-  // navigator.clipboard isn't available.
-  const [migrateCopyState, setMigrateCopyState] = useState<'idle' | 'ok' | 'fail'>('idle')
-
-  // Escape-key support for the migrate-LFS modal. The backdrop click
-  // already closes it; the keyboard path is an accessibility nicety
-  // that users expect from modals. Listener only mounts while the
-  // modal is open so we're not eating Escape elsewhere on the page.
-  useEffect(() => {
-    if (!migrateScript) return
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        setMigrateScript(null)
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [migrateScript])
-
-  async function startLfsMigrate(p: Project): Promise<void> {
-    setError(null)
-    try {
-      const res = await api<{
-        projectName: string
-        lfsEndpoint: string
-        tokenLifetimeMinutes: number
-        scripts: { posix: string; powershell: string }
-      }>('POST', `/api/admin/projects/${p.id}/migrate-lfs`)
-      setMigrateScript({ ...res, shell: 'posix' })
-    } catch (err) {
-      setError((err as ApiError).message)
-    }
-  }
 
   async function checkRemote(p: Project): Promise<void> {
     setCheckingId(p.id)
@@ -252,8 +206,8 @@ export default function Projects() {
         <div className="hint">
           Listed projects appear on the FrameCAD welcome screen so team
           members can find and join them. The storage quota caps how much
-          CAD data this project can push to the team's self-hosted LFS
-          server — leave blank for unlimited.
+          CAD data this project can store in Google Drive — leave blank
+          for unlimited.
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 12 }}>
           <div>
@@ -533,13 +487,6 @@ export default function Projects() {
                       )}
                     </td>
                     <td className="row-actions">
-                      <button
-                        className="secondary"
-                        onClick={() => startLfsMigrate(p)}
-                        title="Generate a one-time script to copy this project's existing GitHub-LFS objects to the self-hosted LFS server."
-                      >
-                        Migrate LFS
-                      </button>
                       <button className="secondary danger" onClick={() => remove(p)}>Remove</button>
                     </td>
                   </tr>
@@ -549,70 +496,6 @@ export default function Projects() {
           </table>
         )}
       </div>
-
-      {migrateScript && (
-        <div className="modal-backdrop" onClick={() => setMigrateScript(null)}>
-          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 720 }}>
-            <h2>Migrate LFS — {migrateScript.projectName}</h2>
-            <div className="hint" style={{ marginBottom: 10 }}>
-              Run these commands on a workstation that has a clone of this
-              project AND can reach the LFS server at{' '}
-              <span className="mono">{migrateScript.lfsEndpoint}</span>.
-              The embedded auth token expires in {migrateScript.tokenLifetimeMinutes}{' '}
-              minutes — re-open this dialog for a fresh one if you need to retry.
-            </div>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-              <button
-                className={migrateScript.shell === 'posix' ? 'primary' : 'secondary'}
-                onClick={() => setMigrateScript(s => s && { ...s, shell: 'posix' })}
-              >
-                macOS / Linux / Git Bash
-              </button>
-              <button
-                className={migrateScript.shell === 'powershell' ? 'primary' : 'secondary'}
-                onClick={() => setMigrateScript(s => s && { ...s, shell: 'powershell' })}
-              >
-                PowerShell
-              </button>
-            </div>
-            <pre
-              className="mono"
-              style={{
-                background: 'var(--bg-input)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius)',
-                padding: 12,
-                fontSize: 11,
-                overflow: 'auto',
-                maxHeight: 320,
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-              }}
-            >
-              {migrateScript.scripts[migrateScript.shell]}
-            </pre>
-            <div className="actions" style={{ marginTop: 12 }}>
-              <button
-                className="secondary"
-                onClick={async () => {
-                  const ok = await copyToClipboard(
-                    migrateScript.scripts[migrateScript.shell],
-                  )
-                  setMigrateCopyState(ok ? 'ok' : 'fail')
-                  setTimeout(() => setMigrateCopyState('idle'), 2000)
-                }}
-              >
-                {migrateCopyState === 'ok'
-                  ? '✓ Copied!'
-                  : migrateCopyState === 'fail'
-                    ? '✗ Failed'
-                    : 'Copy to clipboard'}
-              </button>
-              <button className="primary" onClick={() => setMigrateScript(null)}>Done</button>
-            </div>
-          </div>
-        </div>
-      )}
     </>
   )
 }

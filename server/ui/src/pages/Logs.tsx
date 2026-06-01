@@ -14,7 +14,6 @@ interface LogResponse {
 
 const CONTAINERS = [
   { id: 'framecad-server', label: 'Team server (Node)' },
-  { id: 'framecad-lfs', label: 'LFS server (Giftless)' },
 ] as const
 
 type ContainerId = typeof CONTAINERS[number]['id']

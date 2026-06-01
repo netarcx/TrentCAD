@@ -1,8 +1,7 @@
-# FrameCAD team server + self-hosted Git-LFS (Giftless).
-# See server/README.md for setup. Requires .env with LFS_JWT_SECRET.
-
-x-shared-env: &shared-env
-  LFS_JWT_SECRET: ${LFS_JWT_SECRET:?LFS_JWT_SECRET must be set in .env}
+# FrameCAD team server.
+# See server/README.md for setup. Storage lives in Google Drive now —
+# the team server only coordinates identity, locks, publish history,
+# team config, and the Shared Drive allowlist (no LFS object store).
 
 services:
   framecad-server:
@@ -18,84 +17,11 @@ services:
       - "42130:42130"
     volumes:
       - ./data:/data
-      - ./data/lfs-objects:/lfs-storage:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
-      <<: *shared-env
       PORT: 42130
       HOST: 0.0.0.0
       DATA_DIR: /data
       LOG_LEVEL: info
-      LFS_SERVER_URL: ${LFS_SERVER_URL:-http://localhost:42131}
-      LFS_STORAGE_DIR: /lfs-storage
     labels:
       org.opencontainers.image.title: FrameCAD Team Server
-
-  # Chowns lfs-objects to UID 1000 (Giftless) on first run.
-  framecad-lfs-init:
-    image: busybox:latest
-    container_name: framecad-lfs-init
-    user: "0:0"
-    volumes:
-      - ./data/lfs-objects:/lfs-storage
-    command: ["sh", "-c", "chown -R 1000:1000 /lfs-storage"]
-    restart: "no"
-
-  framecad-lfs:
-    depends_on:
-      framecad-lfs-init:
-        condition: service_completed_successfully
-    build:
-      context: ./giftless-patches
-    container_name: framecad-lfs
-    restart: unless-stopped
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
-    ports:
-      - "42131:42131"
-    volumes:
-      - ./data/lfs-objects:/lfs-storage
-    environment:
-      <<: *shared-env
-      GIFTLESS_CONFIG_STR: |
-        TRANSFER_ADAPTERS:
-          basic:
-            factory: giftless.transfer.basic_streaming:factory
-            options:
-              storage_class: giftless.storage.local_storage:LocalStorage
-              storage_options:
-                path: /lfs-storage
-          multipart-basic:
-            factory: giftless.transfer.multipart:factory
-            options:
-              storage_class: giftless.storage.local_storage:LocalStorage
-              storage_options:
-                path: /lfs-storage
-              max_part_size: 16777216
-        AUTH_PROVIDERS:
-          - factory: giftless.auth.jwt:factory
-            options:
-              algorithm: HS256
-              private_key: ${LFS_JWT_SECRET}
-              leeway: 10
-      GIFTLESS_DEBUG: "false"
-    # Override upstream's UNIX-socket CMD to speak plain HTTP.
-    entrypoint: ["uwsgi"]
-    command:
-      - --http
-      - 0.0.0.0:42131
-      - --module
-      - giftless.wsgi_entrypoint:app
-      - --master
-      - --enable-threads
-      - --processes
-      - "8"
-      - --threads
-      - "4"
-      - --listen
-      - "4096"
-      - --buffer-size
-      - "65535"
-    labels:
-      org.opencontainers.image.title: FrameCAD LFS Server

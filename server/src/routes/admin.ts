@@ -23,7 +23,6 @@ import {
 import { requireAdmin, issuePin, revokePin } from '../auth.js'
 import { serverVersion, getLatestReleaseVersion, isOutdated } from '../version.js'
 import { config } from '../config.js'
-import { effectiveLfsUrl } from './client.js'
 
 const VALID_ROLES: Role[] = ['admin', 'mentor', 'student']
 
@@ -789,232 +788,13 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   )
 
-  // Generate a shell script the admin runs on their dev machine to
-  // migrate a project's existing GitHub-LFS objects over to the
-  // self-hosted LFS server. We don't run git on the team server
-  // itself — that'd require cloning the repo + having GitHub
-  // credentials at the server level, which is a much bigger lift.
-  // Instead we hand the admin the exact commands so they can do it
-  // from a workstation that already has the repo cloned + the LFS
-  // server reachable.
-  //
-  // The endpoint mints a fresh LFS JWT and embeds it in the script so
-  // the admin doesn't need to wrangle authentication separately. The
-  // token is the standard 15-minute one — long enough for `git lfs
-  // push` of a typical robot's worth of objects, short enough that a
-  // leaked script copy is useless after that window.
-  app.post<{ Params: { id: string } }>(
-    '/api/admin/projects/:id/migrate-lfs',
-    async (req, reply) => {
-      const id = Number.parseInt(req.params.id, 10)
-      if (!Number.isFinite(id)) {
-        return reply.code(400).send({ error: 'Invalid project id' })
-      }
-      const project = getDb().prepare(
-        `SELECT id, name, repoUrl FROM projects WHERE id = ?`
-      ).get(id) as { id: number; name: string; repoUrl: string } | undefined
-      if (!project) {
-        return reply.code(404).send({ error: 'Project not found' })
-      }
-
-      const { lfsEnabled, mintLfsToken } = await import('../lfs.js')
-      // Use effectiveLfsUrl() (DB value > env var fallback) instead
-      // of reading the env var directly. Otherwise an admin who set
-      // the LFS URL on the Team Settings page would see the migrate-
-      // LFS script template the OLD env-var URL (which is the
-      // localhost docker-compose default for most deployments). Bug
-      // discovered 2026-05-22 when migration scripts pointed at
-      // localhost despite the admin UI showing https://lfs.swrobotics.com.
-      const effectiveUrl = effectiveLfsUrl()
-      if (!lfsEnabled() || !effectiveUrl) {
-        return reply.code(503).send({
-          error: 'Self-hosted LFS is not configured on this server. Set the LFS URL on Team Settings → Self-hosted LFS, or via the LFS_SERVER_URL env var.',
-        })
-      }
-
-      const { token } = mintLfsToken({
-        memberId: req.member!.id,
-        displayName: req.member!.displayName,
-        projectId: project.id,
-        writable: true,
-      })
-      const lfsEndpoint = `${effectiveUrl.replace(/\/+$/, '')}/framecad/${project.id}`
-      // Defence-in-depth: the lfsUrl validator on PATCH /api/admin/team
-      // should already block bad URLs from reaching here, but if an
-      // old DB row was set before the validator existed (or the env
-      // var fallback is wonky), refuse to template a script with an
-      // unsafe URL rather than handing the admin something that could
-      // execute arbitrary shell when pasted.
-      if (!/^https?:\/\/[^\s"'<>`$]+$/.test(effectiveUrl)) {
-        return reply.code(500).send({
-          error: 'LFS server URL is malformed — ask whoever runs the server to fix it in Team Settings.',
-        })
-      }
-      // Sanitize project name + repoUrl for safe inclusion in shell /
-      // PowerShell script comments. Comments are only "safe" until a
-      // newline ends the comment — a name with embedded \r\n could
-      // smuggle commands onto the next line. Strip any newline /
-      // CR / backtick / `$()` shell-meta sequences proactively.
-      const scriptSafe = (s: string): string => s
-        .replace(/[\r\n\t]+/g, ' ')
-        .replace(/[`$]/g, '?')
-        .slice(0, 200)
-      const safeName = scriptSafe(project.name)
-      const safeRepoUrl = scriptSafe(project.repoUrl)
-
-      // POSIX + Windows-PowerShell variants. We send both so the
-      // admin can paste whichever matches their shell without
-      // having to translate quoting / continuation chars by hand.
-      const posixScript = [
-        '#!/usr/bin/env bash',
-        'set -e',
-        '# Migrate this project\'s LFS objects from GitHub LFS to the',
-        '# self-hosted server. Run from inside a fresh clone of the',
-        '# repo — fetch all LFS objects from origin, then push them',
-        '# to the team\'s LFS endpoint with an admin-minted JWT.',
-        `# Project: ${safeName}`,
-        `# Repo:    ${safeRepoUrl}`,
-        '',
-        '# 1. Fetch every LFS object from GitHub.',
-        'git lfs fetch --all origin',
-        '',
-        '# 2. Push them to our LFS server, authenticating via the',
-        '#    short-lived JWT below (~15 min lifetime; if it expires',
-        '#    before the push completes, hit the Migrate LFS button',
-        '#    again to get a fresh script).',
-        `git -c "http.${lfsEndpoint}/.extraheader=Authorization: Bearer ${token}" \\`,
-        `      lfs push --all "${lfsEndpoint}"`,
-      ].join('\n')
-
-      const powershellScript = [
-        '# PowerShell variant of the migrate-LFS script.',
-        `# Project: ${safeName}`,
-        `# Repo:    ${safeRepoUrl}`,
-        '',
-        'git lfs fetch --all origin',
-        `git -c "http.${lfsEndpoint}/.extraheader=Authorization: Bearer ${token}" lfs push --all "${lfsEndpoint}"`,
-      ].join('\n')
-
-      logAudit({
-        actorId: req.member!.id,
-        actorLabel: req.member!.displayName,
-        action: 'project.migrate-lfs.script',
-        target: `project:${id}`,
-      })
-
-      return {
-        projectId: project.id,
-        projectName: project.name,
-        repoUrl: project.repoUrl,
-        lfsEndpoint,
-        tokenLifetimeMinutes: 15,
-        scripts: {
-          posix: posixScript,
-          powershell: powershellScript,
-        },
-      }
-    },
-  )
-
-  // ── LFS connectivity test ───────────────────────────────────────────
-  //
-  // Mint a real JWT and hit Giftless's batch endpoint to surface the
-  // actual HTTP status + body. Saves spelunking through container
-  // logs when troubleshooting "Client error" surfaces git-lfs prints
-  // without specifics. Authed admin-only because it issues a write
-  // token (short-lived) and leaks the LFS endpoint structure to the
-  // caller.
-  app.post('/api/admin/test-lfs', async (req, reply) => {
-    const { lfsEnabled, mintLfsToken } = await import('../lfs.js')
-    const effectiveUrl = effectiveLfsUrl()
-    if (!lfsEnabled() || !effectiveUrl) {
-      return reply.code(503).send({
-        ok: false,
-        error: 'Self-hosted LFS is not configured. Set the LFS URL on Team Settings → Self-hosted LFS or via LFS_SERVER_URL.',
-      })
-    }
-    // Pick any registered project to scope the token. If there are
-    // none yet, use projectId=0 — Giftless will still process the
-    // batch request and tell us if auth is the problem (the request
-    // is a verify-only operation, so no actual upload happens).
-    const projectRow = getDb().prepare(
-      `SELECT id FROM projects ORDER BY id ASC LIMIT 1`
-    ).get() as { id: number } | undefined
-    const projectId = projectRow?.id ?? 0
-    const { token } = mintLfsToken({
-      memberId: req.member!.id,
-      displayName: req.member!.displayName,
-      projectId,
-      writable: false,
-    })
-    const batchUrl = `${effectiveUrl.replace(/\/+$/, '')}/framecad/${projectId}/objects/batch`
-    // A minimal valid batch request — `download` operation on a single
-    // dummy oid. Giftless responds with object metadata OR an auth
-    // failure; either way we surface the verbatim HTTP status + body
-    // so the admin can diagnose.
-    const body = JSON.stringify({
-      operation: 'download',
-      transfers: ['basic'],
-      objects: [{
-        // SHA-256 of empty string — Giftless will look it up and
-        // return 404 if not found, which is FINE: it proves the
-        // auth handshake worked. A 401/403 means auth failed.
-        oid: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-        size: 0,
-      }],
-    })
-    let status = 0
-    let respBody = ''
-    let errMsg: string | null = null
-    try {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 10000)
-      try {
-        const res = await fetch(batchUrl, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Accept': 'application/vnd.git-lfs+json',
-            'Content-Type': 'application/vnd.git-lfs+json',
-            'User-Agent': 'framecad-server-lfs-test',
-          },
-          body,
-        })
-        status = res.status
-        respBody = (await res.text()).slice(0, 2048)
-      } finally {
-        clearTimeout(timer)
-      }
-    } catch (err) {
-      errMsg = (err as Error).message || 'network error'
-    }
-    // Interpret the result for the admin. Giftless returns 200 (with
-    // an "object not found" entry inside) when auth works but the
-    // requested oid doesn't exist — that's a SUCCESS for our purposes.
-    let verdict: 'ok' | 'unreachable' | 'auth-failed' | 'misconfigured' | 'unknown'
-    if (errMsg) verdict = 'unreachable'
-    else if (status === 200) verdict = 'ok'
-    else if (status === 401 || status === 403) verdict = 'auth-failed'
-    else if (status === 404 || status >= 500) verdict = 'misconfigured'
-    else verdict = 'unknown'
-    return {
-      verdict,
-      status,
-      batchUrl,
-      tokenScope: `framecad/${projectId}`,
-      body: respBody,
-      networkError: errMsg,
-    }
-  })
-
   // ── Container logs ─────────────────────────────────────────────────
   //
   // Admin-only snapshot endpoint that reads the last N lines of a
   // container's stdout/stderr via Docker's Unix socket. Two
   // containers expected in the standard docker-compose stack:
-  // 'framecad-server' (this Node app) and 'framecad-lfs' (the
-  // Giftless container). Adding new ones is a matter of letting them
-  // through the allowlist below.
+  // 'framecad-server' (this Node app). Adding new ones is a matter of
+  // letting them through the allowlist below.
   //
   // Requires /var/run/docker.sock to be bind-mounted into this
   // container's filesystem — see docker-compose.yml. We hard-allowlist
@@ -1022,7 +802,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
   // unrelated containers on the same Docker daemon (defence-in-depth;
   // the socket gives broader powers in theory but we only expose what
   // we need).
-  const LOG_ALLOWLIST = new Set(['framecad-server', 'framecad-lfs'])
+  const LOG_ALLOWLIST = new Set(['framecad-server'])
   app.get<{
     Params: { name: string }
     Querystring: { tail?: string }
@@ -1069,12 +849,9 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     const memberCount = (getDb().prepare(
       `SELECT COUNT(*) AS n FROM members WHERE id != ?`
     ).get(req.member!.id) as { n: number }).n
-    const lfsUrl = effectiveLfsUrl()
     return {
       setupComplete: team.setupComplete === 1,
       teamInfoSet: team.name.trim().length > 0 && team.gitHubOrg.trim().length > 0,
-      lfsConfigured: !!lfsUrl,
-      lfsUrl,
       projectCount,
       memberCount,
     }
@@ -1094,47 +871,6 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     return { success: true }
   })
 
-  // Test reachability of the LFS server from the *team server's*
-  // network position, not the browser's. The wizard previously did
-  // a browser-side fetch, which fails for two reasons in any real
-  // deployment: the URL is usually only reachable from the LAN where
-  // the team server lives (not the admin's laptop), and Giftless
-  // doesn't return CORS headers anyway. Server-side fetch is correct.
-  app.post<{ Body: { url?: string } }>(
-    '/api/admin/lfs/test',
-    async (req, reply) => {
-      const url = (req.body?.url ?? '').trim().replace(/\/+$/, '')
-      if (!url) {
-        return reply.code(400).send({ error: 'url is required' })
-      }
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 4000)
-      try {
-        // Hit `<url>/objects/batch` with a minimal POST — Giftless
-        // responds 400 (bad body) or 401 (no auth) when it's alive
-        // and 5xx / network-error when it's not. We treat anything
-        // < 500 as "reachable" because it proves the HTTP server is
-        // there and serving the LFS protocol.
-        const res = await fetch(`${url}/objects/batch`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/vnd.git-lfs+json' },
-          body: '{}',
-          signal: controller.signal,
-        })
-        return {
-          reachable: res.status < 500,
-          status: res.status,
-        }
-      } catch (err) {
-        return {
-          reachable: false,
-          error: (err as Error).message || 'Network error',
-        }
-      } finally {
-        clearTimeout(timer)
-      }
-    },
-  )
 
   // ── Team config ────────────────────────────────────────────────────
 
@@ -1144,7 +880,6 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     projectPrefix?: string
     welcomeMessage?: string
     googleSharedDriveIds?: string
-    lfsUrl?: string
     /** GitHub Personal Access Token used by the server to create repos
      *  on behalf of admins. Empty string clears it. Audit logs only
      *  record set/clear, never the value. */
@@ -1152,36 +887,19 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     // v12 policy knobs — all range-validated below, see migration v12
     // for the rationale and defaults.
     maxFileSizeMb?: number
-    lfsAutotrackThresholdMb?: number
     blockedExtensions?: string[]
-    lfsTokenTtlMinutes?: number
     quotaGraceHours?: number
   } }>('/api/admin/team', async (req, reply) => {
     const updates: string[] = []
     const values: Array<string | number | null> = []
     let patChanged: 'set' | 'cleared' | null = null
     for (const field of [
-      'name', 'gitHubOrg', 'projectPrefix', 'welcomeMessage', 'lfsUrl', 'gitHubPat',
+      'name', 'gitHubOrg', 'projectPrefix', 'welcomeMessage', 'gitHubPat',
       'googleSharedDriveIds',
     ] as const) {
       if (typeof req.body?.[field] === 'string') {
         const raw = req.body[field]!.trim()
-        if (field === 'lfsUrl') {
-          // The lfsUrl flows into shell-script templates (the migrate-
-          // LFS endpoint) and into clients' `git -c lfs.url=…` configs.
-          // Both are injection-prone if the value contains whitespace,
-          // quotes, or angle brackets. Validate strictly here so a
-          // bad URL never reaches those downstream consumers.
-          if (raw && !/^https?:\/\/[^\s"'<>`$]+$/.test(raw)) {
-            return reply.code(400).send({
-              error: 'LFS URL must be a plain http:// or https:// URL with no quotes, spaces, or shell metacharacters.',
-            })
-          }
-          // Strip trailing slashes on lfsUrl so giftless's `/objects/...`
-          // resolves correctly regardless of how the admin typed it.
-          updates.push(`${field} = ?`)
-          values.push(raw.replace(/\/+$/, ''))
-        } else if (field === 'gitHubPat') {
+        if (field === 'gitHubPat') {
           // Empty string = clear the token. Light-touch validation:
           // GitHub PATs are alphanum + underscore + dash, with a
           // ghp_/ghs_/github_pat_ prefix on classic / fine-grained.
@@ -1216,12 +934,8 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    // v12 policy knobs. Range-validate each before persisting; pull
-    // the threshold/max-size pair together so we can enforce
-    // threshold < maxSize as one atomic decision rather than
-    // sequentially.
+    // v12 policy knobs. Range-validate each before persisting.
     const maxSizeReq = req.body?.maxFileSizeMb
-    const thresholdReq = req.body?.lfsAutotrackThresholdMb
     if (typeof maxSizeReq === 'number') {
       if (!Number.isInteger(maxSizeReq) || maxSizeReq < 10 || maxSizeReq > 2048) {
         return reply.code(400).send({
@@ -1230,26 +944,6 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       }
       updates.push('maxFileSizeMb = ?')
       values.push(maxSizeReq)
-    }
-    if (typeof thresholdReq === 'number') {
-      if (!Number.isInteger(thresholdReq) || thresholdReq < 1) {
-        return reply.code(400).send({
-          error: 'lfsAutotrackThresholdMb must be a positive integer.',
-        })
-      }
-      // Cross-check against the effective max-file-size (the value
-      // we're about to persist OR the current row's value if unchanged).
-      const currentMax = (getDb().prepare(
-        `SELECT maxFileSizeMb FROM team WHERE id = 1`
-      ).get() as { maxFileSizeMb: number } | undefined)?.maxFileSizeMb ?? 256
-      const effectiveMax = typeof maxSizeReq === 'number' ? maxSizeReq : currentMax
-      if (thresholdReq >= effectiveMax) {
-        return reply.code(400).send({
-          error: `lfsAutotrackThresholdMb (${thresholdReq}) must be less than maxFileSizeMb (${effectiveMax}).`,
-        })
-      }
-      updates.push('lfsAutotrackThresholdMb = ?')
-      values.push(thresholdReq)
     }
     if (Array.isArray(req.body?.blockedExtensions)) {
       const cleaned: string[] = []
@@ -1269,16 +963,6 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       }
       updates.push('blockedExtensionsJson = ?')
       values.push(JSON.stringify(cleaned))
-    }
-    const ttlReq = req.body?.lfsTokenTtlMinutes
-    if (typeof ttlReq === 'number') {
-      if (!Number.isInteger(ttlReq) || ttlReq < 5 || ttlReq > 120) {
-        return reply.code(400).send({
-          error: 'lfsTokenTtlMinutes must be an integer between 5 and 120.',
-        })
-      }
-      updates.push('lfsTokenTtlMinutes = ?')
-      values.push(ttlReq)
     }
     const graceReq = req.body?.quotaGraceHours
     if (typeof graceReq === 'number') {
@@ -1408,10 +1092,6 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
   // settings) and re-bootstraps a fresh setup PIN. Intended for
   // testing the first-launch flow repeatedly without manually
   // `docker compose down && rm -rf data && docker compose up`.
-  //
-  // We do NOT delete the LFS object store directory — that's
-  // separate (and giftless writes there, not us). Operator deletes
-  // it manually if they want a true clean slate.
   //
   // Triple-confirmation lives in the UI; here we just require the
   // caller to POST the literal string "RESET" as the `confirm` body

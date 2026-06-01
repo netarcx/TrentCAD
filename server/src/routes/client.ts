@@ -10,9 +10,6 @@
 import type { FastifyInstance } from 'fastify'
 import { getDb, type Role, type MemberStatus } from '../db.js'
 import { requireDevice, hashPassword, isPasswordAcceptable } from '../auth.js'
-import { config } from '../config.js'
-import { lfsEnabled, mintLfsToken } from '../lfs.js'
-import { scanProjectStorage } from '../storage.js'
 
 interface TeamRow {
   name: string
@@ -61,23 +58,6 @@ function parseBlockedExts(raw: string | undefined): string[] {
   }
 }
 
-/**
- * Effective LFS URL for the running server. The team row is the
- * source of truth (admin can edit via the UI); the LFS_SERVER_URL
- * env var is the fallback for fresh installs / operators who never
- * visit the wizard. Empty string when neither side has a value —
- * the desktop client treats that as "no self-hosted LFS, use the
- * project's default (GitHub LFS)".
- */
-export function effectiveLfsUrl(): string {
-  const row = getDb().prepare(
-    `SELECT lfsUrl FROM team WHERE id = 1`
-  ).get() as { lfsUrl: string | null } | undefined
-  const dbVal = (row?.lfsUrl ?? '').trim()
-  if (dbVal) return dbVal
-  return config.lfsServerUrl ?? ''
-}
-
 interface MemberRow {
   id: number
   displayName: string
@@ -105,8 +85,7 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     if (!req.url.startsWith('/api/me') &&
         !req.url.startsWith('/api/team') &&
         !req.url.startsWith('/api/members') &&
-        !req.url.startsWith('/api/projects') &&
-        !req.url.startsWith('/api/lfs/')) return
+        !req.url.startsWith('/api/projects')) return
     await requireDevice(req, reply)
   })
 
@@ -352,11 +331,6 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
       welcomeMessage: team.welcomeMessage,
       googleSharedDriveIds: team.googleSharedDriveIds ?? '',
       updatedAt: team.updatedAt,
-      // Empty string when LFS isn't configured on this server (neither
-      // the team row nor the env var has a value). Clients detect that
-      // and fall back to whatever LFS URL the project's `.lfsconfig`
-      // already specifies (i.e. GitHub LFS).
-      lfsUrl: effectiveLfsUrl(),
       // Boolean only — the actual PAT never leaves the server. Used
       // by the admin UI's Team Settings page to render "Token: set /
       // not set" without round-tripping the secret. Authed devices
@@ -370,178 +344,11 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
       // byte-identically until an admin edits something.
       policies: {
         maxFileSizeMb: team.maxFileSizeMb ?? 256,
-        lfsAutotrackThresholdMb: team.lfsAutotrackThresholdMb ?? 50,
         blockedExtensions: parseBlockedExts(team.blockedExtensionsJson),
-        lfsTokenTtlMinutes: team.lfsTokenTtlMinutes ?? 15,
         quotaGraceHours: team.quotaGraceHours ?? 24,
       },
     }
   })
-
-  // ── Self-hosted LFS ────────────────────────────────────────────────
-
-  // Mint a short-lived JWT for the calling member to use against the
-  // self-hosted LFS server (Giftless). The token is scoped to ONE
-  // project, identified by `projectId` in the body — giftless will
-  // reject any request whose URL doesn't match the scope, so a token
-  // for project 7 can never read or write project 12's objects.
-  //
-  // Quota enforcement happens here on the way in: we rescan the
-  // project's on-disk footprint, update the cached value, and if
-  // we're over the configured cap we mint a READ-ONLY token. The
-  // desktop sees a 403 from giftless on push but pulls still work,
-  // so existing work isn't stranded.
-  app.post<{ Body: { projectId?: unknown } }>(
-    '/api/lfs/token',
-    async (req, reply) => {
-      if (!lfsEnabled()) {
-        return reply.code(503).send({
-          error: 'Self-hosted LFS is not configured on this server',
-        })
-      }
-      const projectIdRaw = req.body?.projectId
-      const projectId =
-        typeof projectIdRaw === 'number' && Number.isFinite(projectIdRaw)
-          ? projectIdRaw
-          : Number.parseInt(String(projectIdRaw ?? ''), 10)
-      if (!Number.isFinite(projectId) || projectId <= 0) {
-        return reply.code(400).send({ error: 'projectId is required' })
-      }
-
-      const project = getDb().prepare(
-        `SELECT id, name, quotaBytes, storageBytes, quotaGraceUsedAt
-           FROM projects WHERE id = ?`
-      ).get(projectId) as {
-        id: number
-        name: string
-        quotaBytes: number | null
-        storageBytes: number
-        quotaGraceUsedAt: number | null
-      } | undefined
-      if (!project) {
-        return reply.code(404).send({ error: 'Project not found' })
-      }
-
-      // Enforce per-member project allowlist — if a student has a
-      // non-empty allowlist and this project isn't on it, no token.
-      // (Admins/mentors aren't allowlisted; they can always push.)
-      const m = req.member!
-      if (m.role === 'student' && m.allowedProjectIds.length > 0
-          && !m.allowedProjectIds.includes(projectId)) {
-        return reply.code(403).send({ error: 'Project not in your allowlist' })
-      }
-
-      // Re-scan disk usage; cache back into the projects row so the
-      // admin Projects page shows fresh numbers without a separate
-      // scheduler. Best-effort: on scan failure, fall back to the
-      // cached value AND do NOT advance the scannedAt timestamp —
-      // otherwise the admin UI shows "scanned 5s ago" with stale
-      // bytes, AND any grace-period progression below could
-      // accidentally bypass the cap if storage was modified but
-      // the scan failed to observe it.
-      let currentBytes = project.storageBytes
-      let scanOk = false
-      try {
-        currentBytes = await scanProjectStorage(projectId)
-        getDb().prepare(
-          `UPDATE projects SET storageBytes = ?, storageScannedAt = ? WHERE id = ?`
-        ).run(currentBytes, Date.now(), projectId)
-        scanOk = true
-      } catch { /* keep cached value; scanOk stays false */ }
-
-      // Three-state quota check with a 24-hour grace window. The user
-      // who first crosses the cap gets a writable token + a warning so
-      // they can delete files; if they keep pushing past the grace
-      // window the token drops to read-only. Cleaning up + dropping
-      // back under the cap clears the timestamp so a future cross
-      // gets its own fresh grace.
-      // Grace window pulled from team policies (migration v12 default
-      // = 24 hours). Looked up per-request so an admin tweak in
-      // Settings → Limits & Policies takes effect on the very next
-      // token request, no restart needed.
-      const graceHoursRow = getDb().prepare(
-        `SELECT quotaGraceHours FROM team WHERE id = 1`
-      ).get() as { quotaGraceHours: number | null } | undefined
-      const graceHours =
-        (graceHoursRow?.quotaGraceHours != null
-          && graceHoursRow.quotaGraceHours >= 0
-          && graceHoursRow.quotaGraceHours <= 168)
-          ? graceHoursRow.quotaGraceHours
-          : 24
-      const GRACE_MS = graceHours * 60 * 60 * 1000
-      const now = Date.now()
-      const isOverCap = project.quotaBytes !== null
-        && currentBytes >= project.quotaBytes
-      let writable: boolean
-      let quotaGrace: 'ok' | 'in-grace' | 'expired' = 'ok'
-
-      if (!isOverCap) {
-        // Under the cap. Clear any past grace timestamp so the next
-        // crossing gets a fresh 24-hour window. Skip the clear if
-        // the scan didn't run — the cached bytes might be stale
-        // and the user might actually still be over the cap.
-        writable = true
-        if (scanOk && project.quotaGraceUsedAt !== null) {
-          getDb().prepare(
-            `UPDATE projects SET quotaGraceUsedAt = NULL WHERE id = ?`
-          ).run(projectId)
-        }
-      } else if (project.quotaGraceUsedAt === null) {
-        // First crossing — start the grace clock + grant write. ONLY
-        // persist the timestamp when the scan succeeded; otherwise a
-        // transient scan failure on a borderline project could start
-        // the clock against the user's intent.
-        writable = true
-        quotaGrace = 'in-grace'
-        if (scanOk) {
-          // Guarded UPDATE: only set the grace clock when the column
-          // is still NULL. Two concurrent /api/lfs/token calls would
-          // otherwise both run the UPDATE and the second's `now`
-          // would overwrite the first — effectively extending the
-          // grace window every time the user re-publishes during it.
-          // The `WHERE quotaGraceUsedAt IS NULL` clause makes only
-          // the very first crossing land; subsequent concurrent
-          // writes are no-ops.
-          getDb().prepare(
-            `UPDATE projects
-                SET quotaGraceUsedAt = ?
-              WHERE id = ? AND quotaGraceUsedAt IS NULL`
-          ).run(now, projectId)
-        }
-      } else if (now - project.quotaGraceUsedAt < GRACE_MS) {
-        // Still within the grace window. Keep granting writes.
-        writable = true
-        quotaGrace = 'in-grace'
-      } else {
-        // Grace expired. Read-only until the user drops back under.
-        writable = false
-        quotaGrace = 'expired'
-      }
-
-      const { token, expiresAt } = mintLfsToken({
-        memberId: m.id,
-        displayName: m.displayName,
-        projectId,
-        writable,
-      })
-
-      return {
-        token,
-        expiresAt,
-        url: effectiveLfsUrl(),
-        projectId,
-        writable,
-        quota: {
-          used: currentBytes,
-          limit: project.quotaBytes,  // null = unlimited
-          /** 'ok' under cap; 'in-grace' over but still inside the
-           *  24-hour window; 'expired' grace gone, writes refused. */
-          grace: quotaGrace,
-          graceStartedAt: project.quotaGraceUsedAt,
-        },
-      }
-    },
-  )
 
   app.get('/api/members', async req => {
     const member = req.member!

@@ -23,8 +23,7 @@
     "googleapis": "^172.0.0",
     "html-to-image": "^1.11.13",
     "lucide-react": "^1.14.0",
-    "pixi.js": "^8.18.1",
-    "simple-git": "^3.27.0"
+    "pixi.js": "^8.18.1"
   },
   "devDependencies": {
     "@electron-toolkit/preload": "^3.0.1",

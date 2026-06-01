@@ -5,7 +5,6 @@ import { useGit } from './hooks/useGit'
 import useLayoutTier from './hooks/useLayoutTier'
 import { DEFAULT_MATERIALS, DEFAULT_MATERIALS_DATALIST_ID } from './constants'
 import useParts from './hooks/useParts'
-import ProfileSetup from './components/ProfileSetup'
 import ProjectSetup from './components/ProjectSetup'
 import ProjectBrowser from './components/ProjectBrowser'
 import Toolbar from './components/Toolbar'
@@ -63,8 +62,6 @@ export default function App() {
     error,
     selectedFile,
     setSelectedFile,
-    createProject,
-    joinProject,
     joinDriveProject,
     openProject,
     closeProject,
@@ -79,8 +76,6 @@ export default function App() {
   } = useGit()
 
   const [identityChecked, setIdentityChecked] = useState(false)
-  const [needsProfile, setNeedsProfile] = useState(false)
-  const [showProfileEdit, setShowProfileEdit] = useState(false)
   const [gitName, setGitName] = useState('')
   const [gitEmail, setGitEmail] = useState('')
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
@@ -162,42 +157,12 @@ export default function App() {
     prevProjectRef.current = project
   }, [manufacturingView, project])
 
-  // framecad:// deep-link → prefill the Join Project URL field. Bumped
-  // by sequence number so the same URL can re-trigger after the user
-  // dismisses it. Pulled once on mount (cold launch) and on every
-  // subsequent deep-link event (warm app).
-  const [deepLinkJoinUrl, setDeepLinkJoinUrl] = useState<string | null>(null)
-  const [deepLinkSeq, setDeepLinkSeq] = useState(0)
-  useEffect(() => {
-    // `team` action deep links are no-ops now that team coordination
-    // is a webserver, not a per-team GitHub URL — there's nothing to
-    // pre-fill. Only the project-join (framecad://join?url=…) survives.
-    window.api.consumePendingDeepLink().then(payload => {
-      if (payload?.action === 'join' && payload.url) {
-        setDeepLinkJoinUrl(payload.url)
-        setDeepLinkSeq(s => s + 1)
-      }
-    }).catch(() => {})
-    const cleanup = window.api.onDeepLink(payload => {
-      if (payload?.action === 'join' && payload.url) {
-        setDeepLinkJoinUrl(payload.url)
-        setDeepLinkSeq(s => s + 1)
-      }
-    })
-    return cleanup
-  }, [])
-
-  const [ghLoggedIn, setGhLoggedIn] = useState(false)
   const [reportState, setReportState] = useState<'idle' | 'confirm' | 'sending' | 'sent' | 'failed'>('idle')
   const [reportResult, setReportResult] = useState<{ url?: string; number?: number; error?: string }>({})
 
   useEffect(() => {
     setReportState('idle')
     setReportResult({})
-    if (!error) return
-    window.api.githubAuthStatus()
-      .then(s => setGhLoggedIn(!!s.loggedIn))
-      .catch(() => setGhLoggedIn(false))
   }, [error])
 
   const submitReport = useCallback(async () => {
@@ -432,12 +397,6 @@ export default function App() {
     return () => clearInterval(id)
   }, [project])
 
-  // How many commits exist on origin/<branch> ahead of our local HEAD.
-  // Drives the Sync button's "pull me" highlight in the toolbar. Polled
-  // every 60s (git fetch overhead) and refreshed immediately after the
-  // user runs Sync or Publish so the badge clears the moment the gap
-  // closes. Failures (offline, auth, no remote) are silently treated
-  // as zero by the IPC.
   // Team-server reachability dot. Polled on a slow cadence (30s)
   // because it's a network round-trip — fast enough that a flaky
   // school WiFi shows up within a typical CAD session, slow enough
@@ -458,36 +417,6 @@ export default function App() {
     const id = setInterval(ping, 30000)
     return () => { cancelled = true; clearInterval(id) }
   }, [teamSnapshot?.enrolled])
-
-  const [remoteAhead, setRemoteAhead] = useState(0)
-  // Counterpart: how many local commits are ahead of origin (i.e.
-  // unpublished work). Polls on the same cadence + clears via the
-  // same files-changed signal.
-  const [localAhead, setLocalAhead] = useState(0)
-  useEffect(() => {
-    if (!project) { setRemoteAhead(0); setLocalAhead(0); return }
-    let cancelled = false
-    const refresh = () => {
-      window.api.getRemoteAhead()
-        .then(n => { if (!cancelled) setRemoteAhead(n) })
-        .catch(() => { if (!cancelled) setRemoteAhead(0) })
-      window.api.getLocalAhead()
-        .then(n => { if (!cancelled) setLocalAhead(n) })
-        .catch(() => { if (!cancelled) setLocalAhead(0) })
-    }
-    refresh()
-    const id = setInterval(refresh, 60000)
-    return () => { cancelled = true; clearInterval(id) }
-  }, [project])
-
-  // Re-check the moment Sync or Publish finishes so the badges clear
-  // without waiting for the next 60s tick. files changes is the closest
-  // signal we have for "git state moved" on the local side.
-  useEffect(() => {
-    if (!project) return
-    window.api.getRemoteAhead().then(setRemoteAhead).catch(() => {})
-    window.api.getLocalAhead().then(setLocalAhead).catch(() => {})
-  }, [files, project])
 
   // Role tiers — `isAdmin` ⊇ `isMentor` ⊇ student. Standalone mode
   // (not enrolled with a team server) grants full admin so solo users
@@ -594,10 +523,9 @@ export default function App() {
   }, [dyslexicFont])
 
   useEffect(() => {
-    // Identity is the team-server display name now (set at enrollment); the
-    // git user.name/email are only read here to pre-fill the optional profile
-    // editor. We no longer GATE launch on them — a Drive-only machine has no
-    // git identity and must not be locked out of the app.
+    // Identity is the team-server display name now (set at enrollment).
+    // getGitIdentity() returns that name; email is always '' on the
+    // Drive-only backend. Read here purely for the header user badge.
     window.api.getGitIdentity().then(({ name, email }) => {
       setGitName(name)
       setGitEmail(email)
@@ -624,15 +552,6 @@ export default function App() {
     // Guard against a preload that ever returns undefined for one of
     // these subscriptions (contract violation but cheap to defend).
     return () => cleanups.forEach(fn => { if (typeof fn === 'function') fn() })
-  }, [])
-
-  const handleProfileComplete = useCallback(() => {
-    window.api.getGitIdentity().then(({ name, email }) => {
-      setGitName(name)
-      setGitEmail(email)
-      setNeedsProfile(false)
-      setShowProfileEdit(false)
-    })
   }, [])
 
   // Parts data for the sidebar badge + Parts/Approvals views
@@ -700,7 +619,7 @@ export default function App() {
     <div className="error-banner">
       <span className="error-banner-message" title={displayError ?? ''}>{displayError}</span>
       <div className="error-banner-actions">
-        {reportState === 'idle' && ghLoggedIn && (
+        {reportState === 'idle' && (
           <button
             onClick={() => setReportState('confirm')}
             title="Open a GitHub issue with this error"
@@ -997,24 +916,6 @@ export default function App() {
     </div>
   )
 
-  // ── Profile setup (first launch) ──
-  if (needsProfile || showProfileEdit) {
-    return (
-      <div className="app">
-        {updateBanner}
-        <ProfileSetup
-          onComplete={handleProfileComplete}
-          onCancel={needsProfile ? undefined : () => setShowProfileEdit(false)}
-          initialName={gitName}
-          initialEmail={gitEmail}
-        />
-        {offlineBanner}
-        {onboardingModal}
-        {versionCorner}
-      </div>
-    )
-  }
-
   // ── Welcome screen (no project open) ──
   if (!project) {
     return (
@@ -1031,12 +932,8 @@ export default function App() {
             see it. */}
         {kioskStuckBanner}
         <ProjectSetup
-          onJoinProject={joinProject}
           onJoinDriveProject={joinDriveProject}
           onOpenProject={openProject}
-          onDismissError={dismissError}
-          prefilledJoinUrl={deepLinkJoinUrl}
-          prefilledJoinSeq={deepLinkSeq}
           teamSnapshot={teamSnapshot}
           onTeamRefresh={team.refresh}
           onEnterManufacturingView={async () => {
@@ -1068,8 +965,6 @@ export default function App() {
             isMentor={isMentor}
             appVersion={appVersion}
             gitName={gitName}
-            gitEmail={gitEmail}
-            onProfileUpdate={handleProfileComplete}
             onClose={() => {
               setShowAdmin(false)
               refreshGlobalAdmin()
@@ -1168,13 +1063,12 @@ export default function App() {
             ? <Sun size={16} strokeWidth={1.75} />
             : <Moon size={16} strokeWidth={1.75} />}
         </button>
-        <button
+        <span
           className="user-badge"
-          onClick={() => setShowProfileEdit(true)}
-          title={`Signed in as ${gitName} (${gitEmail})`}
+          title={`Signed in as ${gitName}`}
         >
           {gitName}
-        </button>
+        </span>
       </div>
 
       <Toolbar
@@ -1190,8 +1084,6 @@ export default function App() {
         activeSection={activeSection}
         inspectorOpen={inspectorOpen}
         onToggleInspector={() => setInspectorOpen(o => !o)}
-        remoteAhead={remoteAhead}
-        localAhead={localAhead}
         legacyMode={parts.legacyMode}
       />
 
@@ -1305,8 +1197,6 @@ export default function App() {
           isMentor={isMentor}
           appVersion={appVersion}
           gitName={gitName}
-          gitEmail={gitEmail}
-          onProfileUpdate={handleProfileComplete}
           onClose={() => {
             setShowAdmin(false)
             refreshGlobalAdmin()

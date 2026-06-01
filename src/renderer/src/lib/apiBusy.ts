@@ -39,8 +39,6 @@ type BusyState = {
 type Listener = (state: BusyState) => void
 
 const FRIENDLY_LABELS: Record<string, string> = {
-  joinProject: 'Cloning project',
-  createProject: 'Creating project',
   openProject: 'Opening project',
   closeProject: 'Closing project',
   sync: 'Syncing',
@@ -52,9 +50,7 @@ const FRIENDLY_LABELS: Record<string, string> = {
   createNewAssembly: 'Creating assembly',
   createSubsystem: 'Creating subsystem',
   generateDocument: 'Generating document',
-  scanLargeFiles: 'Scanning files',
   checkManifestIntegrity: 'Checking manifest',
-  renormalizeAll: 'Re-normalizing files',
   teamEnroll: 'Enrolling with team server',
   teamLoginDevice: 'Signing in to team server',
   teamRefresh: 'Syncing team info',
@@ -63,9 +59,7 @@ const FRIENDLY_LABELS: Record<string, string> = {
   syncCots: 'Syncing COTS library',
   triggerBatchExport: 'Queuing exports',
   bulkUpdateMeta: 'Saving changes',
-  gitResetup: 'Re-initialising git',
   resetAllAppState: 'Resetting',
-  createProgressTag: 'Tagging',
   checkForUpdate: 'Checking for updates',
 }
 

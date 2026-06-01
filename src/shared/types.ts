@@ -213,17 +213,6 @@ export interface PublishProgress {
   quotaGraceStartedAt?: number
 }
 
-export interface DependencyStatus {
-  git: { installed: boolean; version?: string }
-  lfs: { installed: boolean; version?: string }
-}
-
-export interface GitHubAuthStatus {
-  ghCliAvailable: boolean
-  loggedIn: boolean
-  username?: string
-}
-
 /** Google account sign-in state for the Drive storage backend.
  *  `signedIn` is false before the OAuth loopback flow completes or
  *  after sign-out; email/name are cached for display in the UI. */
@@ -476,14 +465,6 @@ export interface EnrollResult {
   error?: string
 }
 
-export interface GitHubRepoSummary {
-  name: string
-  description?: string
-  url: string
-  updatedAt?: string
-  isPrivate?: boolean
-}
-
 export interface AppState {
   currentProject: ProjectConfig | null
   files: FileEntry[]
@@ -494,19 +475,6 @@ export interface AppState {
 }
 
 export interface IpcApi {
-  createProject(name: string, path: string, remote: string, isCotsProject?: boolean): Promise<void>
-  /** Clone a project. The optional `options.skipSmudge` flag sets
-   *  GIT_LFS_SKIP_SMUDGE=1 on the underlying git invocation so the
-   *  working tree gets LFS pointer files instead of the actual
-   *  content — used as a fallback when the LFS server is
-   *  unreachable. Errors that contain `LFS_UNREACHABLE_SENTINEL`
-   *  (see below) indicate the caller should offer the skip-smudge
-   *  retry path. */
-  joinProject(
-    url: string,
-    path: string,
-    options?: { skipSmudge?: boolean },
-  ): Promise<void>
   openProject(path: string): Promise<ProjectConfig>
   closeProject(): Promise<void>
   sync(): Promise<SyncResult>
@@ -517,13 +485,6 @@ export interface IpcApi {
   checkIn(filePath: string): Promise<void>
   forceCheckIn(filePath: string): Promise<void>
   getLocks(): Promise<LockInfo[]>
-  getRemoteAhead(): Promise<number>
-  /** How many commits the local branch is ahead of origin — i.e.
-   *  unpushed work. UI uses this to surface a badge on the Publish
-   *  button so users notice committed-but-unpublished changes
-   *  (otherwise they'd only see the "modified files" status which
-   *  zeros out once they commit). */
-  getLocalAhead(): Promise<number>
   setLegacyMode(enabled: boolean): Promise<void>
   selectDirectory(): Promise<string | null>
   openFileExplorer(path: string): Promise<void>
@@ -536,7 +497,6 @@ export interface IpcApi {
   removeRecentProject(projectPath: string): Promise<void>
   createSubsystem(parentFolder: string, name: string): Promise<{ folderPath: string }>
   getGitIdentity(): Promise<{ name: string; email: string }>
-  setGitIdentity(name: string, email: string): Promise<void>
   restartToUpdate(): Promise<void>
   checkForUpdate(): Promise<{
     success: boolean
@@ -555,29 +515,11 @@ export interface IpcApi {
   /** Best-effort OS username for pre-filling the wizard's display-
    *  name field. Returns '' on any failure. */
   getOsUsername(): Promise<string>
-  checkDependencies(): Promise<DependencyStatus>
   openExternal(url: string): Promise<void>
-  githubAuthStatus(): Promise<GitHubAuthStatus>
-  githubLogin(): Promise<{ launched: boolean; error?: string }>
-  githubLogout(): Promise<{ success: boolean; error?: string }>
   reportIssue(errorMessage: string): Promise<{ success: boolean; url?: string; number?: number; error?: string }>
   generateDocument(type: 'bom' | 'manufacturing' | 'summary' | 'bom-by-subsystem'): Promise<{ success: boolean; filePath?: string; relPath?: string; pdfFilePath?: string; pdfRelPath?: string; pdfError?: string; error?: string }>
   openPath(absPath: string): Promise<{ success: boolean; error?: string }>
   revealInFolder(absPath: string): Promise<{ success: boolean; error?: string }>
-  scanLargeFiles(): Promise<{
-    success: boolean
-    files: Array<{
-      path: string
-      absolutePath: string
-      size: number
-      isLfsTracked: boolean
-      status: 'blocker' | 'warning' | 'ok-lfs' | 'lfs-too-large'
-    }>
-    error?: string
-  }>
-  gitResetup(): Promise<{ success: boolean; messages: string[]; error?: string }>
-  listGitHubRepos(org: string, prefix?: string): Promise<{ success: boolean; repos: GitHubRepoSummary[]; error?: string }>
-  createGitHubRepo(org: string, name: string, isPrivate: boolean, description?: string): Promise<{ success: boolean; url?: string; error?: string }>
   getAdminConfig(): Promise<AdminConfig>
   getGlobalAdmin(): Promise<GlobalAdminState>
   saveGlobalAdmin(config: GlobalAdminConfig): Promise<void>
@@ -585,8 +527,6 @@ export interface IpcApi {
   resetAllAppState(): Promise<void>
   saveAdminConfig(config: AdminConfig): Promise<void>
   syncCots(): Promise<{ success: boolean; cloned?: boolean; error?: string }>
-  createProgressTag(name: string, message?: string): Promise<{ success: boolean; error?: string }>
-  getMainRemoteUrl(): Promise<string>
   getPartMeta(filePath: string): Promise<PartMeta>
   getWhereUsed(filePath: string): Promise<string[]>
   getThumbnail(filePath: string, size: number): Promise<string | null>
@@ -617,7 +557,6 @@ export interface IpcApi {
     orphanedMeta?: string[]
     error?: string
   }>
-  renormalizeAll(): Promise<{ success: boolean; error?: string }>
   onFileChange(callback: (files: FileEntry[]) => void): () => void
   consumePendingDeepLink(): Promise<DeepLinkPayload | null>
   onDeepLink(callback: (payload: DeepLinkPayload) => void): () => void
@@ -681,29 +620,6 @@ export interface IpcApi {
     name: string
   }): Promise<ProjectConfig>
 }
-
-/**
- * Sentinel string the main process prefixes onto Error messages
- * thrown when an LFS upload/download could not reach the team's
- * LFS server. The renderer matches on `.includes()` (not
- * `.startsWith()`) because Electron's IPC error serialisation
- * sometimes wraps the message with `Error invoking remote method
- * '...':` — which would shift the prefix off index 0 and silently
- * disable the skip-smudge retry affordance.
- *
- * One canonical location for both main and renderer so the prefix
- * never drifts between processes.
- */
-export const LFS_UNREACHABLE_SENTINEL = 'LFS_UNREACHABLE:'
-
-/**
- * Sentinel for clone/fetch failures that the user can fix by signing
- * in to GitHub — typically a private repo that the working machine
- * has no credentials for. Same matching contract as
- * LFS_UNREACHABLE_SENTINEL: renderer uses `.includes()` not
- * `.startsWith()` because Electron IPC may wrap the message with
- * "Error invoking remote method '...':". */
-export const GITHUB_AUTH_REQUIRED_SENTINEL = 'GITHUB_AUTH_REQUIRED:'
 
 declare global {
   interface Window {

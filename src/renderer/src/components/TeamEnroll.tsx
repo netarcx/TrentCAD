@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
-import { ArrowLeft, Check, ExternalLink } from 'lucide-react'
+import { ArrowLeft, Check } from 'lucide-react'
 import { parseEnrollLink, type EnrollLinkParts } from '../lib/parseEnrollLink'
-import type { GitHubAuthStatus, GlobalAdminConfig } from '@shared/types'
+import type { GlobalAdminConfig } from '@shared/types'
 
 interface Props {
   onBack: () => void
@@ -24,11 +24,10 @@ type Step = 'paste' | 'profile' | 'submit'
  *     If the build has FRAMECAD_DEFAULT_SERVER_URL baked in, pasting
  *     just the 6-char PIN also works.
  *
- *  2. **Your name + GitHub sign-in** — display name is prefilled with
- *     the OS username (best-effort) so the average case is a single
- *     Enter keypress. GitHub sign-in is a step rather than the
- *     legacy lazy-on-push prompt — when GitHub becomes a hard
- *     requirement later, just hide the Skip button.
+ *  2. **Your name** — display name is prefilled with the OS username
+ *     (best-effort) so the average case is a single Enter keypress.
+ *     The Google Drive backend authenticates against Google directly,
+ *     so no GitHub sign-in step is needed here.
  *
  *  3. **Submit** — spinner while `teamEnroll` runs, success → caller.
  */
@@ -39,9 +38,6 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
   const [parsed, setParsed] = useState<EnrollLinkParts | null>(null)
   const [displayName, setDisplayName] = useState('')
   const [deviceLabel, setDeviceLabel] = useState('')
-  const [authStatus, setAuthStatus] = useState<GitHubAuthStatus | null>(null)
-  const [signInPending, setSignInPending] = useState(false)
-  const [signInHint, setSignInHint] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -64,61 +60,6 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
     void window.api.getOsHostname().then(h => { if (h) setDeviceLabel(h) }).catch(() => null)
   }, [])
 
-  // When the user enters step 2, snapshot the GitHub auth status so
-  // we can show "signed in" vs "sign in needed" without making them
-  // wait for a poll.
-  useEffect(() => {
-    if (step !== 'profile') return
-    void window.api.githubAuthStatus().then(setAuthStatus).catch(() => null)
-  }, [step])
-
-  // While sign-in is pending, poll every 3 s for up to ~2 min so the
-  // wizard auto-advances when the browser/terminal flow completes.
-  // Pattern lifted from the pre-rewrite ProjectSetup.tsx; same
-  // 120 s ceiling so an abandoned sign-in doesn't poll forever.
-  useEffect(() => {
-    if (!signInPending) return
-    let cancelled = false
-    const start = Date.now()
-    const id = setInterval(async () => {
-      if (cancelled || Date.now() - start > 120_000) {
-        setSignInPending(false)
-        return
-      }
-      try {
-        const status = await window.api.githubAuthStatus()
-        if (cancelled) return
-        setAuthStatus(status)
-        if (status.loggedIn) {
-          setSignInPending(false)
-          setSignInHint(`✓ Signed in as ${status.username}`)
-        }
-      } catch { /* try again next tick */ }
-    }, 3000)
-    return () => { cancelled = true; clearInterval(id) }
-  }, [signInPending])
-
-  async function startGitHubLogin(): Promise<void> {
-    setError(null)
-    setSignInHint(null)
-    try {
-      const result = await window.api.githubLogin()
-      if (result.launched) {
-        setSignInPending(true)
-        setSignInHint('Sign-in opened in a new window. Finish there — we\'ll detect it automatically.')
-      } else if (result.error?.startsWith('MANUAL_SIGNIN_REQUIRED:')) {
-        // Mac/Linux: we couldn't spawn a terminal; user runs the
-        // command themselves. Show the instructions inline.
-        setSignInPending(true)
-        setSignInHint(result.error.slice('MANUAL_SIGNIN_REQUIRED:'.length))
-      } else {
-        setSignInHint(result.error || 'Could not launch GitHub sign-in.')
-      }
-    } catch (err) {
-      setSignInHint((err as Error).message)
-    }
-  }
-
   async function submitEnroll(): Promise<void> {
     if (!parsed) return
     setBusy(true)
@@ -130,7 +71,6 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
         pin: parsed.pin,
         deviceLabel: deviceLabel.trim() || undefined,
         displayName: displayName.trim() || undefined,
-        githubUsername: authStatus?.loggedIn ? authStatus.username : undefined,
       })
       if (!result.success) {
         setError(result.error || 'Could not enroll with that PIN.')
@@ -347,7 +287,7 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
                 autoFocus
                 spellCheck={false}
                 onKeyDown={e => {
-                  if (e.key === 'Enter' && displayName.trim() && !signInPending) {
+                  if (e.key === 'Enter' && displayName.trim()) {
                     void submitEnroll()
                   }
                 }}
@@ -365,79 +305,6 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
               <span className="form-hint">Shown to admins in the web UI's device list.</span>
             </div>
 
-            <div className="enroll-github-row">
-              <label>GitHub sign-in</label>
-              {authStatus?.loggedIn ? (
-                <div className="enroll-github-status enroll-github-status-ok">
-                  <Check size={14} strokeWidth={2} />
-                  <span>Signed in as <strong>@{authStatus.username}</strong></span>
-                </div>
-              ) : signInPending ? (
-                <div className="enroll-github-status enroll-github-status-pending">
-                  Waiting for sign-in to complete…
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  className="toolbar-btn primary"
-                  onClick={startGitHubLogin}
-                  disabled={authStatus?.ghCliAvailable === false}
-                >
-                  <ExternalLink size={14} strokeWidth={2} />
-                  <span style={{ marginLeft: 4 }}>Sign in with GitHub</span>
-                </button>
-              )}
-              {signInHint && <div className="enroll-github-hint">{signInHint}</div>}
-              {authStatus?.ghCliAvailable === false && (
-                <div className="enroll-github-hint" style={{ lineHeight: 1.5 }}>
-                  <strong>GitHub CLI isn't installed on this machine.</strong>{' '}
-                  FrameCAD uses <span className="mono">gh</span> to handle GitHub
-                  sign-in. Install it first, then come back here:
-                  <ul style={{ margin: '6px 0 0 18px', padding: 0 }}>
-                    <li>
-                      <strong>Windows:</strong>{' '}
-                      <span className="mono">winget install --id GitHub.cli</span>
-                      {' '}(or{' '}
-                      <a
-                        href="https://cli.github.com/"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >cli.github.com</a>
-                      {' '}for the installer)
-                    </li>
-                    <li>
-                      <strong>macOS:</strong>{' '}
-                      <span className="mono">brew install gh</span>
-                    </li>
-                    <li>
-                      <strong>Linux:</strong>{' '}
-                      see{' '}
-                      <a
-                        href="https://github.com/cli/cli/blob/trunk/docs/install_linux.md"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >install_linux.md</a>
-                    </li>
-                  </ul>
-                  After install, restart FrameCAD so it picks up the new
-                  <span className="mono"> gh</span> on your PATH.
-                </div>
-              )}
-              {/* Don't show the "sign-in required" copy until we've
-                  resolved authStatus. While the IPC is still in
-                  flight, authStatus is null and we don't want to
-                  flash that message at someone who's already signed
-                  in — they'll see "Signed in as @username" the
-                  moment the response lands. */}
-              {authStatus !== null && !authStatus.loggedIn && authStatus.ghCliAvailable !== false && (
-                <div className="enroll-github-hint">
-                  GitHub sign-in is optional — the Google Drive backend signs
-                  in against Google directly, and your check-outs are tracked
-                  by the team server. You can finish without it.
-                </div>
-              )}
-            </div>
-
             {error && <div className="form-error">{error}</div>}
 
             <div className="actions">
@@ -448,11 +315,10 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
               >
                 Back
               </button>
-              {/* GitHub sign-in is OPTIONAL now that the backend is Google
-                  Drive (Drive auths against Google directly, and locks live
-                  on the team server). Finish only needs a display name —
-                  gating on `gh` previously locked out every Drive-only
-                  machine that didn't have the GitHub CLI installed. */}
+              {/* Enrollment needs only a display name — the Google Drive
+                  backend authenticates against Google directly, and locks
+                  live on the team server, so there's no GitHub sign-in
+                  gate here. */}
               <button
                 className="toolbar-btn primary"
                 onClick={() => void submitEnroll()}

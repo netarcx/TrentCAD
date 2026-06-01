@@ -6,14 +6,6 @@ export default function ProjectSettings() {
   const [config, setConfig] = useState<AdminConfig>({})
   const [saving, setSaving] = useState(false)
   const [syncingCots, setSyncingCots] = useState(false)
-  const [taggingNow, setTaggingNow] = useState(false)
-  const [tagName, setTagName] = useState(() => {
-    const d = new Date()
-    const yyyy = d.getFullYear()
-    const mm = String(d.getMonth() + 1).padStart(2, '0')
-    const dd = String(d.getDate()).padStart(2, '0')
-    return `progress-${yyyy}-${mm}-${dd}`
-  })
   const [legacyMode, setLegacyMode] = useState(false)
   const [legacyToggling, setLegacyToggling] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -23,9 +15,6 @@ export default function ProjectSettings() {
     window.api.getAdminConfig()
       .then(c => setConfig(c || {}))
       .catch(() => setConfig({}))
-    window.api.getMainRemoteUrl().then(url => {
-      if (url) setConfig(prev => ({ ...prev, mainRepoUrl: prev.mainRepoUrl || url }))
-    }).catch(() => {})
     window.api.getPartsManifest()
       .then(m => setLegacyMode(!!m?.legacyMode))
       .catch(() => {})
@@ -52,34 +41,6 @@ export default function ProjectSettings() {
       setError((err as Error).message)
     } finally {
       setSaving(false)
-    }
-  }
-
-  const handleCopyRepoUrl = async () => {
-    setError(null)
-    setStatus(null)
-    const url = (config.mainRepoUrl || '').trim()
-    if (!url) { setError('No Git URL to copy'); return }
-    try {
-      await navigator.clipboard.writeText(url)
-      setStatus('Git URL copied to clipboard')
-    } catch (err) {
-      setError('Could not copy: ' + (err as Error).message)
-    }
-  }
-
-  const handleCreateTag = async () => {
-    setTaggingNow(true)
-    setError(null)
-    setStatus(null)
-    try {
-      const result = await window.api.createProgressTag(tagName)
-      if (result.success) setStatus(`Tag "${tagName}" created and pushed`)
-      else setError(result.error || 'Failed to create tag')
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setTaggingNow(false)
     }
   }
 
@@ -197,46 +158,6 @@ export default function ProjectSettings() {
       </div>
 
       <div className="admin-section">
-        <h3>Main Repository</h3>
-        <label>Git remote URL</label>
-        <div className="inline-input-row">
-          <input
-            value={config.mainRepoUrl ?? ''}
-            onChange={e => set('mainRepoUrl', e.target.value)}
-            placeholder="https://github.com/org/main-project.git"
-          />
-          <button className="toolbar-btn" onClick={handleCopyRepoUrl}>Copy</button>
-        </div>
-        <p className="admin-hint">
-          Saving rewrites this project's `origin` remote to match.
-        </p>
-      </div>
-
-      <div className="admin-section">
-        <h3>Self-Hosted LFS Storage <span className="admin-hint-inline">(advanced)</span></h3>
-        <p className="admin-hint">
-          By default, large CAD files are stored in GitHub's LFS.
-          Set a URL here to redirect LFS storage to your own server
-          (rudolfs, giftless, Gitea, GitLab, etc.) &mdash; git push/pull
-          still go to GitHub, only the LFS object bytes change
-          hosts. Leave blank to use GitHub LFS. Auth (if your server
-          needs it) is handled by `.netrc` or git credential helpers,
-          not by FrameCAD.
-        </p>
-        <label>LFS server URL</label>
-        <input
-          value={config.lfsUrl ?? ''}
-          onChange={e => set('lfsUrl', e.target.value)}
-          placeholder="https://lfs.your-server.com/team/robot.git/info/lfs"
-        />
-        <p className="admin-hint">
-          Saving writes a <code>.lfsconfig</code> at the project root
-          and pushes it, so teammates auto-pick the redirect on their
-          next sync.
-        </p>
-      </div>
-
-      <div className="admin-section">
         <h3>COTS Library</h3>
         <p className="admin-hint">
           Commercial Off-The-Shelf parts live in a separate Git repo and
@@ -263,30 +184,6 @@ export default function ProjectSettings() {
         >
           {syncingCots ? 'Downloading...' : 'Download COTS now'}
         </button>
-      </div>
-
-      <div className="admin-section">
-        <h3>Weekly Progress Tag</h3>
-        <p className="admin-hint">
-          Annotated Git tag at the current commit, pushed. Use to mark
-          weekly snapshots so the team can browse the CAD state at any
-          past milestone.
-        </p>
-        <label>Tag name</label>
-        <div className="inline-input-row">
-          <input
-            value={tagName}
-            onChange={e => setTagName(e.target.value)}
-            placeholder="progress-2026-05-10"
-          />
-          <button
-            className="toolbar-btn primary"
-            onClick={handleCreateTag}
-            disabled={!tagName.trim() || taggingNow}
-          >
-            {taggingNow ? 'Tagging...' : 'Tag now'}
-          </button>
-        </div>
       </div>
 
       <div className="admin-section-actions">

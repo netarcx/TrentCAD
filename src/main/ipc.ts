@@ -2,17 +2,12 @@ import { ipcMain, dialog, shell, app, BrowserWindow, Notification } from 'electr
 import os from 'os'
 import path from 'path'
 import { watch } from 'chokidar'
-import * as gitOps from './git'
-import * as lockOps from './locking'
 import * as partsOps from './parts'
 import * as adminOps from './admin'
 import * as pathsOps from './paths'
-import * as depsOps from './deps'
-import * as authOps from './auth'
 import { reportIssue } from './issue'
 import { generateDocument } from './documents'
 import type { DocType } from './documents'
-import { scanLargeFiles } from './large-files'
 import * as metaOps from './meta'
 import * as exportQueue from './export-queue'
 import {
@@ -21,7 +16,7 @@ import {
   resetGlobalAdmin,
   migrateFromCachedBrowseConfig
 } from './global-admin'
-import { addRecentProject, getRecentProjects, getCachedBrowseConfig, setProjectPinned, removeRecentProject, resetAllAppState } from './config'
+import { getRecentProjects, getCachedBrowseConfig, setProjectPinned, removeRecentProject, resetAllAppState } from './config'
 import * as teamServer from './teamServer'
 import * as googleAuth from './google-auth'
 import * as driveProject from './drive-project'
@@ -151,20 +146,8 @@ function runDriveStatus(win: BrowserWindow): void {
 
 function notifyFileChange(win: BrowserWindow): void {
   if (win.isDestroyed()) return
-  // Drive projects have no git index / parts manifest sync — just diff
-  // the working tree against the Drive manifest and push that.
-  if (driveProject.isOpen()) {
-    runDriveStatus(win)
-    return
-  }
-  partsOps.syncManifest()
-    .then(() => gitOps.getStatus())
-    .then(files => { if (!win.isDestroyed()) win.webContents.send('file-change', files) })
-    .catch(() => {
-      gitOps.getStatus().then(files => {
-        if (!win.isDestroyed()) win.webContents.send('file-change', files)
-      }).catch(() => {})
-    })
+  // Drive projects diff the working tree against the Drive manifest.
+  if (driveProject.isOpen()) runDriveStatus(win)
 }
 
 /**
@@ -178,18 +161,9 @@ function notifyFileChange(win: BrowserWindow): void {
 function broadcastStatus(getMainWindow: () => BrowserWindow | null): void {
   const win = getMainWindow()
   if (!win || win.isDestroyed()) return
-  // Drive projects have no git working dir — gitOps.getStatus() would reject
-  // and the .catch below would swallow it, so the renderer would never see the
-  // updated lock/meta state after a check-in or a meta mutation. Route Drive
-  // projects through the same status+locks read the watcher uses (no Drive
+  // Route through the same status+locks read the watcher uses (no Drive
   // write, so it's safe to call right after a mutation).
-  if (driveProject.isOpen()) {
-    runDriveStatus(win)
-    return
-  }
-  gitOps.getStatus()
-    .then(files => { if (!win.isDestroyed()) win.webContents.send('file-change', files) })
-    .catch(() => {})
+  if (driveProject.isOpen()) runDriveStatus(win)
 }
 
 function startWatching(dirPath: string, win: BrowserWindow): void {
@@ -237,115 +211,29 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   // add-in's "Show in FrameCAD" button is clicked
   setRestMainWindow(getMainWindow)
 
-  ipcMain.handle('create-project', async (_e, name: string, dirPath: string, remote: string, isCotsProject?: boolean) => {
-    await gitOps.createProject(name, dirPath, remote)
-    projectPaths.setProjectPath(dirPath)
-    if (isCotsProject) {
-      await adminOps.writeLocalAdminConfig({ isCotsProject: true })
-    }
-    currentProject = { name, path: dirPath, remote }
-    await addRecentProject(currentProject)
-    setRestProject(currentProject)
-    const win = getMainWindow()
-    if (win) startWatching(dirPath, win)
-  })
-
-  ipcMain.handle('join-project', async (
-    _e,
-    url: string,
-    dirPath: string,
-    options?: { skipSmudge?: boolean },
-  ) => {
-    const win = getMainWindow()
-    await gitOps.joinProject(
-      url,
-      dirPath,
-      (progress) => {
-        if (win && !win.isDestroyed()) win.webContents.send('join-progress', progress)
-      },
-      options,
-    )
-    const name = path.basename(dirPath)
-    projectPaths.setProjectPath(dirPath)
-    currentProject = { name, path: dirPath, remote: url }
-    await addRecentProject(currentProject)
-    setRestProject(currentProject)
-    // If the joined project has admin-configured COTS, download it as part
-    // of the join so the COTS library is ready before the user enters the
-    // project. Network errors are tolerated — the project still opens.
-    // Also load the project / COTS subpaths so the file tree, IPC, and
-    // REST API all start out scoped correctly without waiting for the
-    // next open-project round-trip.
-    try {
-      const cfg = await adminOps.loadAdminConfig()
-      pathsOps.setProjectSubpath(cfg.projectSubpath ?? '')
-      pathsOps.setCotsSubpath(cfg.cotsSubpath ?? '')
-      if (cfg.cotsRepoUrl) {
-        await gitOps.syncCotsRepo(cfg.cotsRepoUrl, cfg.cotsBranch)
-      }
-    } catch { /* best effort */ }
-    if (win) startWatching(dirPath, win)
-  })
-
   ipcMain.handle('open-project', async (_e, dirPath: string) => {
-    // Drive project? (folder carries a .framecad/drive-manifest.json).
-    // If so it owns this session — skip the git open flow entirely.
+    // Drive-only backend: a project folder carries a
+    // .framecad/drive-manifest.json. Opening anything else is an error —
+    // there is no git fallback. New projects start as "make a folder in the
+    // team's Shared Drive, then Join from Google Drive".
     const driveConfig = await driveProject.open(dirPath).catch(() => null)
-    if (driveConfig) {
-      gitOps.setFilesystemProjectPath(dirPath)
-      projectPaths.setProjectPath(dirPath)
-      currentProject = driveConfig
-      setRestProject(currentProject)
-      const win = getMainWindow()
-      if (win) startWatching(dirPath, win)
-      void syncDriveCotsBestEffort(dirPath)
-      return currentProject
+    if (!driveConfig) {
+      throw new Error('This folder isn’t a FrameCAD project. Use “Join from Google Drive” to download a project first.')
     }
-    driveProject.close()
-    await gitOps.openProject(dirPath)
     projectPaths.setProjectPath(dirPath)
-    const name = path.basename(dirPath)
-    const git = gitOps.getGit()
-    let remote = ''
-    try {
-      const remotes = await git.getRemotes(true)
-      remote = remotes.find(r => r.name === 'origin')?.refs.push || ''
-    } catch { /* no remote */ }
-    currentProject = { name, path: dirPath, remote }
-    await addRecentProject(currentProject)
+    currentProject = driveConfig
     setRestProject(currentProject)
-    // Apply admin config: load the project / COTS subpaths into the
-    // path-translation cache so the file tree, locks, and watcher all
-    // honour them immediately. Then pull the shared COTS library in
-    // the background if one's configured.
-    adminOps.loadAdminConfig().then(cfg => {
-      pathsOps.setProjectSubpath(cfg.projectSubpath ?? '')
-      pathsOps.setCotsSubpath(cfg.cotsSubpath ?? '')
-      if (cfg.cotsRepoUrl) gitOps.syncCotsRepo(cfg.cotsRepoUrl, cfg.cotsBranch).catch(() => {})
-    }).catch(() => {})
     const win = getMainWindow()
     if (win) startWatching(dirPath, win)
+    void syncDriveCotsBestEffort(dirPath)
     return currentProject
   })
 
   ipcMain.handle('sync', async () => {
-    if (driveProject.isOpen()) {
-      const win = getMainWindow()
-      const result = await driveProject.sync(progress => {
-        if (win && !win.isDestroyed()) win.webContents.send('publish-progress', progress)
-      })
-      if (result.success && result.filesUpdated > 0 && Notification.isSupported()) {
-        try {
-          new Notification({
-            title: 'FrameCAD — Downloaded',
-            body: `${result.filesUpdated} file${result.filesUpdated === 1 ? '' : 's'} updated from the team`,
-            silent: false
-          }).show()
-        } catch { /* not all platforms support */ }
-      }
-      return result
-    }
-    const result = await gitOps.sync()
+    const win = getMainWindow()
+    const result = await driveProject.sync(progress => {
+      if (win && !win.isDestroyed()) win.webContents.send('publish-progress', progress)
+    })
     if (result.success && result.filesUpdated > 0 && Notification.isSupported()) {
       try {
         new Notification({
@@ -362,26 +250,19 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     const win = getMainWindow()
     publishingNow = true
     try {
-      if (driveProject.isOpen()) {
-        // Flush any deferred metadata commit (release-state / mass / cost /
-        // comments) so a just-made edit publishes with this batch instead of
-        // lingering on the 60s timer and shipping in a later, confusing push.
-        await metaOps.flushMetaCommit()
-        const result = await driveProject.publish(progress => {
-          if (win && !win.isDestroyed()) win.webContents.send('publish-progress', progress)
-        })
-        // Record the publish on the team server so it shows in History /
-        // Activity. Best effort — a failure here must never fail the publish.
-        if (result.success && (result.changedPaths?.length ?? 0) > 0) {
-          teamServer.recordDrivePublish(driveProjectKey(), message?.trim() || '', result.changedPaths ?? [])
-            .catch(() => { /* offline / not enrolled */ })
-        }
-        return result
-      }
+      // Flush any deferred metadata commit (release-state / mass / cost /
+      // comments) so a just-made edit publishes with this batch instead of
+      // lingering on the 60s timer and shipping in a later, confusing push.
       await metaOps.flushMetaCommit()
-      const result = await gitOps.publish(message, (progress) => {
+      const result = await driveProject.publish(progress => {
         if (win && !win.isDestroyed()) win.webContents.send('publish-progress', progress)
       })
+      // Record the publish on the team server so it shows in History /
+      // Activity. Best effort — a failure here must never fail the publish.
+      if (result.success && (result.changedPaths?.length ?? 0) > 0) {
+        teamServer.recordDrivePublish(driveProjectKey(), message?.trim() || '', result.changedPaths ?? [])
+          .catch(() => { /* offline / not enrolled */ })
+      }
       return result
     } finally {
       publishingNow = false
@@ -389,90 +270,52 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('get-status', async () => {
-    if (driveProject.isOpen()) return getDriveStatusWithLocks()
-    return gitOps.getStatus()
+    return getDriveStatusWithLocks()
   })
 
   ipcMain.handle('get-history', async (_e, limit?: number) => {
-    // Drive history comes from the team-server publish log (Drive has no
-    // commit graph). Empty when offline / not enrolled so the feed renders
-    // clean rather than erroring.
-    if (driveProject.isOpen()) {
-      try {
-        return await teamServer.listDrivePublishHistory(driveProjectKey(), limit ?? 100)
-      } catch (err) {
-        // Offline / server error reads the same as "no history" to the UI.
-        // Log it so a persistently-empty activity feed is diagnosable rather
-        // than silently indistinguishable from a genuinely fresh project.
-        console.warn('[drive] publish-history fetch failed:', (err as Error)?.message ?? err)
-        return []
-      }
+    // History comes from the team-server publish log (Drive has no commit
+    // graph). Empty when offline / not enrolled so the feed renders clean
+    // rather than erroring.
+    try {
+      return await teamServer.listDrivePublishHistory(driveProjectKey(), limit ?? 100)
+    } catch (err) {
+      console.warn('[drive] publish-history fetch failed:', (err as Error)?.message ?? err)
+      return []
     }
-    return gitOps.getHistory(limit)
   })
 
   ipcMain.handle('check-out', async (_e, filePath: string) => {
-    // Drive backend: locks live on the team server (no git lfs lock).
-    // Paths from the Drive status tree are already project-relative —
-    // no subpath translation, unlike the git path below.
-    if (driveProject.isOpen()) {
-      await teamServer.acquireDriveLock(driveProjectKey(), filePath)
-      broadcastStatus(getMainWindow)
-      return
-    }
-    // Translate the (apparent project-root)-relative path the renderer
-    // sends back to the git-relative form `git lfs lock` expects. No-op
-    // when no subpath is configured.
-    await lockOps.checkOut(pathsOps.toGitRel(filePath))
+    // Locks live on the team server (Drive folder id keyed). Paths from the
+    // Drive status tree are already project-relative — no subpath translation.
+    await teamServer.acquireDriveLock(driveProjectKey(), filePath)
+    broadcastStatus(getMainWindow)
   })
 
   ipcMain.handle('check-in', async (_e, filePath: string) => {
-    if (driveProject.isOpen()) {
-      await teamServer.releaseDriveLock(driveProjectKey(), filePath)
-      broadcastStatus(getMainWindow)
-      return
-    }
-    await lockOps.checkIn(pathsOps.toGitRel(filePath))
+    await teamServer.releaseDriveLock(driveProjectKey(), filePath)
+    broadcastStatus(getMainWindow)
   })
 
   ipcMain.handle('force-check-in', async (_e, filePath: string) => {
-    if (driveProject.isOpen()) {
-      await teamServer.releaseDriveLock(driveProjectKey(), filePath, true)
-      broadcastStatus(getMainWindow)
-      return
-    }
-    await lockOps.forceCheckIn(pathsOps.toGitRel(filePath))
+    await teamServer.releaseDriveLock(driveProjectKey(), filePath, true)
     broadcastStatus(getMainWindow)
   })
 
   ipcMain.handle('get-locks', async () => {
-    if (driveProject.isOpen()) {
-      try {
-        const locks = await teamServer.listDriveLocks(driveProjectKey())
-        // Map the server's lock shape to the LockInfo the renderer
-        // already understands (path / owner / id).
-        return locks.map(l => ({
-          path: l.filePath,
-          owner: l.ownerName,
-          id: String(l.ownerMemberId)
-        }))
-      } catch {
-        // Offline / server unreachable — no locks rather than a hard
-        // failure, matching how the git backend degrades.
-        return []
-      }
+    try {
+      const locks = await teamServer.listDriveLocks(driveProjectKey())
+      // Map the server's lock shape to the LockInfo the renderer
+      // already understands (path / owner / id).
+      return locks.map(l => ({
+        path: l.filePath,
+        owner: l.ownerName,
+        id: String(l.ownerMemberId)
+      }))
+    } catch {
+      // Offline / server unreachable — no locks rather than a hard failure.
+      return []
     }
-    return lockOps.getLocks()
-  })
-
-  ipcMain.handle('get-remote-ahead', async () => {
-    if (driveProject.isOpen()) return 0
-    return gitOps.getRemoteAhead()
-  })
-
-  ipcMain.handle('get-local-ahead', async () => {
-    if (driveProject.isOpen()) return 0
-    return gitOps.getLocalAhead()
   })
 
   ipcMain.handle('set-legacy-mode', async (_e, enabled: boolean) => {
@@ -490,7 +333,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('open-file-explorer', async (_e, filePath: string) => {
-    const projectDir = driveProject.currentDir() ?? gitOps.getProjectPath()
+    const projectDir = driveProject.currentDir() ?? projectPaths.getProjectPath()
     shell.showItemInFolder(path.join(projectDir, filePath))
   })
 
@@ -546,11 +389,11 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('get-git-identity', async () => {
-    return gitOps.getGitIdentity()
-  })
-
-  ipcMain.handle('set-git-identity', async (_e, name: string, email: string) => {
-    await gitOps.setGitIdentity(name, email)
+    // Identity is the enrolled team-member display name now (no git config).
+    // Kept under the same channel name so the renderer's display + the
+    // enrollment wizard's name pre-fill keep working unchanged.
+    const me = teamServer.currentSnapshot().me
+    return { name: me?.displayName ?? '', email: '' }
   })
 
   ipcMain.handle('close-project', async () => {
@@ -561,7 +404,6 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     await metaOps.flushMetaCommit()
     currentProject = null
     driveProject.close()
-    gitOps.closeProject()
     projectPaths.clearProjectPath()
     clearRestProject()
     stopWatching()
@@ -585,23 +427,13 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     try { return os.userInfo().username } catch { return '' }
   })
 
-  ipcMain.handle('check-dependencies', async () => depsOps.checkDependencies())
-  ipcMain.handle('github-auth-status', async () => authOps.githubAuthStatus())
-  ipcMain.handle('github-login', async () => authOps.githubLogin())
-  ipcMain.handle('github-logout', async () => authOps.githubLogout())
-
   ipcMain.handle('report-issue', async (_e, errorMessage: string) => {
     return reportIssue(errorMessage || '')
   })
 
   ipcMain.handle('generate-document', async (_e, type: DocType) => {
     try {
-      const raw = driveProject.isOpen()
-        ? (teamServer.currentSnapshot().me?.displayName ?? '')
-        : await import('./git')
-          .then(m => m.getGit())
-          .then(g => g.raw(['config', '--get', 'user.name']).catch(() => ''))
-      const generatedBy = raw.trim() || 'FrameCAD'
+      const generatedBy = (teamServer.currentSnapshot().me?.displayName ?? '').trim() || 'FrameCAD'
       return generateDocument(type, generatedBy)
     } catch (err) {
       return { success: false, error: (err as Error).message }
@@ -626,34 +458,6 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     }
   })
 
-  ipcMain.handle('scan-large-files', async () => {
-    try {
-      const files = await scanLargeFiles()
-      // Scan is intentionally repo-wide (you want to catch big blobs
-      // anywhere, including sibling subprojects). For display, strip
-      // the project subpath from any file that falls inside it so the
-      // Storage page paths match the file tree the user sees. Files
-      // outside the subpath keep their git-relative path so the user
-      // can still see e.g. "COTS/Vendor1/giant.sldprt".
-      const displayFiles = files.map(f => {
-        const display = pathsOps.toProjectRel(f.path)
-        return display === null ? f : { ...f, path: display }
-      })
-      return { success: true, files: displayFiles }
-    } catch (err) {
-      return { success: false, files: [], error: (err as Error).message }
-    }
-  })
-  ipcMain.handle('git-resetup', async () => authOps.gitResetup())
-
-  ipcMain.handle('list-github-repos', async (_e, org: string, prefix?: string) => {
-    return authOps.listGitHubRepos(org, prefix)
-  })
-
-  ipcMain.handle('create-github-repo', async (_e, org: string, name: string, isPrivate: boolean, description?: string) => {
-    return authOps.createGitHubRepo(org, name, isPrivate, description)
-  })
-
   ipcMain.handle('open-external', async (_e, url: string) => {
     if (typeof url === 'string' && /^https?:\/\//.test(url)) {
       await shell.openExternal(url)
@@ -666,9 +470,6 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('save-admin-config', async (_e, config) => {
     await adminOps.saveAndPublishAdminConfig(config)
-    if (config?.mainRepoUrl) {
-      try { await gitOps.setMainRemoteUrl(config.mainRepoUrl) } catch { /* leave to admin */ }
-    }
     // Live-update the path cache so a change to projectSubpath /
     // cotsSubpath takes effect on the very next getStatus broadcast
     // (no restart required).
@@ -718,12 +519,17 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('sync-cots', async () => {
     const config = await adminOps.loadAdminConfig()
-    if (!config.cotsRepoUrl) return { success: false, error: 'No COTS repo configured' }
-    return gitOps.syncCotsRepo(config.cotsRepoUrl, config.cotsBranch)
-  })
-
-  ipcMain.handle('create-progress-tag', async (_e, name: string, message?: string) => {
-    return gitOps.createProgressTag(name, message)
+    if (!config.cotsDriveFolderId || !config.cotsSharedDriveId) {
+      return { success: false, error: 'No COTS Drive folder configured' }
+    }
+    const dir = driveProject.currentDir()
+    if (!dir) return { success: false, error: 'No project open' }
+    try {
+      await driveOps.syncCotsDrive(dir, config.cotsDriveFolderId, config.cotsSharedDriveId)
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: (err as Error).message }
+    }
   })
 
   // Every handler that takes a `filePath` first translates the path
@@ -848,7 +654,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     const item = queue.find(q => q.path === gitPath)
     if (!item) throw new Error(`Part not released or not found: ${filePath}`)
     if (!item.needsExport) return { taskId: null, alreadyExists: true }
-    const projectPath = gitOps.getProjectPath()
+    const projectPath = projectPaths.getProjectPath()
     const task = exportQueue.queuePendingExport(projectPath, gitPath, item.needsExport)
     return { taskId: task?.id ?? null, alreadyExists: false }
   })
@@ -861,7 +667,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
       throw new Error('SolidWorks is not connected. Open SolidWorks with the FrameCAD add-in, then try again.')
     }
     const queue = await metaOps.getManufacturingQueue()
-    const projectPath = gitOps.getProjectPath()
+    const projectPath = projectPaths.getProjectPath()
     let queued = 0
     for (const item of queue) {
       if (!item.needsExport) continue
@@ -898,7 +704,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
       const manifest = await partsOps.loadManifest()
       const fs = await import('fs/promises')
       const path = await import('path')
-      const projectDir = gitOps.getProjectPath()
+      const projectDir = projectPaths.getProjectPath()
 
       // Duplicates: any partNumber appearing on more than one entry path
       const byNumber: Record<string, string[]> = {}
@@ -935,29 +741,6 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
       return { success: true, duplicates, orphanedDrawings, tombstones, orphanedMeta }
     } catch (err) {
       return { success: false, error: (err as Error).message }
-    }
-  })
-
-  // Force `git add --renormalize -A` across the whole working tree.
-  // Useful when .gitattributes was updated (e.g. v0.7.7 added zip/exe
-  // to LFS) but existing files in the index are still stored as raw
-  // blobs. Publish already does this on each invocation, but a
-  // standalone button lets mentors run it explicitly for diagnosis.
-  ipcMain.handle('renormalize-all', async () => {
-    try {
-      await gitOps.getGit().raw(['add', '--renormalize', '-A'])
-      return { success: true }
-    } catch (err) {
-      return { success: false, error: (err as Error).message }
-    }
-  })
-
-  ipcMain.handle('get-main-remote-url', async () => {
-    try {
-      const remotes = await gitOps.getGit().getRemotes(true)
-      return remotes.find(r => r.name === 'origin')?.refs.push || ''
-    } catch {
-      return ''
     }
   })
 
@@ -1011,7 +794,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
         if (win && !win.isDestroyed()) win.webContents.send('join-progress', progress)
       }
     )
-    gitOps.setFilesystemProjectPath(config.path)
+    projectPaths.setProjectPath(config.path)
     currentProject = config
     setRestProject(currentProject)
     if (win) startWatching(config.path, win)

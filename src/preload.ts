@@ -2,12 +2,6 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcApi } from '@shared/types'
 
 const api: IpcApi = {
-  createProject: (name, path, remote, isCotsProject) =>
-    ipcRenderer.invoke('create-project', name, path, remote, isCotsProject),
-
-  joinProject: (url, path, options) =>
-    ipcRenderer.invoke('join-project', url, path, options),
-
   openProject: (path) =>
     ipcRenderer.invoke('open-project', path),
 
@@ -37,11 +31,6 @@ const api: IpcApi = {
 
   getLocks: () =>
     ipcRenderer.invoke('get-locks'),
-
-  getRemoteAhead: () =>
-    ipcRenderer.invoke('get-remote-ahead'),
-  getLocalAhead: () =>
-    ipcRenderer.invoke('get-local-ahead'),
 
   setLegacyMode: (enabled) =>
     ipcRenderer.invoke('set-legacy-mode', enabled),
@@ -79,9 +68,6 @@ const api: IpcApi = {
   getGitIdentity: () =>
     ipcRenderer.invoke('get-git-identity'),
 
-  setGitIdentity: (name, email) =>
-    ipcRenderer.invoke('set-git-identity', name, email),
-
   restartToUpdate: () =>
     ipcRenderer.invoke('restart-to-update'),
 
@@ -100,20 +86,8 @@ const api: IpcApi = {
   getOsUsername: () =>
     ipcRenderer.invoke('get-os-username'),
 
-  checkDependencies: () =>
-    ipcRenderer.invoke('check-dependencies'),
-
   openExternal: (url) =>
     ipcRenderer.invoke('open-external', url),
-
-  githubAuthStatus: () =>
-    ipcRenderer.invoke('github-auth-status'),
-
-  githubLogin: () =>
-    ipcRenderer.invoke('github-login'),
-
-  githubLogout: () =>
-    ipcRenderer.invoke('github-logout'),
 
   reportIssue: (errorMessage) =>
     ipcRenderer.invoke('report-issue', errorMessage),
@@ -126,18 +100,6 @@ const api: IpcApi = {
 
   revealInFolder: (absPath) =>
     ipcRenderer.invoke('reveal-in-folder', absPath),
-
-  scanLargeFiles: () =>
-    ipcRenderer.invoke('scan-large-files'),
-
-  gitResetup: () =>
-    ipcRenderer.invoke('git-resetup'),
-
-  listGitHubRepos: (org, prefix) =>
-    ipcRenderer.invoke('list-github-repos', org, prefix),
-
-  createGitHubRepo: (org, name, isPrivate, description) =>
-    ipcRenderer.invoke('create-github-repo', org, name, isPrivate, description),
 
   getAdminConfig: () =>
     ipcRenderer.invoke('get-admin-config'),
@@ -159,12 +121,6 @@ const api: IpcApi = {
 
   syncCots: () =>
     ipcRenderer.invoke('sync-cots'),
-
-  createProgressTag: (name, message) =>
-    ipcRenderer.invoke('create-progress-tag', name, message),
-
-  getMainRemoteUrl: () =>
-    ipcRenderer.invoke('get-main-remote-url'),
 
   getPartMeta: (filePath) =>
     ipcRenderer.invoke('get-part-meta', filePath),
@@ -219,9 +175,6 @@ const api: IpcApi = {
 
   checkManifestIntegrity: () =>
     ipcRenderer.invoke('check-manifest-integrity'),
-
-  renormalizeAll: () =>
-    ipcRenderer.invoke('renormalize-all'),
 
   // Team server (replaces coord repo)
   teamGetSnapshot: () =>

@@ -5,10 +5,8 @@ import TeamEnroll from './TeamEnroll'
 import DriveJoin from './DriveJoin'
 import { prepareSlamSnapshot, triggerWaterSlam } from '../lib/water-slam'
 import type { GlobalAdminConfig, ProjectConfig, TeamSnapshot } from '@shared/types'
-import { GITHUB_AUTH_REQUIRED_SENTINEL, LFS_UNREACHABLE_SENTINEL } from '@shared/types'
 
 interface Props {
-  onJoinProject: (url: string, path: string, options?: { skipSmudge?: boolean }) => Promise<void>
   /** Download + open a Google Drive project. Drives the Drive-backend
    *  join flow (sign in → pick Shared Drive + folder → download). */
   onJoinDriveProject: (args: {
@@ -25,40 +23,26 @@ interface Props {
   onOpenAdmin?: () => void
   isLoading: boolean
   /**
-   * Install-wide admin settings. Used by the join form for the
-   * default save-path suggestion + the team name in the header.
+   * Install-wide admin settings. Used for the team name in the header.
    */
   globalAdmin?: GlobalAdminConfig
-  /** When set, jump straight into the Join Project flow with this URL
-   *  prefilled. Used by the framecad:// deep-link handler so README
-   *  "Open in FrameCAD" links land on a ready-to-go join form. */
-  prefilledJoinUrl?: string | null
-  /** Monotonic counter bumped on every deep-link arrival so the same
-   *  URL can re-trigger the prefill (e.g. user backs out then clicks
-   *  the link again). */
-  prefilledJoinSeq?: number
   /** Team-server snapshot from App level — drives the welcome-screen
    *  enrollment prompt and the project list. */
   teamSnapshot: TeamSnapshot | null
   /** Force a fresh fetch from the team server (e.g. after enrollment). */
   onTeamRefresh?: () => Promise<void>
-  /** Clear useGit's `error` state. Called when a recoverable failure
-   *  (e.g. LFS unreachable) lands and we're about to offer a retry —
-   *  without this, the stale failure banner stays on screen overlaying
-   *  the retry confirm dialog. */
-  onDismissError?: () => void
 }
 
 /**
- * Three modes left after the v3.x welcome-screen rewrite:
+ * Three modes left after the Google Drive backend rewrite:
  *  - `select`: the home view. Unenrolled → Sync-with-Team card. Enrolled
- *    → the list of accessible projects + a small Manufacturing View
- *    button. Project creation has moved entirely to the server admin UI.
+ *    → the list of team projects (informational) + your downloaded Drive
+ *    projects + the "Join from Google Drive" entry point. Project
+ *    creation lives entirely in the server admin UI.
  *  - `enroll`: paste server URL + PIN via TeamEnroll component.
- *  - `join`: triggered when the user clicks an uncloned project in the
- *    list. Pre-fills URL + name, asks for save path, then clones.
+ *  - `drive`: sign in to Google, pick a Shared Drive + folder, download.
  */
-type Mode = 'select' | 'join' | 'enroll' | 'drive'
+type Mode = 'select' | 'enroll' | 'drive'
 
 // Module-scoped so the once-per-session welcome-logo intro animation
 // only plays the first time the welcome screen mounts in this process.
@@ -103,36 +87,16 @@ function installClickWaves(): void {
   )
 }
 
-export default function ProjectSetup({ onJoinProject, onJoinDriveProject, onOpenProject, onEnterManufacturingView, onOpenAdmin, isLoading, globalAdmin, prefilledJoinUrl, prefilledJoinSeq, teamSnapshot, onTeamRefresh, onDismissError }: Props) {
+export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnterManufacturingView, onOpenAdmin, isLoading, globalAdmin, teamSnapshot, onTeamRefresh }: Props) {
   const [mode, setMode] = useState<Mode>('select')
-  // Form state used by the join screen (still alive — triggered
-  // when the user clicks an uncloned project in the list). `path`
-  // is the local save dir.
-  const [path, setPath] = useState('')
-  const [url, setUrl] = useState('')
-  // React to deep-link arrivals: prefill the join URL field and snap to
-  // the join mode. Keyed on the seq counter so re-clicking the same
-  // link still re-routes the user.
-  useEffect(() => {
-    if (prefilledJoinUrl) {
-      setUrl(prefilledJoinUrl)
-      setMode('join')
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prefilledJoinSeq, prefilledJoinUrl])
-  // Local clones — used to mark each team-registered project in the
-  // home list as `✓ Local` vs `Not cloned`, and to enable the
-  // Manufacturing View button (which needs at least one local project).
+  // Local clones — used to enable the Manufacturing View button (which
+  // needs at least one local project) and to surface already-downloaded
+  // Google Drive projects so they can be reopened.
   const [recentProjects, setRecentProjects] = useState<ProjectConfig[]>([])
 
   useEffect(() => {
     window.api.getRecentProjects().then(setRecentProjects).catch(() => {})
   }, [])
-
-  const handleBrowse = async () => {
-    const dir = await window.api.selectDirectory()
-    if (dir) setPath(dir)
-  }
 
   // Logo double-click easter egg
   const logoRef = useRef<HTMLDivElement | null>(null)
@@ -688,14 +652,12 @@ export default function ProjectSetup({ onJoinProject, onJoinDriveProject, onOpen
         )}
 
         {/* Enrolled: render the list of projects the team server has
-            granted this member access to. Click a row → if it's
-            already cloned locally (matched on remote URL), open it
-            directly. Otherwise drop into the join form prefilled with
-            this project's URL + name, so the user only has to pick a
-            save folder before the clone begins.
-            The team server already enforces the per-member project
-            allowlist server-side (see server/src/routes/client.ts
-            `/api/projects`), so we don't filter again here. */}
+            granted this member access to. This is INFORMATIONAL only —
+            joining a project happens through "Join from Google Drive"
+            below (the bytes live on the team's Shared Drive). The team
+            server already enforces the per-member project allowlist
+            server-side (see server/src/routes/client.ts `/api/projects`),
+            so we don't filter again here. */}
         {teamSnapshot?.enrolled && (() => {
           const caps = teamSnapshot.me?.capabilities
           // No browse capability → empty state with the same copy
@@ -717,16 +679,6 @@ export default function ProjectSetup({ onJoinProject, onJoinDriveProject, onOpen
             )
           }
           const projects = teamSnapshot.projects ?? []
-          // Build a remote → local-clone map once per render so each
-          // row's lookup is O(1). URL normalisation strips trailing
-          // `.git` and lowercases so https://x/repo and
-          // https://x/repo.git collapse to the same key.
-          const normRemote = (s: string): string =>
-            s.trim().replace(/\.git$/i, '').toLowerCase()
-          const localByRemote = new Map<string, ProjectConfig>()
-          for (const r of recentProjects) {
-            if (r.remote) localByRemote.set(normRemote(r.remote), r)
-          }
           if (projects.length === 0) {
             return (
               <div
@@ -740,61 +692,23 @@ export default function ProjectSetup({ onJoinProject, onJoinDriveProject, onOpen
           }
           return (
             <div className="project-list">
-              {projects.map(p => {
-                const local = localByRemote.get(normRemote(p.repoUrl))
-                const isMissing = p.remoteStatus === 'missing'
-                // A DELETED project with a local clone is still
-                // openable — user may want to back up files before
-                // wiping the folder. We only refuse the click when
-                // the row is BOTH deleted on GitHub AND not locally
-                // cloned (there's nothing to open in that case).
-                const clickable = !isLoading && (!isMissing || !!local)
-                return (
-                  <button
-                    key={p.id}
-                    type="button"
-                    className="project-list-row"
-                    disabled={!clickable}
-                    title={isMissing
-                      ? (local
-                        ? 'Remote deleted — open locally to back up files'
-                        : 'Remote deleted and no local clone — nothing to open')
-                      : p.repoUrl}
-                    onClick={() => {
-                      if (local) {
-                        onOpenProject(local.path)
-                      } else {
-                        // Drop into the join form with the URL filled
-                        // in; user picks the local save folder.
-                        setUrl(p.repoUrl)
-                        setPath('')
-                        setMode('join')
-                      }
-                    }}
-                  >
-                    <div className="project-list-row-main">
-                      <div className="project-list-row-name">{p.name}</div>
-                      {p.description && (
-                        <div className="project-list-row-desc">{p.description}</div>
-                      )}
-                      {local && (
-                        <div className="project-list-row-path" title={local.path}>
-                          {local.path}
-                        </div>
-                      )}
-                    </div>
-                    <div className="project-list-row-status">
-                      {isMissing ? (
-                        <span className="pill pill-deleted">DELETED</span>
-                      ) : local ? (
-                        <span className="pill pill-local">✓ Local</span>
-                      ) : (
-                        <span className="pill pill-remote">Not cloned</span>
-                      )}
-                    </div>
-                  </button>
-                )
-              })}
+              {projects.map(p => (
+                <div
+                  key={p.id}
+                  className="project-list-row project-list-row-static"
+                  title={p.name}
+                >
+                  <div className="project-list-row-main">
+                    <div className="project-list-row-name">{p.name}</div>
+                    {p.description && (
+                      <div className="project-list-row-desc">{p.description}</div>
+                    )}
+                  </div>
+                  <div className="project-list-row-status">
+                    <span className="pill pill-remote">Google Drive</span>
+                  </div>
+                </div>
+              ))}
             </div>
           )
         })()}
@@ -864,122 +778,30 @@ export default function ProjectSetup({ onJoinProject, onJoinDriveProject, onOpen
           )
         })()}
 
-        {/* Google Drive backend — secondary entry point. Requires team
-            enrollment because Drive check-out/check-in locks use the
-            team server identity. */}
-        <div className="setup-mfg-row">
-          <button
-            type="button"
-            className="setup-mfg-button"
-            onClick={() => setMode('drive')}
-            disabled={!teamSnapshot?.enrolled}
-            title={teamSnapshot?.enrolled
-              ? "Join a project stored on your team's Google Shared Drive"
-              : 'Enroll with your team server before joining a Google Drive project'}
-          >
-            <HardDrive size={14} strokeWidth={1.75} />
-            <span>Join from Google Drive</span>
-          </button>
-        </div>
-      </div>
-    )
-  }
-
-  if (mode === 'join') {
-    return (
-      <div className="setup-screen">
-        <h1>Join Project</h1>
-        <div className="setup-form">
-          <div className="form-group">
-            <label>GitHub URL</label>
-            <input
-              value={url}
-              onChange={e => setUrl(e.target.value)}
-              placeholder="https://github.com/frc2129/2026-robot.git"
-              autoFocus
-            />
-          </div>
-          <div className="form-group">
-            <label>Save To</label>
-            <div className="path-input">
-              <input value={path} onChange={e => setPath(e.target.value)} placeholder="C:\framecad" />
-              <button className="browse-btn" onClick={handleBrowse}>Browse</button>
-            </div>
-            {/* Heads-up about two common Windows footguns:
-                  1. Deep folder paths blow Windows' 260-char MAX_PATH
-                     limit fast with CAD's nested COTS hierarchies +
-                     SolidWorks's long config-suffixed filenames →
-                     "filename too long" errors on clone or checkout.
-                  2. OneDrive synced folders silently rewrite file
-                     timestamps + race against git's pack file writes,
-                     producing index corruption that LOOKS like a
-                     FrameCAD bug but is actually OneDrive fighting
-                     git. We've burned hours on both. */}
-            <div className="form-hint" style={{ marginTop: 6, lineHeight: 1.5 }}>
-              <strong>Pro tip:</strong> put the project folder as close to the
-              drive root as possible (e.g. <span className="mono">C:\framecad\</span>)
-              and <strong>never</strong> inside a OneDrive / iCloud / Dropbox
-              folder — sync services fight with git and corrupt the repo.
-            </div>
-          </div>
-          <div className="form-actions">
-            <button className="toolbar-btn" onClick={() => setMode('select')}>Back</button>
+        {/* Google Drive backend — the primary (and only) way to join a
+            project. Requires team enrollment because Drive check-out /
+            check-in locks use the team server identity. */}
+        {teamSnapshot?.enrolled && (
+          <div className="setup-cards" style={{ marginTop: 20 }}>
             <button
-              className="toolbar-btn primary"
-              disabled={!url || !path || isLoading}
-              onClick={async () => {
-                try {
-                  await onJoinProject(url, path)
-                } catch (err) {
-                  // Detect specific error sentinels from the main
-                  // process and offer focused remediation. Anything
-                  // else bubbles up through useGit's error state.
-                  //
-                  // `includes` (not `startsWith`) — Electron's IPC
-                  // sometimes prefixes thrown errors with
-                  // `Error invoking remote method '...':` which would
-                  // shift the sentinel off the front.
-                  const msg = (err as Error).message || ''
-                  if (msg.includes(GITHUB_AUTH_REQUIRED_SENTINEL)) {
-                    // Private repo without local credentials. Don't
-                    // offer a retry — sign-in is an out-of-band step.
-                    // Let the existing useGit error banner show the
-                    // friendly message; we just make sure it's not
-                    // overlaid by a stale one.
-                    return
-                  }
-                  if (!msg.includes(LFS_UNREACHABLE_SENTINEL)) return
-                  const friendly = msg
-                    .slice(msg.indexOf(LFS_UNREACHABLE_SENTINEL) + LFS_UNREACHABLE_SENTINEL.length)
-                    .replace(/^\s+/, '')
-                  // Clear useGit's error state so the previous failure
-                  // banner doesn't sit behind the confirm dialog (and
-                  // doesn't outlive the user's choice).
-                  onDismissError?.()
-                  const ok = window.confirm(
-                    friendly + '\n\nClone without LFS files now? ' +
-                    'The project structure will be available immediately; ' +
-                    'CAD files will appear as small placeholder pointers ' +
-                    'until the LFS server is reachable.',
-                  )
-                  if (ok) {
-                    try {
-                      await onJoinProject(url, path, { skipSmudge: true })
-                    } catch { /* useGit surfaces the error banner */ }
-                  }
-                }
-              }}
+              className="setup-card"
+              onClick={() => setMode('drive')}
+              title="Join a project stored on your team's Google Shared Drive"
             >
-              {isLoading ? <span className="loading-spinner" /> : 'Join'}
+              <span className="card-icon"><HardDrive size={32} strokeWidth={1.5} /></span>
+              <span className="card-title">Join from Google Drive</span>
+              <span className="card-desc">
+                Pick a project from your<br />team's Shared Drive
+              </span>
             </button>
           </div>
-        </div>
+        )}
       </div>
     )
   }
 
-  // No other modes are reachable — `Mode` is narrowed to the three
-  // cases handled above. This unreachable return keeps the function
-  // total without firing a runtime branch.
+  // No other modes are reachable — `Mode` is narrowed to the cases
+  // handled above. This unreachable return keeps the function total
+  // without firing a runtime branch.
   return null
 }

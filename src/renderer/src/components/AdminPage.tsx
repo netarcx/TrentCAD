@@ -4,12 +4,11 @@ import type {
   ManufacturingQueueItem, PartsManifest, PartMeta, ReleaseState, ManufacturingMethod
 } from '@shared/types'
 import ErrorMsg from './ErrorMsg'
-import ProfileSetup from './ProfileSetup'
 import PartsManager from './PartsManager'
 import ApprovalsPanel from './ApprovalsPanel'
 import ProjectSettings from './settings/ProjectSettings'
 
-type AdminTab = 'project-settings' | 'parts' | 'approvals' | 'documents' | 'locks' | 'health' | 'tools' | 'export-queue' | 'profile' | 'about'
+type AdminTab = 'project-settings' | 'parts' | 'approvals' | 'documents' | 'locks' | 'tools' | 'export-queue' | 'profile' | 'about'
 
 interface JoinedPart {
   path: string
@@ -37,8 +36,6 @@ interface Props {
   onClose: () => void
   appVersion: string
   gitName: string
-  gitEmail: string
-  onProfileUpdate: () => void
 }
 
 interface SidebarGroup {
@@ -46,7 +43,7 @@ interface SidebarGroup {
   items: { id: AdminTab; label: string }[]
 }
 
-export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appVersion, gitName, gitEmail, onProfileUpdate }: Props) {
+export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appVersion, gitName }: Props) {
   // Team-wide settings (name / members / projects) live in the team
   // server's browser UI now, not this tab list. What remains here is
   // project-scoped (Parts Manager, Approvals, etc.) plus Profile/About.
@@ -60,12 +57,12 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
   // tab they can actually see so they aren't staring at a blank panel.
   useEffect(() => {
     const adminOnly: AdminTab[] = ['project-settings']
-    const mentorOrAbove: AdminTab[] = ['parts', 'approvals', 'documents', 'export-queue', 'locks', 'health', 'tools']
+    const mentorOrAbove: AdminTab[] = ['parts', 'approvals', 'documents', 'export-queue', 'locks', 'tools']
     if (adminOnly.includes(tab) && !isAdmin) {
       setTab(initialTab)
     } else if (mentorOrAbove.includes(tab) && !isMentor) {
       setTab('profile')
-    } else if ((tab === 'project-settings' || tab === 'parts' || tab === 'approvals' || tab === 'documents' || tab === 'export-queue' || tab === 'locks' || tab === 'health' || tab === 'tools') && !hasProject) {
+    } else if ((tab === 'project-settings' || tab === 'parts' || tab === 'approvals' || tab === 'documents' || tab === 'export-queue' || tab === 'locks' || tab === 'tools') && !hasProject) {
       setTab('profile')
     }
   }, [tab, isAdmin, isMentor, hasProject, initialTab])
@@ -74,14 +71,6 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
   const [status, setStatus] = useState<string | null>(null)
   const [generating, setGenerating] = useState<null | 'bom' | 'manufacturing' | 'summary' | 'bom-by-subsystem'>(null)
   const [generated, setGenerated] = useState<Record<string, { filePath: string; relPath: string; pdfFilePath?: string } | undefined>>({})
-  const [scanning, setScanning] = useState(false)
-  const [largeFiles, setLargeFiles] = useState<Array<{
-    path: string
-    absolutePath: string
-    size: number
-    isLfsTracked: boolean
-    status: 'blocker' | 'warning' | 'ok-lfs' | 'lfs-too-large'
-  }> | null>(null)
 
   // Parts Manager
   const [partsLoading, setPartsLoading] = useState(false)
@@ -107,7 +96,6 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
     orphanedMeta?: string[]
   }>(null)
   const [integrityRunning, setIntegrityRunning] = useState(false)
-  const [renormRunning, setRenormRunning] = useState(false)
 
   // Documents
   const handleGenerate = async (type: 'bom' | 'manufacturing' | 'summary' | 'bom-by-subsystem') => {
@@ -147,31 +135,6 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
     if (!doc?.pdfFilePath) return
     const r = await window.api.openPath(doc.pdfFilePath)
     if (!r.success) setError(r.error || 'Could not open PDF')
-  }
-
-  // Health
-  const handleScanLarge = async () => {
-    setScanning(true)
-    setError(null)
-    try {
-      const r = await window.api.scanLargeFiles()
-      if (r.success) setLargeFiles(r.files)
-      else setError(r.error || 'Scan failed')
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setScanning(false)
-    }
-  }
-
-  const handleReveal = async (absPath: string) => {
-    const r = await window.api.revealInFolder(absPath)
-    if (!r.success) setError(r.error || 'Could not open folder')
-  }
-
-  const formatSize = (bytes: number): string => {
-    if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
-    return `${(bytes / 1024 / 1024).toFixed(1)} MB`
   }
 
   // Parts Manager
@@ -386,21 +349,6 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
     }
   }, [tab, hasProject, locks, locksLoading, loadLocks])
 
-  const handleRenormalize = async () => {
-    setRenormRunning(true)
-    setError(null)
-    setStatus(null)
-    try {
-      const r = await window.api.renormalizeAll()
-      if (r.success) setStatus('✓ Re-applied .gitattributes filters to every tracked file. Next publish will pick up any changes.')
-      else setError(r.error || 'Re-normalize failed')
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setRenormRunning(false)
-    }
-  }
-
   // Derived parts data
   const filteredParts = useMemo(() => {
     const q = partsFilter.trim().toLowerCase()
@@ -472,7 +420,6 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
         label: 'Maintenance',
         items: [
           { id: 'locks', label: 'Locks' },
-          { id: 'health', label: 'Health' },
           { id: 'tools', label: 'Tools' },
         ]
       })
@@ -665,66 +612,11 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
           </div>
         )}
 
-        {tab === 'health' && hasProject && (
-          <div className="admin-section">
-            <h3>Repository Health — Large Files</h3>
-            <p className="admin-hint">
-              Scans the project for files over 50 MB and shows which would
-              trip GitHub's pre-receive hook on publish. Blockers (red) need
-              to be deleted, moved out of the repo, or added to LFS before
-              the next push will succeed.
-            </p>
-            <div className="admin-section-actions" style={{ justifyContent: 'flex-start' }}>
-              <button
-                className="toolbar-btn primary"
-                onClick={handleScanLarge}
-                disabled={scanning}
-              >
-                {scanning ? 'Scanning…' : largeFiles ? 'Re-scan' : 'Scan for large files'}
-              </button>
-            </div>
-            {largeFiles !== null && largeFiles.length === 0 && (
-              <div className="admin-status">✓ No files over 50 MB found. You're good to push.</div>
-            )}
-            {largeFiles !== null && largeFiles.length > 0 && (
-              <div className="large-files-list">
-                {largeFiles.map(f => (
-                  <div key={f.path} className={`large-file-row large-file-${f.status}`}>
-                    <div className="large-file-meta">
-                      <span className={`large-file-badge large-file-badge-${f.status}`}>
-                        {f.status === 'blocker' && 'BLOCKER'}
-                        {f.status === 'warning' && 'WARNING'}
-                        {f.status === 'ok-lfs' && 'OK (LFS)'}
-                        {f.status === 'lfs-too-large' && 'LFS OVER 5 GB'}
-                      </span>
-                      <span className="large-file-size">{formatSize(f.size)}</span>
-                    </div>
-                    <div className="large-file-path" title={f.absolutePath}>{f.path}</div>
-                    <div className="large-file-hint">
-                      {f.status === 'blocker' && 'GitHub rejects non-LFS files over 100 MB. Delete this, move it out of the repo, or add its extension to .gitattributes and re-stage.'}
-                      {f.status === 'warning' && 'Over GitHub\'s 50 MB recommendation. Will succeed but could grow into a blocker.'}
-                      {f.status === 'ok-lfs' && 'Tracked by Git LFS — fine at any size up to 5 GB.'}
-                      {f.status === 'lfs-too-large' && 'LFS objects max out at 5 GB. Split this file before publishing.'}
-                    </div>
-                    <div className="large-file-actions">
-                      <button className="toolbar-btn" onClick={() => handleReveal(f.absolutePath)}>
-                        Show in folder
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
         {tab === 'tools' && hasProject && (
           <ToolsTab
             integrity={integrity}
             integrityRunning={integrityRunning}
             onIntegrityCheck={handleIntegrityCheck}
-            renormRunning={renormRunning}
-            onRenormalize={handleRenormalize}
           />
         )}
 
@@ -734,12 +626,19 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
 
         {tab === 'profile' && (
           <div className="settings-profile-wrap">
-            <ProfileSetup
-              onComplete={onProfileUpdate}
-              initialName={gitName}
-              initialEmail={gitEmail}
-              embedded
-            />
+            <div className="admin-section">
+              <h3>Profile</h3>
+              <p className="admin-hint">
+                Your display name comes from your team enrollment and is
+                shown to teammates on your check-outs and publishes.
+              </p>
+              <label>Your name</label>
+              <input value={gitName} disabled readOnly />
+              <p className="admin-hint" style={{ marginTop: 8 }}>
+                To change it, ask your admin to update your member record
+                on the team server.
+              </p>
+            </div>
           </div>
         )}
 
@@ -873,12 +772,10 @@ interface ToolsTabProps {
   }
   integrityRunning: boolean
   onIntegrityCheck: () => void
-  renormRunning: boolean
-  onRenormalize: () => void
 }
 
 function ToolsTab(props: ToolsTabProps) {
-  const { integrity, integrityRunning, onIntegrityCheck, renormRunning, onRenormalize } = props
+  const { integrity, integrityRunning, onIntegrityCheck } = props
   return (
     <>
       <div className="admin-section">
@@ -948,23 +845,6 @@ function ToolsTab(props: ToolsTabProps) {
             )}
           </div>
         )}
-      </div>
-
-      <div className="admin-section">
-        <h3>Re-apply LFS Filters</h3>
-        <p className="admin-hint">
-          Runs <code>git add --renormalize -A</code> across the project.
-          Use this if you suspect a file got committed as a raw blob
-          before its extension was added to LFS — re-staging through
-          the current <code>.gitattributes</code> fixes the index.
-          Publish already does this automatically, but a manual button
-          helps when diagnosing a stuck push.
-        </p>
-        <div className="admin-section-actions" style={{ justifyContent: 'flex-start' }}>
-          <button className="toolbar-btn primary" onClick={onRenormalize} disabled={renormRunning}>
-            {renormRunning ? 'Re-normalizing…' : 'Re-normalize all files'}
-          </button>
-        </div>
       </div>
     </>
   )

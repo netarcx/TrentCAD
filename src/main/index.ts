@@ -7,7 +7,6 @@ import { is } from '@electron-toolkit/utils'
 import { setupIpc, stopWatching, stopRestServer, isPublishing } from './ipc'
 import { startRestServer } from './rest'
 import { initAutoUpdater } from './updater'
-import { cleanupAskpass } from './auth'
 import { flushMetaCommit } from './meta'
 
 let mainWindow: BrowserWindow | null = null
@@ -225,11 +224,9 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-// Best-effort cleanup of the GIT_ASKPASS temp script written under
-// /tmp by auth.ts. Removes the token-bearing file so it doesn't
-// survive a graceful exit. `before-quit` fires regardless of platform
-// and before windows are destroyed.
+// Flush any deferred metadata commit on a graceful exit so a release-state /
+// mass / cost edit made in the last 60s isn't lost. `before-quit` fires
+// regardless of platform and before windows are destroyed.
 app.on('before-quit', () => {
   flushMetaCommit().catch(() => { /* best-effort */ })
-  cleanupAskpass().catch(() => { /* best-effort */ })
 })

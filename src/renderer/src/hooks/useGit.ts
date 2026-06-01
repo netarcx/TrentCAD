@@ -41,44 +41,6 @@ export function useGit() {
   }
 
 
-  const createProject = useCallback(async (name: string, path: string, remote: string, isCotsProject?: boolean) => {
-    setIsLoading(true)
-    setError(null)
-    try {
-      await window.api.createProject(name, path, remote, isCotsProject)
-      const config = await window.api.getProjectConfig()
-      setProject(config)
-      await fetchAll()
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setIsLoading(false)
-    }
-  }, [])
-
-  const joinProject = useCallback(async (
-    url: string,
-    path: string,
-    options?: { skipSmudge?: boolean },
-  ) => {
-    setIsLoading(true)
-    setError(null)
-    try {
-      await window.api.joinProject(url, path, options)
-      const config = await window.api.getProjectConfig()
-      setProject(config)
-      await fetchAll()
-    } catch (err) {
-      // Let the caller decide what to do — surface via local error
-      // state AND re-throw so the welcome screen can intercept the
-      // LFS_UNREACHABLE sentinel and offer a retry.
-      setError((err as Error).message)
-      throw err
-    } finally {
-      setIsLoading(false)
-    }
-  }, [])
-
   // Join a Google Drive project: download the chosen Drive folder into
   // a local dir, then transition straight into the project view (the
   // main process already set currentProject + started the watcher).
@@ -238,8 +200,6 @@ export function useGit() {
     error,
     selectedFile,
     setSelectedFile,
-    createProject,
-    joinProject,
     joinDriveProject,
     openProject,
     closeProject,

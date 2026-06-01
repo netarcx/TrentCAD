@@ -147,18 +147,10 @@ export async function findOrphanMetaPaths(manifestPaths: Set<string>): Promise<s
 }
 
 // Who to attribute a metadata change to. On the Drive backend there's no git
-// identity — use the enrolled team-member display name. Falls back to the git
-// user.name only when a git project is open, then to 'unknown'.
+// identity — use the enrolled team-member display name, falling back to
+// 'unknown' when not enrolled.
 async function currentUsername(): Promise<string> {
-  const teamName = currentSnapshot().me?.displayName
-  if (teamName) return teamName
-  try {
-    const { getGit } = await import('./git')
-    const value = (await getGit().getConfig('user.name')).value
-    return value || 'unknown'
-  } catch {
-    return 'unknown'
-  }
+  return currentSnapshot().me?.displayName || 'unknown'
 }
 
 export async function getPartMeta(filePath: string): Promise<PartMeta> {

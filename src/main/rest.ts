@@ -1,9 +1,7 @@
 import http from 'http'
 import path from 'path'
 import type { BrowserWindow } from 'electron'
-import type { FileEntry, ProjectConfig, PublishResult, SyncResult } from '@shared/types'
-import * as gitOps from './git'
-import * as lockOps from './locking'
+import type { FileEntry, ProjectConfig, PartMeta } from '@shared/types'
 import * as partsOps from './parts'
 import * as driveProject from './drive-project'
 import * as teamServer from './teamServer'
@@ -107,7 +105,7 @@ let writeLock: Promise<void> = Promise.resolve()
 function broadcastStatus(): void {
   const win = getMainWindowRef?.()
   if (!win || win.isDestroyed()) return
-  const statusFiles = driveProject.isOpen() ? driveProject.status() : gitOps.getStatus()
+  const statusFiles = driveProject.status()
   statusFiles
     .then(files => { if (!win.isDestroyed()) win.webContents.send('file-change', files) })
     .catch(() => {})
@@ -245,15 +243,10 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
       case 'GET /api/status': {
         if (!currentProject) { json(res, 503, { error: 'No project open' }); return }
-        if (driveProject.isOpen()) {
-          const files = await driveProject.status()
-          try {
-            applyDriveLocks(files, await restDriveLocks(), teamServer.currentSnapshot().me?.id)
-          } catch { /* offline — local status only */ }
-          json(res, 200, files)
-          return
-        }
-        const files = await gitOps.getStatus()
+        const files = await driveProject.status()
+        try {
+          applyDriveLocks(files, await restDriveLocks(), teamServer.currentSnapshot().me?.id)
+        } catch { /* offline — local status only */ }
         json(res, 200, files)
         return
       }
@@ -265,36 +258,18 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           json(res, 400, { error: 'Missing or invalid path parameter' })
           return
         }
-        // getStatus returns a tree of subpath-relative paths, so the
+        // status() returns a tree of subpath-relative paths, so the
         // lookup here uses the subpath-relative path as-is.
-        if (driveProject.isOpen()) {
-          const driveFiles = await driveProject.status()
-          const driveEntry = findEntry(driveFiles, filePath)
-          if (!driveEntry) { json(res, 404, { error: 'File not found' }); return }
-          // Drive sync pulls remote changes wholesale; no cheap per-file probe.
-          json(res, 200, { ...driveEntry, newerOnRemote: false })
-          return
-        }
-        // The newer-on-remote check uses git-rev, which wants the
-        // git-relative form — translate at that boundary only.
-        const files = await gitOps.getStatus()
-        const entry = findEntry(files, filePath)
-        if (!entry) {
-          json(res, 404, { error: 'File not found' })
-          return
-        }
-        const newerOnRemote = await gitOps.isFileNewerOnRemote(toGitRel(filePath)).catch(() => false)
-        json(res, 200, { ...entry, newerOnRemote })
+        const driveFiles = await driveProject.status()
+        const driveEntry = findEntry(driveFiles, filePath)
+        if (!driveEntry) { json(res, 404, { error: 'File not found' }); return }
+        // Drive sync pulls remote changes wholesale; no cheap per-file probe.
+        json(res, 200, { ...driveEntry, newerOnRemote: false })
         return
       }
 
       case 'GET /api/locks': {
-        if (driveProject.isOpen()) {
-          json(res, 200, await restDriveLocks())
-          return
-        }
-        const locks = await lockOps.getLocks()
-        json(res, 200, locks)
+        json(res, 200, await restDriveLocks())
         return
       }
 
@@ -326,11 +301,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           return
         }
         try {
-          if (driveProject.isOpen()) {
-            await serialWrite(() => teamServer.acquireDriveLock(restDriveKey(), safePath))
-          } else {
-            await serialWrite(() => lockOps.checkOut(toGitRel(safePath)))
-          }
+          await serialWrite(() => teamServer.acquireDriveLock(restDriveKey(), safePath))
           json(res, 200, { success: true })
         } catch (err) {
           json(res, 500, { success: false, error: (err as Error).message })
@@ -346,11 +317,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           return
         }
         try {
-          if (driveProject.isOpen()) {
-            await serialWrite(() => teamServer.releaseDriveLock(restDriveKey(), safePath))
-          } else {
-            await serialWrite(() => lockOps.checkIn(toGitRel(safePath)))
-          }
+          await serialWrite(() => teamServer.releaseDriveLock(restDriveKey(), safePath))
           json(res, 200, { success: true })
         } catch (err) {
           json(res, 500, { success: false, error: (err as Error).message })
@@ -359,35 +326,21 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       }
 
       case 'POST /api/sync': {
-        if (driveProject.isOpen()) {
-          const driveResult = await serialWrite(() => driveProject.sync())
-          json(res, driveResult.success ? 200 : 500, driveResult)
-          return
-        }
-        const result: SyncResult = await serialWrite(() => gitOps.sync())
-        json(res, result.success ? 200 : 500, result)
+        const driveResult = await serialWrite(() => driveProject.sync())
+        json(res, driveResult.success ? 200 : 500, driveResult)
         return
       }
 
       case 'POST /api/publish': {
         const body = parseJson(await readBody(req)) as { message?: string } | null
-        if (driveProject.isOpen()) {
-          // Drive publish doesn't require a message (the team-server history
-          // entry just gets a blank label).
-          const driveResult = await serialWrite(() => driveProject.publish())
-          if (driveResult.success && (driveResult.changedPaths?.length ?? 0) > 0) {
-            teamServer.recordDrivePublish(restDriveKey(), (body?.message ?? '').trim(), driveResult.changedPaths ?? [])
-              .catch(() => { /* best effort */ })
-          }
-          json(res, driveResult.success ? 200 : 500, driveResult)
-          return
+        // Drive publish doesn't require a message (the team-server history
+        // entry just gets a blank label).
+        const driveResult = await serialWrite(() => driveProject.publish())
+        if (driveResult.success && (driveResult.changedPaths?.length ?? 0) > 0) {
+          teamServer.recordDrivePublish(restDriveKey(), (body?.message ?? '').trim(), driveResult.changedPaths ?? [])
+            .catch(() => { /* best effort */ })
         }
-        if (!body?.message) {
-          json(res, 400, { error: 'Missing or invalid message in request body' })
-          return
-        }
-        const result: PublishResult = await serialWrite(() => gitOps.publish(body.message!))
-        json(res, result.success ? 200 : 500, result)
+        json(res, driveResult.success ? 200 : 500, driveResult)
         return
       }
 
@@ -513,12 +466,10 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           // `linkedTo` is stored as git-relative, so no translation needed.
           const linkedPath = entry?.linkedTo || gitPath
           const meta = await import('./meta')
-          const linkedMeta = await meta.getPartMeta(linkedPath).catch(() => ({}))
-          // Designer = the enrolled team member (Drive) or git user.name
-          // (git fallback) — same identity used as the publish author.
-          const identity = driveProject.isOpen()
-            ? { name: teamServer.currentSnapshot().me?.displayName ?? '', email: '' }
-            : await gitOps.getGitIdentity().catch(() => ({ name: '', email: '' }))
+          const linkedMeta = await meta.getPartMeta(linkedPath).catch(() => ({} as Partial<PartMeta>))
+          // Designer = the enrolled team member — same identity used as the
+          // publish author.
+          const identity = { name: teamServer.currentSnapshot().me?.displayName ?? '', email: '' }
           const today = new Date()
           const date = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
           const massLb = typeof linkedMeta.mass === 'number' ? linkedMeta.mass : null
@@ -608,13 +559,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         const safePath = sanitizeProjectRelPath(body?.path ?? null)
         if (!safePath) { json(res, 400, { error: 'Missing or invalid path' }); return }
         // Drive has no staging index — publish uploads the working tree directly.
-        if (driveProject.isOpen()) { json(res, 200, { success: true }); return }
-        try {
-          await serialWrite(() => gitOps.getGit().raw(['add', '--', toGitRel(safePath)]))
-          json(res, 200, { success: true })
-        } catch (err) {
-          json(res, 500, { success: false, error: (err as Error).message })
-        }
+        json(res, 200, { success: true })
         return
       }
 
@@ -662,24 +607,16 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           json(res, 200, { success: true })
           return
         }
-        // Persist the new export alongside the source. On Drive it uploads
-        // immediately; on git it commits + pushes the single path.
+        // Persist the new export alongside the source — uploads to Drive.
         try {
-          if (driveProject.isOpen()) {
-            const { pushSharedFile } = await import('./persistence')
-            await serialWrite(() => pushSharedFile(task.targetRelPath, `[export] ${path.basename(task.targetRelPath)}`))
-          } else {
-            await serialWrite(() => gitOps.commitAndPushFile(
-              task.targetRelPath,
-              `[export] ${path.basename(task.targetRelPath)}`
-            ))
-          }
+          const { pushSharedFile } = await import('./persistence')
+          await serialWrite(() => pushSharedFile(task.targetRelPath, `[export] ${path.basename(task.targetRelPath)}`))
           completePendingExport(body.id)
           broadcastStatus()
           json(res, 200, { success: true })
         } catch (err) {
-          // File didn't actually land, or git refused — leave the task
-          // in the queue so a retry can pick it up.
+          // File didn't actually land — leave the task in the queue so a
+          // retry can pick it up.
           json(res, 500, { success: false, error: (err as Error).message })
         }
         return

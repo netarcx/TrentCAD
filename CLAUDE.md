@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is FrameCAD
 
-A desktop CAD collaboration tool built for FRC Team 2129. Wraps Git LFS with a user-friendly UI so SolidWorks users can share files without learning Git. Uses check-out/check-in (lock-based) collaboration like GrabCAD Workbench. GitHub hosts the Git repos; **a self-hosted Giftless container** hosts the LFS objects (so the team isn't billed by GitHub for storage / bandwidth).
+A desktop CAD collaboration tool built for FRC Team 2129. Gives SolidWorks users a friendly check-out/check-in (lock-based) collaboration workflow — like GrabCAD Workbench — without learning any version-control tooling. **Files are stored in the team's Google Shared Drive**; a small self-hosted **team server** coordinates identity, locks, and publish history. There is no Git, no Git LFS, and no GitHub in the storage path (the project migrated off a Git/LFS + self-hosted-Giftless backend — see the history note in `CHANGELOG.md`).
 
 ## Terminology: "server" vs "client"
 
 Strict, non-overlapping. Don't conflate them:
-- **Server** = the team server. Docker Compose deployment under `server/`. Hosts the admin web UI at port 42130 + the self-hosted Giftless LFS server at 42131. **All administration lives here**: PINs, members, devices, projects, team settings, capabilities, storage quotas, version status, audit log.
-- **Client** = the Electron desktop app under `src/`. Pure end-user surface: project browser, check-out/check-in, sync, publish, parts. Talks to the server over HTTPS for auth + team state. **No admin functionality** — anything that affects the team belongs on the server. The legacy `AdminPage.tsx` is slated for removal/shrinking to client-local prefs only.
+- **Server** = the team server. Docker deployment under `server/`. Hosts the admin web UI at port 42130. **All administration lives here**: PINs, members, devices, projects, team settings, the Shared-Drive allowlist, capabilities, version status, audit log, and the publish-history + locks tables.
+- **Client** = the Electron desktop app under `src/`. Pure end-user surface: project browser, check-out/check-in, sync, publish, parts. Talks to the server over HTTPS for team identity/state + locks, and to Google directly for Drive storage. **No team administration** — `AdminPage.tsx` is a client-local Settings overlay (theme/prefs, read-only profile, project layout, COTS); anything that affects the whole team belongs on the server.
 
 ## Build Commands
 
@@ -18,6 +18,7 @@ Strict, non-overlapping. Don't conflate them:
 npm run dev        # Start Electron dev server with hot reload
 npm run build      # Production build (outputs to out/)
 npm run package    # Build + create installer (outputs to dist/)
+npm test           # vitest (unit tests for parts/meta/config helpers)
 ```
 
 ## Architecture
@@ -30,59 +31,61 @@ The repo holds three deliverables side by side:
 ### Desktop (Electron, `src/`)
 
 Three processes:
-- **Main process** (`src/main/`) — Git operations, file locking, file watching, IPC handlers, team-server client
+- **Main process** (`src/main/`) — Google Drive sync, file locking (via the team server), file watching, IPC handlers, team-server client
 - **Preload** (`src/preload.ts`) — Bridges main ↔ renderer via `contextBridge`
 - **Renderer** (`src/renderer/`) — React UI
 
 **Key main process modules:**
-- `git.ts` — All Git/LFS operations (create, clone, sync, publish, status, history). Uses `simple-git` npm package.
-- `locking.ts` — Check-out/check-in via `git lfs lock`/`unlock`
-- `parts.ts` — Part numbering system (`parts.json` manifest, auto-assign, create new part/assembly)
-- `teamServer.ts` — Talks to the team server (enroll, refresh, sign out). Owns the in-memory snapshot + persists `serverUrl + token` to `framecad-app.json`.
-- `rest.ts` — Local REST API server on port 42129 for SolidWorks add-in communication
-- `ipc.ts` — All `ipcMain.handle()` registrations + chokidar file watcher
-- `config.ts` — App config (recent projects, team-server enrollment) persisted in Electron userData
+- `drive.ts` — Google Drive transfer engine (list/download/upload, COTS mirroring, parallel transfers + background staging).
+- `drive-project.ts` — Drive-backed project lifecycle: open / join / sync / publish / status against a local folder + its `.framecad/drive-manifest.json`.
+- `drive-manifest.ts` — the per-project manifest (path ↔ Drive file id ↔ hash) + the hash cache.
+- `project-paths.ts` — the open project's local directory (`getProjectPath`/`setProjectPath`/`clearProjectPath`), shared by the filesystem helpers (parts, meta, documents, thumbnails).
+- `google-auth.ts` — Google OAuth (loopback) sign-in/out + status, in the main process.
+- `teamServer.ts` — Talks to the team server (enroll, refresh, sign out, **Drive locks**, **publish history**). Owns the in-memory snapshot + persists `serverUrl + token` to `framecad-app.json`.
+- `persistence.ts` — backend-agnostic shared-metadata sync (parts.json / parts-meta.json / admin.json) straight to the Drive project folder.
+- `parts.ts` — Part numbering system (`parts.json` manifest, auto-assign, create new part/assembly).
+- `meta.ts` — per-part metadata (release state, mass, cost, comments, mfg method/material); deferred-commit batching.
+- `rest.ts` — Local REST API server on port 42129 for SolidWorks add-in communication.
+- `ipc.ts` — All `ipcMain.handle()` registrations + chokidar file watcher.
+- `config.ts` — App config (recent projects, team-server enrollment) persisted in Electron userData.
+
+> Note: there is no `git.ts`/`locking.ts`/`lfsMultipart.ts` anymore — the Git/LFS backend was removed. Locks are team-server rows; "history" is the team server's publish log.
 
 **Renderer:**
-- `hooks/useGit.ts` — Single hook managing project state and IPC calls
-- `hooks/useTeam.ts` — Push-subscribed accessor for the team snapshot (replaces the old `useCoordState`)
-- Components: `ProjectSetup` (welcome screen), `ProjectBrowser`, `Toolbar`, `ActivityFeed`, `DetailsPanel`, `AdminPage` (Settings overlay), `TeamEnroll` (server-URL + PIN screen)
+- `hooks/useGit.ts` — Single hook managing project state and IPC calls (name is historical; it drives the Drive backend).
+- `hooks/useTeam.ts` — Push-subscribed accessor for the team snapshot.
+- Components: `ProjectSetup` (welcome screen), `DriveJoin` (Google sign-in → pick Shared Drive → pick folder → join), `ProjectBrowser`, `Toolbar`, `DetailsPanel`, `AdminPage` (client-local Settings overlay), `TeamEnroll` (server-URL + PIN screen).
 
 ### Team server (`server/`)
 
-Self-hosted Node + Fastify + SQLite (via `better-sqlite3`). Replaces the old GitHub coordination-repo. Single team per server instance.
+Self-hosted Node + Fastify + SQLite (via `better-sqlite3`). Replaces the old GitHub coordination-repo. Single team per server instance. **It coordinates only — it never stores a CAD byte** (those live in Google Drive).
 
 - `src/index.ts` — entry, migrations, bootstrap PIN
-- `src/db.ts` — SQLite schema (`team`, `members`, `devices`, `pins`, `projects`, `audit_events`)
+- `src/db.ts` — SQLite schema (`team`, `members`, `devices`, `pins`, `projects`, `audit_events`, `locks`, `publish_log`)
 - `src/auth.ts` — PIN gen (6-char alphanum), token gen, argon2id hashing, bearer middleware. Reads `X-Client-Version` from every authed request and updates `devices.clientVersion`.
-- `src/version.ts` — Reads server's own version from `package.json`, fetches latest GitHub release (1h cache), HS256 semver-ish comparator. Powers the Dashboard "update available" banner.
-- `src/lfs.ts` — Mints short-lived (15min) HS256 JWTs the desktop client sends to Giftless. Uses `node:crypto.createHmac` — no jose/jsonwebtoken dep.
-- `src/routes/{public,client,admin}.ts` — `/api/enroll`, `/api/me`, `/api/team`, `/api/members`, `/api/projects`, `/api/lfs/token`, `/api/admin/*`, `/api/admin/version-status`
+- `src/version.ts` — Reads server's own version from `package.json`, fetches latest GitHub release (1h cache) for the desktop's update banner, semver-ish comparator.
+- `src/routes/{public,client,admin}.ts` — `/api/enroll`, `/api/me`, `/api/team`, `/api/members`, `/api/projects`, `/api/projects/:key/locks`, `/api/projects/:key/history`, `/api/admin/*`, `/api/admin/version-status`
 - `src/bootstrap.ts` — first-launch admin PIN to `data/SETUP_PIN.txt`
 - `ui/` — React admin web UI served at `GET /` (built bundle lands in `dist/ui/`). Pages: `Dashboard`, `Members`, `Pins`, `Projects`, `TeamSettings`. Components: `UpdateBanner`, `CapabilityControls`.
 
-Ships as two Docker images under `server/docker-compose.yml`:
-- **`framecad-server`** (`server/Dockerfile`) — the Node app on port 42130
-- **`framecad-lfs`** (`datopian/giftless`) — LFS object store on port 42131, validates JWTs signed by `framecad-server` using a shared `LFS_JWT_SECRET` env var. Object storage is a host bind-mount at `./data/lfs-objects` (so backups are plain rsync/borg).
-
-Operators self-host on Unraid / Pi / school server. **`.env` (next to compose file) MUST set `LFS_JWT_SECRET`** — compose's `:?` marker refuses to start without it. Generate with `openssl rand -hex 32` (Linux/macOS/WSL/Git Bash) or `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` (PowerShell). See `server/README.md` for the full setup walkthrough and `server/.env.example` for the env template.
+Ships as a **single Docker image** under `server/docker-compose.yml`: `framecad-server` (`server/Dockerfile`) — the Node app on port 42130, with SQLite in a host bind-mount under `./data` (backups are plain rsync/borg). There is no LFS/Giftless container and no `LFS_JWT_SECRET`. Operators self-host on Unraid / Pi / school server. See `server/README.md` for the setup walkthrough, `server/.env.example` for the env template, and `docs/google-workspace-setup.md` for the Google Workspace / Shared-Drive setup.
 
 ### SolidWorks add-in (`solidworks-addin/`)
 
-C# .NET Framework 4.8, COM-registered, talks to the desktop's REST API on `127.0.0.1:42129`. Same `/api/coord-state` shape as before — backing data now comes from `teamServer.ts` instead of the old coord-repo clone, so no add-in code changes were needed.
+C# .NET Framework 4.8, COM-registered, talks to the desktop's REST API on `127.0.0.1:42129`. The `/api/coord-state` shape is preserved for the add-in's role-gating; backing data comes from `teamServer.ts`.
 
 **Shared types** in `src/shared/types.ts` — used by both main and renderer.
 
 ## Git-to-CAD Terminology
 
-This project deliberately hides Git terminology. In code and UI:
-- Repository → Project
-- Clone → Join Project
-- Pull → Sync
-- Commit + Push → Publish
-- git lfs lock → Check Out
-- git lfs unlock → Check In
-- git log → History
+This project deliberately hides version-control jargon. In code and UI the verbs map to the Google Drive + team-server backend:
+- Repository → Project (a folder in the team's Shared Drive)
+- Join Project → download the project folder from Drive to a local path
+- Sync → pull teammates' latest changes down from Drive
+- Publish → upload local changes to Drive + record the publish on the team server
+- Check Out → acquire a lock on the team server
+- Check In → release that lock
+- History → the team server's publish log
 
 ## UI Layout
 
@@ -93,7 +96,7 @@ The file browser is the central element (full-width table, not a sidebar tree). 
 Desktop client:
 - Electron + React + TypeScript
 - electron-vite (Vite-based build)
-- simple-git (Git CLI wrapper)
+- googleapis + google-auth-library (Google Drive + OAuth)
 - chokidar (file watching)
 - electron-builder (packaging)
 - @vitejs/plugin-react v4 (must stay v4 for electron-vite/vite 6 compat)
@@ -103,26 +106,23 @@ Team server:
 - better-sqlite3 (synchronous, single-file DB)
 - argon2 (PIN/token hashing)
 - React + Vite (admin web UI bundle served by the same Fastify instance)
-- HS256 JWT signing via node:crypto (no jose/jsonwebtoken dep)
 
-LFS server (separate container):
-- Giftless (Python/Flask, from datopian/giftless) with local filesystem backend
-- HS256 JWT auth — same shared secret as the team server
+Storage backend:
+- Google Drive (a team Google Shared Drive), accessed by the desktop via the Google APIs. The team server holds no file bytes.
 
 ## Admin onboarding workflow (target UX)
 
-Goal: "Apple-level" — one linear flow on first launch, sensible defaults, skip-able. After consuming the bootstrap PIN from `SETUP_PIN.txt`, the admin web UI walks the operator through:
+Goal: "Apple-level" — one linear flow on first launch, sensible defaults, skip-able. After consuming the bootstrap PIN from `SETUP_PIN.txt`, the admin web UI walks the operator through a short wizard (no LFS/storage step — Google Drive holds the bytes):
 
-1. **Team info** — name, GitHub org, project prefix, welcome message
-2. **LFS setup** — confirm the public LFS URL clients will use (the env-default works for single-machine, otherwise the operator types the LAN URL). Test connection button.
-3. **First project** — admin pastes GitHub repo URL → server records the project, ALSO sets the project's storage quota (per-project hard cap; default 10 GB, editable). Storage usage shown live (`5.2 GB / 12 GB` with a progress bar) once data flows.
-4. **First member** — issue a PIN with role + capabilities + project allowlist + auto-open. Skip to do later.
+1. **Team info** — name, project prefix, welcome message.
+2. **First project** — point the team at its Google Shared Drive / project folder (the Shared-Drive allowlist) so clients can find and join it.
+3. **First member** — issue a PIN with role + capabilities + project allowlist + auto-open. Skip to do later.
 
-After the wizard, the admin can do anything from the sidebar — wizard is for the first-launch path, not the only path. Subsequent admins don't see it. Per-project quota lives on the Projects page (per-row); not a separate Storage page.
+After the wizard, the admin can do anything from the sidebar — the wizard is for the first-launch path, not the only path. Subsequent admins don't see it.
 
 ## Part Numbering (Phase 2)
 
-- `parts.json` at project root, committed to Git so the whole team shares it
+- `parts.json` at project root, synced to the whole team via the Drive project folder (`persistence.ts`)
 - Hierarchical format: `YY-2129-XX-YYY` (year-team-assembly-part), e.g., `26-2129-01-001`
 - Folder structure determines hierarchy (folder = assembly group)
 - Auto-assigns numbers to SolidWorks files (.sldprt, .sldasm, .slddrw)
@@ -133,8 +133,8 @@ After the wizard, the admin can do anything from the sidebar — wizard is for t
 ## REST API (Phase 3)
 
 - HTTP server on `127.0.0.1:42129` (localhost only), starts when a project is open
-- Endpoints: `/api/health`, `/api/status`, `/api/file?path=`, `/api/checkout`, `/api/checkin`, `/api/sync`, `/api/publish`, `/api/locks`, `/api/parts`
-- Write operations are serialized via a mutex to prevent concurrent git commands
+- Endpoints: `/api/health`, `/api/status`, `/api/file?path=`, `/api/checkout`, `/api/checkin`, `/api/sync`, `/api/publish`, `/api/locks`, `/api/parts`, plus meta/title-block endpoints
+- Write operations are serialized via a mutex to prevent concurrent Drive operations
 - Port configurable via `FRAMECAD_API_PORT` environment variable
 
 ## SolidWorks Add-in (Phase 3)
@@ -150,6 +150,6 @@ After the wizard, the admin can do anything from the sidebar — wizard is for t
 ## Dev Notes
 
 - On Linux, run with `ELECTRON_DISABLE_SANDBOX=1` (already set in the dev script)
-- `simple-git`'s `.add()` only accepts file paths — use `.raw(['add', '-A'])` for staging all
-- Lock state takes priority over modified state in `getStatus()` so lock indicators always show
+- Lock state takes priority over modified state in the status tree so lock indicators always show
 - `parts.json` is excluded from the chokidar watcher to prevent infinite loops
+- Live Google OAuth needs `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` (see `docs/google-workspace-setup.md`) and a real Workspace + Shared Drive to exercise end-to-end

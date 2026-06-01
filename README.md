@@ -4,7 +4,7 @@
 
 # FrameCAD
 
-**Git-based CAD collaboration that hides Git behind a button.**
+**Google Drive-backed CAD collaboration that hides the plumbing behind a button.**
 
 Built for FRC Team 2129 (Ultraviolet). SolidWorks-friendly. No CLI required.
 
@@ -21,25 +21,24 @@ Built for FRC Team 2129 (Ultraviolet). SolidWorks-friendly. No CLI required.
 
 ## What it does
 
-FrameCAD is a desktop app that lets a robotics team collaborate on SolidWorks assemblies the same way developers collaborate on code — except your students never see a Git command. Under the hood it's Git + Git LFS + GitHub; on the surface it's **Download**, **Upload**, **Check Out**, and **Check In**.
+FrameCAD is a desktop app that lets a robotics team collaborate on SolidWorks assemblies the same way developers collaborate on code — except your students never deal with version-control plumbing. Files live in your team's **Google Shared Drive**; on the surface it's **Sync**, **Publish**, **Check Out**, and **Check In**.
 
-- 🔒 **Check-out / check-in locks** on every CAD file so two students can't accidentally edit the same part at the same time. Backed by `git lfs lock`.
+- 🔒 **Check-out / check-in locks** on every CAD file so two students can't accidentally edit the same part at the same time. Locks are coordinated by the team server, not the file store.
 - 📁 **Auto part numbering** in your team's format (`YY-2129-XX-YYY`). New parts and assemblies are created pre-named — SolidWorks references never break from renames.
 - 🔧 **SolidWorks task pane add-in** with the same buttons (Check Out / Check In / Sync / Publish) inside SolidWorks itself.
 - 📊 **Build-season documents** generated from your CAD: Bill of Materials (CSV + PDF), Manufacturing Queue cut list (CSV + PDF), Project Summary with FRC 125 lb weight headroom (Markdown + PDF).
 - 🛒 **Manufacturing queue** that groups released parts by method (3D Print / CNC / Manual / Other) and material — shop floor walks the queue in one direction.
-- 🗂️ **COTS library support** — share a separate Git repo of off-the-shelf parts across all your team's robot projects.
-- 🚦 **Pre-publish guards** catch giant non-LFS files *before* you waste an hour uploading something GitHub will reject.
-- 🛠️ **Repository health scanner** lists every file over 50 MB with badges (`BLOCKER` / `WARNING` / `OK (LFS)`) so you can clean up before the build season crunch.
+- 🗂️ **COTS library support** — share a separate folder of off-the-shelf parts across all your team's robot projects.
+- 🚦 **Pre-publish guards** catch oversized or disallowed files *before* you waste time uploading them.
 - 🔑 **Role-gated settings** — admins and mentors see full team/project configuration; students see only their profile. Powered by the self-hosted team server's member roster (see [server/](server/README.md)).
-- 🌐 **Self-hosted LFS storage** (opt-in) — point project LFS at your own server when GitHub's bandwidth quota gets tight.
+- ☁️ **Your storage, your bytes** — CAD files live in your team's own Google Shared Drive (free 100 TB on Workspace for Nonprofits), so you're not metered by GitHub or anyone else.
 - 🚀 **Auto-update** from GitHub Releases on Windows and Linux.
 
-## Why not just use Git?
+## Why not just use a shared folder?
 
-Because students who can build a swerve drive in CAD shouldn't have to learn to resolve a rebase conflict at 11 PM the night before competition.
+Because a raw shared drive has no locks, no part numbering, no release workflow, and no way to stop two students from saving over each other the night before competition.
 
-FrameCAD trades Git's full power for one workflow that fits the way FRC teams actually work — and bakes in the FRC-specific bits Git doesn't know about: weight limits, manufacturing methods, part numbers, the shop's cut list, and the fact that some students design at home on their personal laptop while the rest of the team works on a school machine.
+FrameCAD keeps the files in Google Drive — where your team already has storage and access control — and adds the FRC-specific structure on top: check-out/check-in locks, weight limits, manufacturing methods, part numbers, the shop's cut list, and the fact that some students design at home on their personal laptop while the rest of the team works on a school machine.
 
 ## Download
 
@@ -47,7 +46,7 @@ Latest installers are auto-built from `main`:
 
 | Platform | Installer |
 |---|---|
-| **Windows** | [`.exe` from GitHub Releases](https://github.com/netarcx/FrameCAD/releases/latest) — auto-installs Git, Git LFS, and GitHub CLI via `winget` if missing |
+| **Windows** | [`.exe` from GitHub Releases](https://github.com/netarcx/FrameCAD/releases/latest) — auto-registers the SolidWorks add-in |
 | **macOS** | [`.dmg` from GitHub Releases](https://github.com/netarcx/FrameCAD/releases/latest) — Apple Silicon + Intel. Right-click → Open the first time (unsigned). Admin-only build, no SolidWorks add-in |
 | **Linux** | [`.AppImage` from GitHub Releases](https://github.com/netarcx/FrameCAD/releases/latest) — `chmod +x` and run. Admin-only build, no SolidWorks add-in |
 
@@ -55,10 +54,13 @@ Latest installers are auto-built from `main`:
 
 ## Quick start
 
-1. **Download and install** FrameCAD for your platform.
-2. **Sign in to GitHub** from the welcome screen (the installer already put `gh` CLI on your machine if winget was available).
-3. Click **Create Project** to start a new robot, **Browse Projects** to list existing team repos, or **Join Project** to clone one by URL.
-4. Open a CAD file in SolidWorks. **Check Out** before you edit it. **Check In** when you're done. **Upload** to push your changes for the rest of the team to see.
+1. **Install** FrameCAD for your platform. No Git, Git LFS, or GitHub CLI required.
+2. **(If your team uses a server)** open the team's enrollment PIN link, or paste the server URL + 6-character PIN into the "Enroll with Team" screen. This establishes your team identity for locks and publish history.
+3. **Sign in with Google** on the welcome screen — this grants FrameCAD access to your team's Google Shared Drive.
+4. Click **Join from Google Drive**: pick the team's Shared Drive, pick the project folder, choose a local save location, and FrameCAD downloads the project.
+5. Open a CAD file in SolidWorks. **Check Out** before you edit it. **Check In** when you're done. **Publish** to upload your changes to Drive for the rest of the team — they'll see it the next time they **Sync**.
+
+Setting this up for your team? See the one-time [Google Workspace setup guide](docs/google-workspace-setup.md) (create the Cloud project, OAuth credentials, and Shared Drive).
 
 For a student-friendly walkthrough, see [docs/STUDENT_SETUP.md](docs/STUDENT_SETUP.md).
 
@@ -74,13 +76,15 @@ For a student-friendly walkthrough, see [docs/STUDENT_SETUP.md](docs/STUDENT_SET
 - **Comments** thread per part — note your manufacturing tolerances, gotchas, or "do not edit until we settle the gear ratio"
 - **Folder dirty badge** — collapsed folders show a count of unpublished files inside so changes can't hide
 - **Weekly progress tags** for snapshotting CAD state at design-review milestones
-- **`framecad://join?url=…` deep links** in auto-generated project README so new teammates one-click into the Join Project flow
+- **`framecad://` deep links** so new teammates one-click into the Join-from-Drive flow
 - **Accessibility**: OpenDyslexic UI font toggle (`Ctrl+Shift+D`), responsive layout that adapts down to 960×600, dark and light themes
 
 ## Documentation
 
 - **[Developer docs (`docs/DEVELOPMENT.md`)](docs/DEVELOPMENT.md)** — architecture, dev setup, REST API reference, SolidWorks add-in build
-- **[Student setup guide (`docs/STUDENT_SETUP.md`)](docs/STUDENT_SETUP.md)** — getting students onto the team's CAD repo
+- **[Student setup guide (`docs/STUDENT_SETUP.md`)](docs/STUDENT_SETUP.md)** — getting students onto the team's CAD projects
+- **[Google Workspace setup (`docs/google-workspace-setup.md`)](docs/google-workspace-setup.md)** — one-time admin setup: Google Cloud project, OAuth credentials, and the team Shared Drive
+- **[Team server (`server/README.md`)](server/README.md)** — self-host the coordination server (enrollment, locks, publish history)
 - **Built-in onboarding tour** runs the first time you open the app
 
 ## Contributing

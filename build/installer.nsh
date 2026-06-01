@@ -74,64 +74,10 @@
     MessageBox MB_OK|MB_ICONEXCLAMATION "SolidWorks add-in registration returned code $0.$\nThe add-in may not appear in SolidWorks.$\nTry running the installer as Administrator."
   ${EndIf}
 
-  ; Auto-install Git via winget if it's not already on the system. Git
-  ; for Windows (the Git.Git package) bundles Git LFS by default since
-  ; 2017, so a fresh install covers both. We only check LFS separately
-  ; when Git was already pre-installed by some other means.
-  DetailPrint "Checking for Git..."
-  nsExec::ExecToStack 'cmd /c git --version'
-  Pop $0
-  Pop $1
-  ${If} $0 != 0
-    DetailPrint "Git not found. Installing via winget (this can take a couple minutes)..."
-    nsExec::ExecToLog 'cmd /c winget install --id Git.Git --silent --accept-source-agreements --accept-package-agreements'
-    Pop $1
-    ${If} $1 != 0
-      MessageBox MB_OK|MB_ICONINFORMATION "FrameCAD couldn't auto-install Git (winget is missing or the install failed).$\n$\nDownload it manually from https://git-scm.com and re-launch FrameCAD. Nothing will work until Git is installed."
-    ${Else}
-      DetailPrint "Git installed (LFS included with Git for Windows)."
-    ${EndIf}
-  ${Else}
-    DetailPrint "Git already installed."
-    ; Git was pre-installed by some other means (Cygwin, MSys2, etc.) —
-    ; LFS isn't guaranteed in those, so verify and install separately.
-    nsExec::ExecToStack 'cmd /c git lfs version'
-    Pop $0
-    Pop $1
-    ${If} $0 != 0
-      DetailPrint "Git LFS not found. Installing via winget..."
-      nsExec::ExecToLog 'cmd /c winget install --id GitHub.GitLFS --silent --accept-source-agreements --accept-package-agreements'
-      Pop $1
-      ${If} $1 != 0
-        MessageBox MB_OK|MB_ICONINFORMATION "FrameCAD couldn't auto-install Git LFS (winget is missing or the install failed).$\n$\nDownload it manually from https://git-lfs.github.com and re-launch FrameCAD. Large-file CAD uploads won't work until it's installed."
-      ${Else}
-        DetailPrint "Git LFS installed."
-      ${EndIf}
-    ${Else}
-      DetailPrint "Git LFS already installed."
-    ${EndIf}
-  ${EndIf}
-
-  ; Auto-install GitHub CLI via winget if it's not already on the system.
-  ; gh is what powers the "Sign in with GitHub" button on the welcome screen.
-  ; If winget isn't available (older Windows 10 without the package manager)
-  ; we just point the user at the manual download.
-  DetailPrint "Checking for GitHub CLI..."
-  nsExec::ExecToStack 'cmd /c gh --version'
-  Pop $0
-  Pop $1
-  ${If} $0 != 0
-    DetailPrint "GitHub CLI not found. Installing via winget..."
-    nsExec::ExecToLog 'cmd /c winget install --id GitHub.cli --silent --accept-source-agreements --accept-package-agreements'
-    Pop $0
-    ${If} $0 != 0
-      MessageBox MB_OK|MB_ICONINFORMATION "FrameCAD couldn't auto-install GitHub CLI (winget is missing or the install failed).$\n$\nDownload it manually from https://cli.github.com and re-launch FrameCAD. Sign-in won't work until it's installed."
-    ${Else}
-      DetailPrint "GitHub CLI installed."
-    ${EndIf}
-  ${Else}
-    DetailPrint "GitHub CLI already installed."
-  ${EndIf}
+  ; No Git / Git LFS / GitHub CLI auto-install: the storage backend is
+  ; Google Drive now (the old Git/LFS backend was removed), so the desktop
+  ; needs none of those tools. Drive access is a Google sign-in inside the
+  ; app, and team identity is a PIN — nothing to install here.
 !macroend
 
 !macro customUnInit

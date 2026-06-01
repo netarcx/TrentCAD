@@ -5,6 +5,67 @@ All notable changes to FrameCAD are recorded here. The format follows
 uses [SemVer](https://semver.org/) — though for a single-team app the
 versions are mostly chronology markers.
 
+## [5.x] — Google Drive backend
+
+> The big architectural arc since 1.0. Exact per-version dates aren't
+> reconstructed here — see [`git log`](https://github.com/netarcx/FrameCAD/commits/main)
+> for the precise milestone-by-milestone history. Desktop is currently
+> at **5.1.1**, the team server at **5.0.8**.
+
+The headline change: **Google Drive replaced Git, Git LFS, and GitHub as
+the storage backend.** CAD files now live in a team Google Shared Drive;
+the desktop signs in to Google directly (loopback OAuth) and downloads /
+uploads files from Drive. Students no longer install Git or Git LFS, and
+nothing pushes to GitHub anymore (GitHub is only used for app releases and
+the "report a problem" issue flow).
+
+### Added
+- **Google Drive storage backend** — sign in with Google, "Join from
+  Google Drive" (pick Shared Drive → project folder → local save path,
+  then download), Sync to pull teammates' latest, Publish to upload.
+  Sync reconciles teammate renames/moves by Drive file id so a moved part
+  doesn't read as delete-plus-add.
+- **Self-hosted team server** (Node + SQLite) — replaced the old GitHub
+  coordination-repo. Owns team identity, 6-character enrollment PINs,
+  members/devices, capabilities, the audit log, and the admin web UI,
+  plus the update-available banner. Multi-device support and self-service
+  password sign-in landed along the way.
+- **Server-coordinated locks** — Check Out / Check In acquire and release
+  a lock on the team server (`/api/projects/:key/locks`) instead of the
+  old `git lfs lock`.
+- **Publish history on the team server** (`/api/projects/:key/history`) —
+  every Publish is logged with author + message and shown in the activity
+  view.
+- **Shared Drive allowlist** managed from the team server (Team Settings →
+  Google Drive) so enrolled clients only see and join sanctioned drives;
+  OAuth credentials + allowlist can also be baked into the installer at
+  build time.
+
+### Changed
+- **Terminology now maps to Drive**: Project = a Shared Drive folder,
+  Join Project = download from Drive, Sync = pull latest from Drive,
+  Publish = upload to Drive + log history, Check Out / Check In = acquire /
+  release a team-server lock, History = the server's publish log.
+- Toolbar verbs are **Sync** and **Publish** (previously framed as
+  Download / Upload).
+
+### Removed
+- **The entire client-side Git/LFS backend** — `git.ts`, `locking.ts`,
+  `lfsMultipart.ts`, `large-files.ts`, the `gh`-CLI auth module, and the
+  `simple-git` dependency are gone. The desktop no longer requires Git or
+  Git LFS installed, and there is no GitHub sign-in.
+- **Self-hosted LFS / Giftless** on the server side — the second container,
+  port 42131, `LFS_JWT_SECRET`, `/api/lfs/token`, and the
+  `LFS_SERVER_URL` / `LFS_STORAGE_DIR` env vars were all removed. The team
+  server is now a single Node container on port 42130 that never touches
+  CAD bytes.
+
+---
+
+> Entries below predate the Google Drive migration and are kept as
+> historical record. References to Git, Git LFS, GitHub storage, and
+> self-hosted LFS describe the architecture that the 5.x line replaced.
+
 ## [1.0.0] — 2026-05-13
 
 First stable release. The 0.x line was day-to-day driver use by FRC 2129

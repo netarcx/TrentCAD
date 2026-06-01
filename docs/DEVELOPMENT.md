@@ -2,7 +2,7 @@
 
 Architecture, build flow, REST API reference, and integration details for everyone working on FrameCAD itself or wiring an external tool to it.
 
-For end-user docs see the [README](../README.md). For student onboarding see [STUDENT_SETUP.md](STUDENT_SETUP.md).
+For end-user docs see the [README](../README.md). For student onboarding see [STUDENT_SETUP.md](STUDENT_SETUP.md). For the one-time Google Drive / OAuth setup see [google-workspace-setup.md](google-workspace-setup.md), and for the team server see [server/README.md](../server/README.md).
 
 ---
 
@@ -10,17 +10,16 @@ For end-user docs see the [README](../README.md). For student onboarding see [ST
 
 ### File collaboration
 
-- **Create / Join / Open** projects with a guided wizard — no Git commands required
-- **Download** pulls the latest changes from the team (`git pull --rebase` under the hood, with auto-stash around dirty trees so the rebase never blocks on uncommitted student edits)
-- **Upload** stages all changes, commits with a message, and pushes (`git add -A && git commit && git push`). Failed pushes automatically roll back the local commit so the UI doesn't lie about what's been published
-- **Check Out / Check In** locks and unlocks files via `git lfs lock` / `git lfs unlock`, preventing conflicting edits on binary CAD files
+- **Join / Open** projects with a guided wizard — files live in a team Google Shared Drive, no version-control commands required
+- **Sync** pulls teammates' latest files down from Google Drive into the local project folder. Renames and moves are reconciled by Drive file id so a teammate moving a part doesn't read as delete-plus-add
+- **Publish** uploads the local changes back up to Drive and records an entry in the team server's publish history (with author + message). Transfers run in parallel with a background pre-upload pass for throughput
+- **Check Out / Check In** acquire and release a lock on the team server (`POST` / `DELETE /api/projects/:key/locks`), preventing conflicting edits on binary CAD files. Locks are server-coordinated, not stored in the file backend
 - **Real-time file watching** with chokidar — the file browser updates automatically as you save in SolidWorks
-- **Pre-publish size guard** aborts before upload if any non-LFS file is over 50 MB, listing each blocker with size and remediation
-- **Repository Health** admin section scans the project tree for large files and badges them as BLOCKER / WARNING / OK-LFS
+- **Pre-publish guard** blocks oversized or disallowed files before upload, listing each blocker with size and remediation
 
 ### Part numbering system
 
-Hierarchical part numbers in the format `YY-2129-XX-YYY` (year-team-subsystem-part). `parts.json` is committed to Git so the whole team shares a single source of truth.
+Hierarchical part numbers in the format `YY-2129-XX-YYY` (year-team-subsystem-part). `parts.json` lives at the project root and is synced to Drive immediately on every reservation so the whole team shares a single source of truth.
 
 - Auto-assigns numbers to SolidWorks files (`.sldprt`, `.sldasm`, `.slddrw`)
 - **Top-level folder = subsystem**. Sub-folders inherit the parent subsystem's number (no extra dash-segment per nested folder)
@@ -44,7 +43,7 @@ Examples (for a project created in 2026):
 
 ### Per-part metadata
 
-Stored in `.framecad/parts-meta.json` (committed to Git) and edited from the Details panel:
+Stored in `.framecad/parts-meta.json` (synced to Drive) and edited from the Details panel:
 
 - **Release state**: draft → in-review → released → manufactured
 - **Comments thread** (author + timestamp)
@@ -65,26 +64,26 @@ Files overwrite on each regeneration. Ride along on the next publish so the buil
 
 - C# COM add-in that integrates directly into SolidWorks as a Task Pane
 - Displays the active document's part number, file status, and lock state
-- Check Out, Check In, Download, and Upload buttons available without leaving SolidWorks
+- Check Out, Check In, Sync, and Publish buttons available without leaving SolidWorks
 - Auto-refreshes when switching between documents (`ActiveDocChangeNotify`)
-- Communicates with FrameCAD's local REST API (no direct Git operations)
+- Communicates with FrameCAD's local REST API (no direct file-store operations)
 
-### Self-hosted LFS storage (opt-in)
+### Storage backend
 
-Per-project field in admin settings. When set, FrameCAD writes a `.lfsconfig` at the project root pointing at a custom LFS server (rudolfs, giftless, Gitea, GitLab, etc.). Git push/pull still go to GitHub, only the LFS object bytes change hosts. Blank = use GitHub LFS (default). Auth is left to the user via `.netrc` / git credential helpers.
+CAD files live in a team **Google Shared Drive**. The desktop signs in to Google with a loopback OAuth flow (`google-auth.ts`) and talks to the Drive API directly (`drive.ts`). A per-project manifest (`.framecad/drive-manifest.json`, managed by `drive-manifest.ts`) maps each local file to its Drive file id / revision so Sync and Publish can do efficient, rename-aware diffs. The team server holds the allowlist of Shared Drive IDs clients are permitted to use; it never sees the file bytes.
 
 ### REST API
 
 - Local HTTP server on `127.0.0.1:42129` for add-in and external tool communication
 - Endpoints for health, file status, locks, check-out/check-in, sync, publish, parts manifest, parts metadata
-- Write operations are serialized via a mutex to prevent concurrent Git commands
+- Write operations are serialized via a mutex to prevent concurrent Drive transfers from racing
 - Localhost-only — never exposed to the network
 
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) 24 (matches `.nvmrc` and CI). 22 also works; 20 is past EOL.
-- [Git](https://git-scm.com/) with [Git LFS](https://git-lfs.com/) installed
-- A GitHub account and repository for team collaboration
+- Google OAuth "Desktop app" credentials and a team Google Shared Drive — see [google-workspace-setup.md](google-workspace-setup.md). No Git or Git LFS needed.
+- (Optional) a running [team server](../server/README.md) for enrollment, locks, and publish history. The desktop also runs standalone.
 
 ## Getting started
 
@@ -132,19 +131,22 @@ src/
   main/                         # Electron main process
     index.ts                    # App entry point, window creation
     ipc.ts                      # IPC handlers + chokidar file watcher
-    git.ts                      # All Git/LFS operations (simple-git)
-    locking.ts                  # Check-out/check-in via git lfs lock/unlock
+    google-auth.ts              # Google loopback OAuth (sign in / out / status)
+    drive.ts                    # Google Drive API I/O (download, upload, diff)
+    drive-project.ts            # Open-project orchestration (sync, publish, status)
+    drive-manifest.ts           # Per-project manifest (.framecad/drive-manifest.json)
+    project-paths.ts            # The open project's local root path (shared state)
+    persistence.ts              # Immediate Drive sync for team-shared metadata files
     parts.ts                    # Part numbering engine + manifest management
     meta.ts                     # Per-part metadata (.framecad/parts-meta.json)
     admin.ts                    # Per-project admin config (.framecad/admin.json)
-    teamServer.ts               # Team-server client (enroll, refresh, snapshot cache)
-    global-admin.ts             # Install-wide admin settings + defaults from GH secrets
+    teamServer.ts               # Team-server client (enroll, refresh, locks, history)
+    global-admin.ts             # Install-wide admin settings + build-time defaults
     rest.ts                     # Local REST API server
     documents.ts                # Build-season doc generation (CSV + MD + PDF)
-    large-files.ts              # Repository health scanner
-    issue.ts                    # "Report to GitHub" issue creator via gh
-    auth.ts                     # gh CLI integration (login, browse, create repo)
-    config.ts                   # App config (recent projects) in Electron userData
+    export-queue.ts             # Export-queue staging for the manufacturing flow
+    issue.ts                    # "Report a problem" issue creator
+    config.ts                   # App config (recent projects, Google auth) in userData
   preload.ts                    # contextBridge — exposes IPC API to renderer
   shared/
     types.ts                    # TypeScript types shared across all processes
@@ -153,32 +155,35 @@ src/
       App.tsx                   # Root component — routing between setup and main UI
       hooks/
         useGit.ts               # Single hook managing all project state + IPC calls
+        useTeam.ts              # Push-subscribed accessor for the team snapshot
+        useParts.ts             # Parts manifest / numbering accessor
+        useLayoutTier.ts        # Responsive layout tier (wide / medium / compact)
       components/
-        ProjectSetup.tsx        # Create/Join/Open wizard
+        ProjectSetup.tsx        # Join/Open welcome screen
+        DriveJoin.tsx           # Google sign-in → Shared Drive → folder → download
         ProjectBrowser.tsx      # Full-width file table
-        Toolbar.tsx             # Action buttons + New Part/Assembly modals
-        ActivityFeed.tsx        # Collapsible commit history
+        Toolbar.tsx             # Action buttons (Sync / Publish) + New Part/Assembly modals
+        ActivityView.tsx        # Publish history view (from the team server)
         DetailsPanel.tsx        # Selected file info sidebar with per-part metadata
         AdminPage.tsx           # Settings panel (Ctrl+Shift+A); role-gated tabs
         TeamEnroll.tsx          # Team-server enrollment (server URL + 6-char PIN)
         settings/               # Per-project settings sub-panel
-        BrowseProjects.tsx      # Org-scoped repo browser
         ManufacturingQueue.tsx  # Tabbed shop view
         OnboardingTour.tsx      # First-launch tour
-      hooks/
-        useTeam.ts              # Push-subscribed accessor for the team snapshot
       styles/
         global.css              # All styles
 
 server/                         # Self-hosted FrameCAD team server (Docker)
   src/
     index.ts                    # Fastify entry, bootstrap, route registration
+    config.ts                   # Env config (PORT, HOST, DATA_DIR, LOG_LEVEL)
     db.ts                       # SQLite schema + migrations
     auth.ts                     # PIN gen, token gen, argon2id, bearer middleware
     bootstrap.ts                # First-launch admin PIN
     routes/
-      public.ts                 # /api/health, /api/enroll
-      client.ts                 # /api/me, /api/team, /api/members, /api/projects
+      public.ts                 # /api/health, /api/enroll, /api/login
+      client.ts                 # /api/me, /api/team, /api/members, /api/projects,
+                                #   /api/projects/:key/locks, /api/projects/:key/history
       admin.ts                  # /api/admin/* (CRUD on PINs, members, projects, team)
   ui/                           # React admin web UI served at GET /
     src/                        # Vite + React, builds to ../dist/ui/
@@ -201,26 +206,26 @@ SolidWorks Add-in  ──HTTP──>  REST API (rest.ts)
                                     v
 Renderer (React)  ──IPC──>  Main Process (ipc.ts)
                                     │
-                                    ├──> git.ts (simple-git)
-                                    ├──> locking.ts (git lfs lock/unlock)
+                                    ├──> drive-project.ts ──> drive.ts ──HTTPS──> Google Drive
+                                    ├──> teamServer.ts ──────HTTPS──> team server (locks / history)
                                     ├──> parts.ts (manifest)
                                     ├──> meta.ts (parts-meta.json)
                                     └──> documents.ts (BOM / Mfg / Summary)
 ```
 
-## Git-to-CAD terminology
+## CAD-friendly terminology
 
-FrameCAD deliberately hides Git terminology to be approachable for CAD users:
+FrameCAD deliberately hides the storage/coordination plumbing to be approachable for CAD users. Each surface verb maps to a concrete action:
 
-| Git Term | FrameCAD Term |
-|----------|---------------|
-| Repository | Project |
-| Clone | Join Project |
-| Pull | Download |
-| Commit + Push | Upload / Publish |
-| `git lfs lock` | Check Out |
-| `git lfs unlock` | Check In |
-| `git log` | History |
+| FrameCAD Term | What it does |
+|---------------|--------------|
+| Project | A folder in the team's Google Shared Drive |
+| Join Project | Download a Drive project folder to a local directory |
+| Sync | Pull teammates' latest files down from Drive |
+| Publish | Upload local changes to Drive + record an entry in the team server's history |
+| Check Out | Acquire a file lock on the team server |
+| Check In | Release that lock |
+| History | The team server's publish log for the project |
 
 ## REST API reference
 
@@ -231,15 +236,15 @@ All endpoints are served on `http://127.0.0.1:42129` (configurable via `FRAMECAD
 | `GET` | `/api/health` | Server status + current project info |
 | `GET` | `/api/status` | Full file tree with status and part numbers |
 | `GET` | `/api/file?path=<relative>` | Single file status |
-| `GET` | `/api/locks` | All current LFS locks |
+| `GET` | `/api/locks` | All current check-out locks (from the team server) |
 | `GET` | `/api/parts` | Full parts manifest |
-| `POST` | `/api/checkout` | Lock a file `{"path": "..."}` |
-| `POST` | `/api/checkin` | Unlock a file `{"path": "..."}` |
-| `POST` | `/api/sync` | Pull latest changes |
-| `POST` | `/api/publish` | Commit + push `{"message": "..."}` |
+| `POST` | `/api/checkout` | Lock a file `{"path": "..."}` (acquires a team-server lock) |
+| `POST` | `/api/checkin` | Unlock a file `{"path": "..."}` (releases the team-server lock) |
+| `POST` | `/api/sync` | Pull latest changes from Drive |
+| `POST` | `/api/publish` | Upload changes to Drive + log history `{"message": "..."}` |
 | `POST` | `/api/stage` | Stage a new file `{"path": "..."}` (used by the add-in for newly-saved parts) |
 
-Write operations (`checkout`, `checkin`, `sync`, `publish`, `stage`) are serialized — only one runs at a time.
+Write operations (`checkout`, `checkin`, `sync`, `publish`, `stage`) are serialized — only one runs at a time, so concurrent Drive transfers can't race.
 
 ## SolidWorks add-in setup
 
@@ -279,19 +284,26 @@ The add-in requires FrameCAD (the Electron app) to be running with a project ope
 Access via **Ctrl+Shift+A** from anywhere in the app, or click the Settings gear in the sidebar. What you see depends on your role from the team server (or full admin if you haven't enrolled — standalone mode):
 
 - **Student**: Profile + About + per-user preferences (screensaver toggle).
-- **Mentor**: above + Project workflow (Parts Manager, Approvals, Documents, Export Queue), Maintenance (Locks, Health, Tools), Project Registry.
-- **Admin**: above + Team Settings, Member roster, per-project Settings (part numbering, COTS, LFS, weekly tags), factory reset.
+- **Mentor**: above + Project workflow (Parts Manager, Approvals, Documents, Export Queue), Maintenance (Locks, Tools), Project Registry.
+- **Admin**: above + Team Settings, Member roster, per-project Settings (part numbering, COTS, weekly tags), factory reset.
 
-Standalone mode (not enrolled with a team server) grants full admin so solo users aren't locked out. Enforcement is UI-only — the real security boundary is GitHub org write access (push fails without it).
+Standalone mode (not enrolled with a team server) grants full admin so solo users aren't locked out. Enforcement is UI-only — the real security boundary is Google Drive access: the Shared Drive is restricted to the team's Workspace domain, and the team server allowlists which Shared Drive IDs clients may use.
 
 ### Build-time secrets
 
-The CI workflow consumes these GitHub Actions secrets to bake defaults into the installer:
+The CI workflow consumes these GitHub Actions secrets / env vars to bake defaults into the installer (see `electron.vite.config.ts`, which inlines them as `__…__` defines). Setting them at build time means students never have to enter credentials:
 
-- `FRAMECAD_DEFAULT_GITHUB_ORG` — team's GitHub organisation (e.g. `netarcx`)
-- `FRAMECAD_DEFAULT_PROJECT_PREFIX` — repo name prefix for filtering Browse (e.g. `framecad-`)
+- `GOOGLE_CLIENT_ID` — Google OAuth "Desktop app" client ID (Drive access)
+- `GOOGLE_CLIENT_SECRET` — matching client secret (not confidential for desktop OAuth clients, per Google's docs)
+- `FRAMECAD_GOOGLE_SHARED_DRIVE_IDS` — comma-separated allowed Shared Drive IDs (the team server's value wins when set)
+- `FRAMECAD_DEFAULT_SERVER_URL` — default team-server URL pre-filled on the enroll screen
+- `FRAMECAD_DEFAULT_GITHUB_ORG` — team's GitHub org (used for the "report a problem" issue flow, not for storage)
+- `FRAMECAD_DEFAULT_PROJECT_PREFIX` — project name prefix for filtering Browse
 - `FRAMECAD_DEFAULT_TEAM_NAME` — team display name
 - `FRAMECAD_DEFAULT_WELCOME_MESSAGE` — optional welcome text on the setup screen
+- `FRAMECAD_DEFAULT_ISSUE_REPO` — repo the "report a problem" flow files issues against
+
+See [google-workspace-setup.md](google-workspace-setup.md) for how to obtain the Google values.
 
 ## Tech stack
 
@@ -299,24 +311,16 @@ The CI workflow consumes these GitHub Actions secrets to bake defaults into the 
 - **[React](https://react.dev/)** 19 — renderer UI
 - **[TypeScript](https://www.typescriptlang.org/)** — type safety across all processes
 - **[electron-vite](https://electron-vite.org/)** — Vite-based build tooling for Electron
-- **[simple-git](https://github.com/steveukx/git-js)** — Git CLI wrapper for Node.js
+- **[googleapis](https://github.com/googleapis/google-api-nodejs-client)** + **[google-auth-library](https://github.com/googleapis/google-auth-library-nodejs)** — Google Drive storage backend + loopback OAuth
 - **[chokidar](https://github.com/paulmillr/chokidar)** — cross-platform file watching
 - **[electron-builder](https://www.electron.build/)** — packaging and installers
-- **[vitest](https://vitest.dev/)** — unit tests (106 covering parts numbering, per-part metadata, bulk meta + cascade, where-used, legacy mode, canonPath, isNonFastForward)
+- **[vitest](https://vitest.dev/)** — unit tests covering parts numbering, per-part metadata, bulk meta + cascade, where-used, and path canonicalization (`canonPath`)
 
-## LFS-tracked file types
+## CAD file types
 
-FrameCAD automatically configures Git LFS tracking for these file types when creating a project. Existing projects get them appended to `.gitattributes` on the next open.
+Because files live in Google Drive as opaque blobs, FrameCAD uploads any file in the project folder regardless of extension — there's no LFS configuration step and no per-file host limit to dodge. The part-numbering engine recognizes SolidWorks documents (`.sldprt`, `.sldasm`, `.slddrw`, `.sldlfp`) for auto-numbering and drawing-pairing; everything else (CAD interchange formats, PDFs, images, archives) rides along unchanged.
 
-| Category | Extensions |
-|----------|------------|
-| SolidWorks | `.sldprt`, `.sldasm`, `.slddrw`, `.sldlfp` |
-| CAD interchange | `.step` / `.stp`, `.iges` / `.igs`, `.stl`, `.3dxml`, `.dwg`, `.dxf`, `.obj`, `.x_t` / `.x_b` |
-| Documents | `.pdf` |
-| Images | `.png`, `.jpg`, `.jpeg`, `.bmp` |
-| Archives + installers | `.zip`, `.rar`, `.7z`, `.tar`, `.gz`, `.exe`, `.msi` |
-
-Archives and installers are LFS-tracked defensively — they don't really belong in a CAD repo, but teams regularly Pack-and-Go into a zip or drop a CacheCAD installer alongside their files. Without LFS coverage these silently exceed GitHub's 100 MB per-file hard limit and the whole push gets rejected.
+The team's blocked-extension policy (configured on the team server) and the pre-publish guard are the backstops that keep junk out of a project, replacing the old "must be LFS-tracked or GitHub rejects the push" failure mode.
 
 ## License
 

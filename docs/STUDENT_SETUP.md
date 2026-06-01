@@ -1,44 +1,22 @@
 # FrameCAD — Student Setup Guide
 
-Welcome to FRC Team 2129's CAD workflow. FrameCAD is the desktop app the team uses to share SolidWorks files. You won't need to know Git, but you'll need to install three small tools once, then everything is one-click after that.
+Welcome to FRC Team 2129's CAD workflow. FrameCAD is the desktop app the team uses to share SolidWorks files. You won't need to know any version-control commands, and you don't need to install Git or anything else first — just FrameCAD itself.
 
-Total setup time: about 10 minutes.
-
----
-
-## 1. What you'll install
-
-You need **two** things on your PC, in this order:
-
-1. **Git for Windows** — handles file history
-2. **FrameCAD** — the team's actual app, which also auto-installs **GitHub CLI** in the background
-
-Make sure you have admin rights on the computer, or ask whoever does to run the installers.
+Total setup time: about 5 minutes.
 
 ---
 
-## 2. Install Git for Windows (includes Git LFS)
+## 1. What you'll need
 
-1. Go to <https://git-scm.com/download/win>
-2. The download starts automatically. Run the installer when it finishes.
-3. On every screen, just click **Next** — the defaults are correct.
-4. ⚠️ When you see the screen **"Select Components"**, make sure **Git LFS (Large File Support)** is checked. It should be on by default. **Do not uncheck it** — SolidWorks files are huge and require LFS.
-5. Finish the installer.
+- The FrameCAD installer (one download).
+- A **Google account on your team's Workspace domain** (your `@yourschool.org` account). This is what gives you access to the team's CAD files in Google Drive.
+- The **enrollment PIN or link** your CAD lead / mentor gives you (a 6-character code like `K7M2QX`). This is optional for just opening files, but you need it for Check Out / Check In and to show up correctly in publish history.
 
-To verify, open the **Start menu**, type `cmd`, and press Enter. In the black window that pops up, type:
-
-```
-git --version
-git lfs version
-```
-
-Both commands should print a version number. If either says "not recognized," reinstall and make sure LFS was checked.
+Make sure you have admin rights on the computer, or ask whoever does to run the installer.
 
 ---
 
-## 3. Install FrameCAD
-
-The FrameCAD installer auto-installs the GitHub CLI for you (it runs `winget install GitHub.cli` in the background, which works on Windows 10 1809 and newer / all Windows 11). If your computer doesn't have winget, FrameCAD will show a dialog with a link to install GitHub CLI manually from <https://cli.github.com>.
+## 2. Install FrameCAD
 
 1. Go to <https://github.com/netarcx/FrameCAD/releases>
 2. Find the **latest release** at the top of the page.
@@ -49,69 +27,68 @@ The FrameCAD installer auto-installs the GitHub CLI for you (it runs `winget ins
    - Install FrameCAD itself
    - Install the FrameCAD SolidWorks add-in
    - Register the add-in so SolidWorks shows it on next launch
-   - Auto-install GitHub CLI in the background (if not already present)
+
+That's the only thing you install. No Git, no GitHub CLI, nothing else.
 
 ---
 
-## 4. First launch: profile and sign-in
+## 3. First launch: profile
 
-Open FrameCAD from the Start menu. The first time you run it, three things happen:
-
-### a) The "Required software missing" check
-
-FrameCAD verifies Git and Git LFS are installed. If you missed either, a modal will tell you exactly what's missing with a Download button. Install whatever it asks for, then click **Check again**.
-
-### b) Your profile
-
-You'll see a "Profile" screen asking for your **name** and **email**. Use:
+Open FrameCAD from the Start menu. The first time you run it, you'll see a "Profile" screen asking for your **name** and **email**. Use:
 - **Name:** your real first and last name (this is what shows up next to every change you make)
-- **Email:** your school email or any email you use for GitHub
+- **Email:** your school email
 
 Click **Save**.
 
-### c) Sign in to GitHub
+---
 
-On the welcome screen (where you can Create / Join / Open a project), there's a row at the top with a **"Sign in with GitHub"** button. Click it.
+## 4. Enroll with your team
 
-- A black `cmd` window will pop up showing a short code (something like `WXYZ-1234`).
-- Your browser will open to <https://github.com/login/device>.
-- Type the code from the cmd window into the browser page.
-- Sign in to your GitHub account, then click **Authorize github**.
-- The cmd window will say "Logged in as ..." — close it.
-- Back in FrameCAD, click **Check sign-in**. The row should turn green and say **"Signed in to GitHub as <your-username>"**.
+Your CAD lead / mentor will give you either a **PIN link** or a **server URL + 6-character PIN**.
 
-This is a one-time step. After this, every Download/Upload works without prompting.
+- If you got a link, click it — FrameCAD opens straight to the enrollment screen with the details filled in.
+- Otherwise, on the welcome screen open **Enroll with Team**, paste the **server URL** (e.g. `https://framecad.yourteam.org`) and your **PIN**, then click **Enroll**.
+
+This registers you with the team so that locks (Check Out / Check In) and publish history know who you are. It's a one-time step.
 
 ---
 
-## 5. Join your team's project
+## 5. Sign in with Google
 
-Ask whoever set up the project (your team's CAD lead or admin) for the **GitHub URL**. It looks like:
+On the welcome screen, click **Sign in with Google**.
 
-```
-https://github.com/netarcx/2026-robot.git
-```
+- Your browser opens to Google's sign-in page.
+- Sign in with your **team Workspace account** (`@yourschool.org`). Personal Gmail accounts won't work — the team's Shared Drive is restricted to the school domain.
+- Approve the access request. The browser will say you can close the tab.
+- Back in FrameCAD, the welcome screen shows **"Signed in as you@yourschool.org"**.
+
+This is a one-time step. After this, Sync and Publish work without prompting.
+
+---
+
+## 6. Join your team's project
 
 In FrameCAD:
 
-1. Click **Join Project**.
-2. Paste the GitHub URL.
-3. Pick a folder to save the project to. `Documents` is a good default.
-4. Click **Join**.
+1. Click **Join from Google Drive**.
+2. Pick your team's **Shared Drive** from the list (e.g. `FRC 2129 CAD`).
+3. Pick the **project folder** inside it — that folder *is* the project.
+4. Pick a folder on your PC to save it to. `Documents` is a good default.
+5. Click to download.
 
-FrameCAD will download the project. If your team has a shared COTS (Commercial Off-The-Shelf) parts library configured, it downloads that too automatically into a `COTS/` subfolder.
+FrameCAD downloads the project from Google Drive. If your team has a shared COTS (Commercial Off-The-Shelf) parts library configured, it comes down too.
 
 When it's done, you're in the project view.
 
 ---
 
-## 6. Daily workflow
+## 7. Daily workflow
 
 This is the loop you'll use every time you work on CAD:
 
 ### Before you start working
 
-1. Click **Download** (top-left of the toolbar). This pulls the latest team files.
+1. Click **Sync** (top-left of the toolbar). This pulls the latest team files from Google Drive.
 
 ### To edit a part
 
@@ -121,7 +98,7 @@ This is the loop you'll use every time you work on CAD:
 4. Save your changes in SolidWorks (Ctrl+S).
 5. Back in FrameCAD, click **Check In** to release the lock.
 
-While a file is checked out by you, the file shows a blue dot. Nobody else on the team can edit it until you check it in. This prevents two people editing the same file and overwriting each other's work.
+While a file is checked out by you, the file shows a blue dot. Nobody else on the team can edit it until you check it in. This prevents two people editing the same file and overwriting each other's work. (Locks are coordinated by the team server, which is why enrolling in step 4 matters.)
 
 ### To create a new part
 
@@ -131,23 +108,23 @@ While a file is checked out by you, the file shows a blue dot. Nobody else on th
 
 FrameCAD reserves a unique part number like `26-2129-001`, then the SolidWorks add-in automatically creates a new part document with that filename. You'll see the new part open in SolidWorks ready to design.
 
-### To upload your work
+### To publish your work
 
-1. Click **Upload** (the up-arrow button in the toolbar).
+1. Click **Publish** (the up-arrow button in the toolbar).
 2. Optionally type a short note about what changed. Leave blank for a random label.
 3. Click **Upload**.
 
-A progress window shows the file list and percentage. When it says "Upload complete," your work is on GitHub. Teammates will see it the next time they Download.
+A progress window shows the file list and percentage. When it's done, your changes are in Google Drive and recorded in the team's publish history. Teammates will see them the next time they Sync.
 
 ---
 
-## 7. The SolidWorks add-in
+## 8. The SolidWorks add-in
 
 When you open SolidWorks after installing FrameCAD, you'll see a "FrameCAD" task pane on the right side. It shows:
 
 - The current connection status (green = connected, yellow = no project open, red = FrameCAD desktop closed)
 - The part number and lock status of whatever file you have open
-- Buttons for Check Out / Check In / Download / Upload / + Part — so you don't have to Alt-Tab back to the desktop app
+- Buttons for Check Out / Check In / Sync / Publish / + Part — so you don't have to Alt-Tab back to the desktop app
 
 If the task pane shows **"FrameCAD desktop app is not open"**, just open FrameCAD on the side. The add-in will detect it within 5 seconds.
 
@@ -158,22 +135,22 @@ If the task pane doesn't appear at all in SolidWorks:
 
 ---
 
-## 8. Common problems
+## 9. Common problems
 
 ### "FrameCAD desktop app is not open"
 
 Open FrameCAD. The add-in checks every 5 seconds. If you just opened FrameCAD but the add-in still says this, wait a moment and check the icon at the top-left — it should turn green.
 
-### My upload is stuck at 0%
+### My publish is stuck at 0%
 
 The progress modal will show you what's happening. Most likely:
-- Your file is very large (over 100 MB) — FrameCAD will warn you in the modal
+- Your file is very large — FrameCAD will warn you in the modal
 - Your network is slow — give it time
-- Your GitHub login expired — click **Sign in with GitHub** again from the welcome screen
+- Your Google sign-in expired — click **Sign in with Google** again from the welcome screen
 
 ### "The file 26-2129-001.sldprt is corrupt"
 
-This used to happen on older FrameCAD versions (pre-0.4.7). If you see it on a file you created recently, delete the file from File Explorer, then create a new part with the same number from the add-in's **+ Part** button — that uses SolidWorks's own template instead of an empty file.
+This used to happen on older FrameCAD versions. If you see it on a file you created recently, delete the file from File Explorer, then create a new part with the same number from the add-in's **+ Part** button — that uses SolidWorks's own template instead of an empty file.
 
 ### Auto-updates
 
@@ -181,12 +158,12 @@ FrameCAD checks for updates every time you launch it. When a new version is avai
 
 ---
 
-## 9. Quick reference
+## 10. Quick reference
 
 | Action | Button |
 |--------|--------|
-| Get latest team files | Download |
-| Share your changes | Upload |
+| Get latest team files | Sync |
+| Share your changes | Publish |
 | Reserve a new part number | + Part |
 | Reserve a new assembly | + Assembly |
 | Make a new folder | + Folder |

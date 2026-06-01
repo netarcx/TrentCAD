@@ -26,6 +26,8 @@ import * as teamServer from './teamServer'
 import * as googleAuth from './google-auth'
 import * as driveProject from './drive-project'
 import * as driveOps from './drive'
+import * as projectPaths from './project-paths'
+import { clearHashCache } from './drive-manifest'
 import { setRestProject, clearRestProject, stopRestServer, queuePendingCreate, setRestMainWindow } from './rest'
 import { getThumbnail, clearThumbnailCache } from './thumbnails'
 import type { FileEntry, ProjectConfig } from '@shared/types'
@@ -92,16 +94,23 @@ const stageTimers = new Map<string, ReturnType<typeof setTimeout>>()
 function scheduleStage(rootDir: string, changedPath: string): void {
   const rel = path.relative(rootDir, changedPath).replace(/\\/g, '/')
   if (!rel || rel.startsWith('..') || rel.startsWith('.')) return
+  // Bind the timer to the project that's open right now. stopWatching()
+  // clears pending timers on close/switch, but a timer that has already
+  // fired and is mid-await when the user switches projects would otherwise
+  // continue against the NEW project. The key check in tryStage stops that.
+  const sessionKey = driveProject.currentConfig()?.driveFolderId ?? null
   const prev = stageTimers.get(rel)
   if (prev) clearTimeout(prev)
   stageTimers.set(rel, setTimeout(() => {
     stageTimers.delete(rel)
-    void tryStage(rel)
+    void tryStage(rel, sessionKey)
   }, STAGE_DEBOUNCE_MS))
 }
 
-async function tryStage(rel: string): Promise<void> {
+async function tryStage(rel: string, sessionKey: string | null): Promise<void> {
   if (!driveProject.isOpen() || publishingNow) return
+  // Project switched out from under this pending stage — abandon it.
+  if (driveProject.currentConfig()?.driveFolderId !== sessionKey) return
   // Only pre-upload files this user has checked out — the lock guarantees
   // nobody else is publishing that path, so staging it is safe.
   try {
@@ -169,6 +178,15 @@ function notifyFileChange(win: BrowserWindow): void {
 function broadcastStatus(getMainWindow: () => BrowserWindow | null): void {
   const win = getMainWindow()
   if (!win || win.isDestroyed()) return
+  // Drive projects have no git working dir — gitOps.getStatus() would reject
+  // and the .catch below would swallow it, so the renderer would never see the
+  // updated lock/meta state after a check-in or a meta mutation. Route Drive
+  // projects through the same status+locks read the watcher uses (no Drive
+  // write, so it's safe to call right after a mutation).
+  if (driveProject.isOpen()) {
+    runDriveStatus(win)
+    return
+  }
   gitOps.getStatus()
     .then(files => { if (!win.isDestroyed()) win.webContents.send('file-change', files) })
     .catch(() => {})
@@ -221,6 +239,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('create-project', async (_e, name: string, dirPath: string, remote: string, isCotsProject?: boolean) => {
     await gitOps.createProject(name, dirPath, remote)
+    projectPaths.setProjectPath(dirPath)
     if (isCotsProject) {
       await adminOps.writeLocalAdminConfig({ isCotsProject: true })
     }
@@ -247,6 +266,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
       options,
     )
     const name = path.basename(dirPath)
+    projectPaths.setProjectPath(dirPath)
     currentProject = { name, path: dirPath, remote: url }
     await addRecentProject(currentProject)
     setRestProject(currentProject)
@@ -273,6 +293,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     const driveConfig = await driveProject.open(dirPath).catch(() => null)
     if (driveConfig) {
       gitOps.setFilesystemProjectPath(dirPath)
+      projectPaths.setProjectPath(dirPath)
       currentProject = driveConfig
       setRestProject(currentProject)
       const win = getMainWindow()
@@ -282,6 +303,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     }
     driveProject.close()
     await gitOps.openProject(dirPath)
+    projectPaths.setProjectPath(dirPath)
     const name = path.basename(dirPath)
     const git = gitOps.getGit()
     let remote = ''
@@ -374,7 +396,11 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     if (driveProject.isOpen()) {
       try {
         return await teamServer.listDrivePublishHistory(driveProjectKey(), limit ?? 100)
-      } catch {
+      } catch (err) {
+        // Offline / server error reads the same as "no history" to the UI.
+        // Log it so a persistently-empty activity feed is diagnosable rather
+        // than silently indistinguishable from a genuinely fresh project.
+        console.warn('[drive] publish-history fetch failed:', (err as Error)?.message ?? err)
         return []
       }
     }
@@ -387,6 +413,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     // no subpath translation, unlike the git path below.
     if (driveProject.isOpen()) {
       await teamServer.acquireDriveLock(driveProjectKey(), filePath)
+      broadcastStatus(getMainWindow)
       return
     }
     // Translate the (apparent project-root)-relative path the renderer
@@ -398,6 +425,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   ipcMain.handle('check-in', async (_e, filePath: string) => {
     if (driveProject.isOpen()) {
       await teamServer.releaseDriveLock(driveProjectKey(), filePath)
+      broadcastStatus(getMainWindow)
       return
     }
     await lockOps.checkIn(pathsOps.toGitRel(filePath))
@@ -525,9 +553,11 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     currentProject = null
     driveProject.close()
     gitOps.closeProject()
+    projectPaths.clearProjectPath()
     clearRestProject()
     stopWatching()
     clearThumbnailCache()
+    clearHashCache()
     // Drop the cached subpath so opening a different project next
     // doesn't accidentally inherit this one's filter.
     pathsOps.clearSubpathCache()

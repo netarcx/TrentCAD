@@ -1123,14 +1123,21 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         // Reset the singleton team row to defaults rather than
         // deleting it — migrate() seeds it on insert and we don't
         // want to re-trigger that path. Easier to UPDATE in place.
+        // The policy columns (maxFileSizeMb, blockedExtensionsJson,
+        // quotaGraceHours, and the now-vestigial lfs* columns) are
+        // NOT NULL — setting them to NULL throws SQLITE_CONSTRAINT and
+        // rolls back the entire reset. Restore them to their schema
+        // defaults instead so a reset returns to a true fresh-install
+        // state.
         db.prepare(
           `UPDATE team SET name = 'My Team', gitHubOrg = '', projectPrefix = '',
                             welcomeMessage = '', setupComplete = 0,
                             lfsUrl = NULL, gitHubPat = NULL,
                             googleSharedDriveIds = '',
-                            maxFileSizeMb = NULL, lfsAutotrackThresholdMb = NULL,
-                            blockedExtensionsJson = NULL, lfsTokenTtlMinutes = NULL,
-                            quotaGraceHours = NULL, updatedAt = ?
+                            maxFileSizeMb = 256, lfsAutotrackThresholdMb = 50,
+                            blockedExtensionsJson = '["mp4","mov","avi","mkv","wmv","webm","m4v","flv","mpg","mpeg","3gp","mp3","wav","flac","aac","m4a","ogg","opus","rar","7z","tar","gz","tgz","bz2","xz","txz","iso","lz","lzma","z","exe","msi","dll","dmg","pkg","app","apk","deb","rpm","bat","cmd","com","ps1","sh","run","bin","url","webloc","desktop"]',
+                            lfsTokenTtlMinutes = 15,
+                            quotaGraceHours = 24, updatedAt = ?
                       WHERE id = 1`
         ).run(Date.now())
         db.prepare(`DELETE FROM sqlite_sequence`).run()

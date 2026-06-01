@@ -113,6 +113,28 @@ export function computeFileHash(filePath: string): Promise<string> {
   })
 }
 
+// Content-hash cache keyed by absolute path → (mtime, size, hash). A status
+// pass only hashes files whose mtime/size differ from the MANIFEST, but the
+// manifest isn't updated until publish/sync — so a SolidWorks save that bumps
+// mtimes without changing bytes re-hashed those (often large) assemblies on
+// EVERY 500ms tick for the whole editing session. Caching by the file's own
+// current (mtime,size) means we hash each distinct on-disk version once; an
+// unchanged file is a Map hit, not a disk read + SHA-256.
+const hashCache = new Map<string, { mtime: number; size: number; hash: string }>()
+
+async function computeFileHashCached(absPath: string, mtime: number, size: number): Promise<string> {
+  const cached = hashCache.get(absPath)
+  if (cached && cached.mtime === mtime && cached.size === size) return cached.hash
+  const hash = await computeFileHash(absPath)
+  hashCache.set(absPath, { mtime, size, hash })
+  return hash
+}
+
+/** Drop the content-hash cache (e.g. on project close) to bound memory. */
+export function clearHashCache(): void {
+  hashCache.clear()
+}
+
 export type ChangeType = 'modified' | 'added' | 'deleted'
 
 export interface LocalChange {
@@ -204,7 +226,7 @@ export async function getLocalChanges(
   const hashed = await Promise.all(
     maybeModified.map(async ({ relPath, local }) => {
       try {
-        const hash = await computeFileHash(path.join(projectDir, relPath))
+        const hash = await computeFileHashCached(path.join(projectDir, relPath), local.mtime, local.size)
         return { relPath, local, hash }
       } catch {
         return null // file vanished / unreadable between walk and hash

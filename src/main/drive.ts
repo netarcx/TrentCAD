@@ -140,6 +140,25 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
   throw lastErr
 }
 
+// Per-project serial queue for manifest read-modify-write operations. Every
+// mutator (publish, sync, metadata push/pull) does loadManifest → mutate →
+// saveManifest against the SAME drive-manifest.json. Without serialization two
+// of them (e.g. a part-number reservation's pushMetadataFile racing a publish)
+// each load an independent copy and the last save clobbers the other's
+// manifest.files entries — a lost entry makes that file look `added` next sync,
+// causing duplicate uploads / orphaned Drive bytes. This chains operations per
+// project dir so each one only loads the manifest after the previous one saved.
+const manifestLocks = new Map<string, Promise<unknown>>()
+function withManifestLock<T>(projectDir: string, fn: () => Promise<T>): Promise<T> {
+  // Run after the prior op settles (success OR failure) — a failed mutator must
+  // not wedge the queue for everyone behind it.
+  const prev = manifestLocks.get(projectDir) ?? Promise.resolve()
+  const run = prev.then(fn, fn)
+  // Store a non-rejecting tail so the chain never stays in a rejected state.
+  manifestLocks.set(projectDir, run.then(() => {}, () => {}))
+  return run
+}
+
 // Upload a local file as Drive media with retry. Each attempt uses a FRESH
 // read stream (a consumed/aborted stream can't be replayed) and destroys it in
 // a finally so a failed or mid-flight request never leaks an open file handle.
@@ -186,7 +205,16 @@ async function downloadOne(
       // bind/overlay mounts (WSL, Docker, mapped drives) can make rename fail
       // with EXDEV — fall back to copy + remove, which works across devices.
       if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err
-      await fs.copyFile(tmpPath, destPath)
+      try {
+        await fs.copyFile(tmpPath, destPath)
+      } catch (copyErr) {
+        // A partial copyFile can leave a truncated file at destPath that would
+        // look like a local edit and get re-published. Remove it so the path
+        // stays "not downloaded" and the next sync retries cleanly.
+        await fs.rm(destPath, { force: true }).catch(() => { /* may not exist */ })
+        throw copyErr
+      }
+      // copy (unlike rename) leaves the source behind — remove it explicitly.
       await fs.rm(tmpPath, { force: true }).catch(() => { /* best effort */ })
     }
   } catch (err) {
@@ -632,9 +660,11 @@ async function reconcileStaging(
     }
   }
 
-  // Listing sweep: trash anything in the staging folder we no longer track
-  // (crash orphans, or entries whose trash failed above). Scoped to this
-  // device's subfolder, so it never touches another teammate's staged work.
+  // Listing sweep: trash anything in the staging folder with NO state entry —
+  // i.e. crash orphans whose staging.json record was lost. (Entries whose
+  // trash failed transiently above are still tracked and so are intentionally
+  // left for the primary trash loop to retry next round, not handled here.)
+  // Scoped to this device's subfolder, so it never touches a teammate's work.
   if (state.stagingFolderId) {
     const tracked = new Set(Object.values(state.files).map(e => e.stagedFileId))
     try {
@@ -737,7 +767,10 @@ async function findDriveFileId(
  * not signed in, no manifest, or the file isn't on Drive yet — the caller then
  * just mutates whatever is on disk.
  */
-export async function pullMetadataFile(projectDir: string, relPath: string): Promise<void> {
+export function pullMetadataFile(projectDir: string, relPath: string): Promise<void> {
+  return withManifestLock(projectDir, () => pullMetadataFileImpl(projectDir, relPath))
+}
+async function pullMetadataFileImpl(projectDir: string, relPath: string): Promise<void> {
   const manifest = await loadManifest(projectDir)
   if (!manifest || !sharedDriveAllowed(manifest.sharedDriveId)) return
   let drive: drive_v3.Drive
@@ -765,7 +798,10 @@ export async function pullMetadataFile(projectDir: string, relPath: string): Pro
  * update), recording it in the manifest. Throws on failure so callers that
  * reserve part numbers can roll back, mirroring the git push-or-rollback path.
  */
-export async function pushMetadataFile(projectDir: string, relPath: string): Promise<void> {
+export function pushMetadataFile(projectDir: string, relPath: string): Promise<void> {
+  return withManifestLock(projectDir, () => pushMetadataFileImpl(projectDir, relPath))
+}
+async function pushMetadataFileImpl(projectDir: string, relPath: string): Promise<void> {
   const manifest = await loadManifest(projectDir)
   if (!manifest) throw new Error('No Drive manifest — this project is not a Drive project.')
   assertSharedDriveAllowed(manifest.sharedDriveId)
@@ -854,7 +890,13 @@ export interface PublishChangesResult {
  * Content-Manager rights). The manifest is rewritten so the next
  * status pass shows everything synced.
  */
-export async function publishChanges(
+export function publishChanges(
+  projectDir: string,
+  onProgress?: (progress: DownloadProgress) => void
+): Promise<PublishChangesResult> {
+  return withManifestLock(projectDir, () => publishChangesImpl(projectDir, onProgress))
+}
+async function publishChangesImpl(
   projectDir: string,
   onProgress?: (progress: DownloadProgress) => void
 ): Promise<PublishChangesResult> {
@@ -914,6 +956,12 @@ export async function publishChanges(
       return stagingSave
     }
 
+    // If a transfer worker throws, we still persist the manifest entries for
+    // the files that DID upload (below) before re-throwing — otherwise an
+    // uploaded file with no manifest entry is orphaned on Drive and re-uploaded
+    // next pass. Capture the first error and surface it after the save.
+    let transferErr: unknown
+    try {
     await mapPool(adds, DRIVE_TRANSFER_CONCURRENCY, async c => {
       const localPath = path.join(projectDir, ...c.relativePath.split('/'))
       const relDir = relDirOf(c.relativePath)
@@ -999,6 +1047,9 @@ export async function publishChanges(
       done++
       onProgress?.({ phase: 'Deleting', percent: total ? Math.round((done / total) * 100) : 0, detail: c.relativePath })
     })
+    } catch (err) {
+      transferErr = err
+    }
 
     // Flush any queued incremental staging saves, then persist once more so the
     // promoted-entry removals are durable BEFORE the manifest is saved. A
@@ -1014,6 +1065,12 @@ export async function publishChanges(
 
     manifest.lastSyncedAt = Date.now()
     await saveManifest(projectDir, manifest)
+
+    // A worker threw mid-transfer: the successfully-uploaded files are now
+    // durably recorded above, so re-throwing here won't orphan them. Surface
+    // the failure to the user instead of reporting a clean publish; skip GC
+    // (the next reconcile catches any leftover staged copies).
+    if (transferErr) throw transferErr
 
     // Trash-only cleanup of staged copies that are no longer pending changes.
     // Safe to fail: it never deletes live files (promoted entries are already
@@ -1048,7 +1105,13 @@ export interface SyncRemoteResult {
  * sides changed, the local copy wins and the user resolves it on their
  * next publish (last-write-wins, but never a silent data loss).
  */
-export async function syncRemote(
+export function syncRemote(
+  projectDir: string,
+  onProgress?: (progress: DownloadProgress) => void
+): Promise<SyncRemoteResult> {
+  return withManifestLock(projectDir, () => syncRemoteImpl(projectDir, onProgress))
+}
+async function syncRemoteImpl(
   projectDir: string,
   onProgress?: (progress: DownloadProgress) => void
 ): Promise<SyncRemoteResult> {
@@ -1082,21 +1145,37 @@ export async function syncRemote(
   let updated = 0
   let done = 0
   const total = toDownload.length
-  await mapPool(toDownload, DRIVE_TRANSFER_CONCURRENCY, async r => {
-    const destPath = path.join(projectDir, ...r.relativePath.split('/'))
-    const { hash, mtimeMs, size } = await downloadOne(drive, r.driveFileId, destPath)
-    manifest.files[r.relativePath] = {
-      driveFileId: r.driveFileId,
-      driveRevisionId: '',
-      driveModifiedTime: r.modifiedTime,
-      localContentHash: hash,
-      localModifiedTime: mtimeMs,
-      localSize: size
-    }
-    updated++
-    done++
-    onProgress?.({ phase: 'Downloading', percent: total ? Math.round((done / total) * 100) : 0, detail: r.relativePath })
-  })
+  // As in publishChanges: if a download worker throws, persist the manifest
+  // entries for files that DID download before re-throwing, so a partial sync
+  // doesn't re-download everything (and re-flag completed files as changed).
+  let transferErr: unknown
+  try {
+    await mapPool(toDownload, DRIVE_TRANSFER_CONCURRENCY, async r => {
+      const destPath = path.join(projectDir, ...r.relativePath.split('/'))
+      const { hash, mtimeMs, size } = await downloadOne(drive, r.driveFileId, destPath)
+      manifest.files[r.relativePath] = {
+        driveFileId: r.driveFileId,
+        driveRevisionId: '',
+        driveModifiedTime: r.modifiedTime,
+        localContentHash: hash,
+        localModifiedTime: mtimeMs,
+        localSize: size
+      }
+      updated++
+      done++
+      onProgress?.({ phase: 'Downloading', percent: total ? Math.round((done / total) * 100) : 0, detail: r.relativePath })
+    })
+  } catch (err) {
+    transferErr = err
+  }
+
+  if (transferErr) {
+    // Persist what downloaded, then surface the failure. Skip the
+    // remote-deletion sweep — we can't trust a partial remote listing.
+    manifest.lastSyncedAt = Date.now()
+    await saveManifest(projectDir, manifest)
+    throw transferErr
+  }
 
   // Files gone from Drive → delete locally, unless the user has local
   // edits to that path (then keep their copy).

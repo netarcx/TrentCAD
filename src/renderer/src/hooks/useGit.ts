@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import type { FileEntry, HistoryEntry, ProjectConfig, LockInfo } from '@shared/types'
+import { clearRendererThumbnailCache } from '../components/FileThumbnail'
 
 export function useGit() {
   const [project, setProject] = useState<ProjectConfig | null>(null)
@@ -103,6 +104,9 @@ export function useGit() {
 
   const closeProject = useCallback(async () => {
     try { await window.api.closeProject() } catch { /* best effort */ }
+    // Drop the renderer-side thumbnail cache so a long session of opening
+    // many projects doesn't accumulate tens of MB of base64 data-URLs.
+    clearRendererThumbnailCache()
     setProject(null)
     setFiles([])
     setHistory([])

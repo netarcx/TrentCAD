@@ -143,11 +143,13 @@ export async function sync(onProgress?: (p: PublishProgress) => void): Promise<{
 export async function publish(onProgress?: (p: PublishProgress) => void): Promise<{
   success: boolean
   error?: string
+  /** Paths changed in this publish — used to record team-server history. */
+  changedPaths?: string[]
 }> {
   if (!current) return { success: false, error: 'No Drive project open' }
   try {
     onProgress?.({ phase: 'preparing', percent: 0 })
-    await publishChanges(current.dir, prog => {
+    const result = await publishChanges(current.dir, prog => {
       onProgress?.({
         phase: prog.percent >= 100 ? 'done' : 'uploading',
         percent: prog.percent,
@@ -155,7 +157,7 @@ export async function publish(onProgress?: (p: PublishProgress) => void): Promis
       })
     })
     onProgress?.({ phase: 'done', percent: 100 })
-    return { success: true }
+    return { success: true, changedPaths: result.changedPaths }
   } catch (err) {
     onProgress?.({ phase: 'error', error: (err as Error).message })
     return { success: false, error: (err as Error).message }

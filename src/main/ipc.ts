@@ -344,6 +344,12 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
         const result = await driveProject.publish(progress => {
           if (win && !win.isDestroyed()) win.webContents.send('publish-progress', progress)
         })
+        // Record the publish on the team server so it shows in History /
+        // Activity. Best effort — a failure here must never fail the publish.
+        if (result.success && (result.changedPaths?.length ?? 0) > 0) {
+          teamServer.recordDrivePublish(driveProjectKey(), message?.trim() || '', result.changedPaths ?? [])
+            .catch(() => { /* offline / not enrolled */ })
+        }
         return result
       }
       await metaOps.flushMetaCommit()
@@ -362,9 +368,16 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('get-history', async (_e, limit?: number) => {
-    // Drive backend has no commit history (yet — revisions are a future
-    // enhancement). Return an empty feed so the UI renders cleanly.
-    if (driveProject.isOpen()) return []
+    // Drive history comes from the team-server publish log (Drive has no
+    // commit graph). Empty when offline / not enrolled so the feed renders
+    // clean rather than erroring.
+    if (driveProject.isOpen()) {
+      try {
+        return await teamServer.listDrivePublishHistory(driveProjectKey(), limit ?? 100)
+      } catch {
+        return []
+      }
+    }
     return gitOps.getHistory(limit)
   })
 

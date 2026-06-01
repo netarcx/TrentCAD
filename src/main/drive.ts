@@ -1131,9 +1131,59 @@ async function syncRemoteImpl(
     localChanges.filter(c => c.type === 'modified' || c.type === 'added').map(c => c.relativePath)
   )
 
+  let updated = 0
+
+  // Rename/move handling. Conflict detection keys on path, so a teammate's
+  // rename (same Drive file id, new path) would otherwise look like a brand-new
+  // file to download PLUS an orphaned old entry — wasting a full re-download
+  // and, if the old path is locally dirty, leaving the SAME driveFileId under
+  // two manifest keys (a corruption the rest of the code doesn't expect).
+  // Reconcile by id instead: a remote file whose id we already track under a
+  // different path that is itself gone from Drive is a move, not a copy.
+  const manifestPathById = new Map<string, string>()
+  for (const [p, e] of Object.entries(manifest.files)) {
+    if (e.driveFileId) manifestPathById.set(e.driveFileId, p)
+  }
+  // New paths to keep OUT of the download set because handling them as a
+  // download would duplicate an id we're preserving under the old path.
+  const skipDownloadPaths = new Set<string>()
+  for (const r of remote) {
+    const oldPath = manifestPathById.get(r.driveFileId)
+    if (!oldPath || oldPath === r.relativePath) continue // unchanged or untracked
+    if (remoteByPath.has(oldPath)) continue              // old path still exists → a copy, not a move
+    if (manifest.files[r.relativePath]) continue          // new path already tracked → not a simple rename
+    if (locallyDirty.has(oldPath)) {
+      // The user is editing the renamed file locally. Keep their copy under the
+      // old path (their edits win and re-publish to the same Drive file id on
+      // their next publish) and do NOT create a second entry for the same id at
+      // the new path. The deletion sweep already preserves a locally-dirty path.
+      skipDownloadPaths.add(r.relativePath)
+      continue
+    }
+    // Something already exists at the new path locally (an untracked file the
+    // user just created there) — don't clobber it; fall back to default sync.
+    if (locallyDirty.has(r.relativePath)) continue
+    // Clean move: rename the local file and migrate the manifest entry so the
+    // normal change check below only re-downloads if the CONTENT also changed
+    // (a pure Drive rename/move does not bump modifiedTime).
+    const oldAbs = path.join(projectDir, ...oldPath.split('/'))
+    const newAbs = path.join(projectDir, ...r.relativePath.split('/'))
+    try {
+      await fs.mkdir(path.dirname(newAbs), { recursive: true })
+      await fs.rename(oldAbs, newAbs)
+      manifest.files[r.relativePath] = manifest.files[oldPath]
+      delete manifest.files[oldPath]
+      updated++
+    } catch {
+      // Local move failed (e.g. file open/locked) — fall back to the default
+      // behaviour: let the new path download and the old entry get swept.
+    }
+  }
+
   // Pick the files that actually need pulling: new on Drive, or remotely
   // changed and not being edited locally (conflict guard — local copy wins).
   const toDownload = remote.filter(r => {
+    if (skipDownloadPaths.has(r.relativePath)) return false
     const entry = manifest.files[r.relativePath]
     const isNew = !entry
     const remoteChanged = !!entry && entry.driveModifiedTime !== r.modifiedTime
@@ -1142,7 +1192,6 @@ async function syncRemoteImpl(
     return true
   })
 
-  let updated = 0
   let done = 0
   const total = toDownload.length
   // As in publishChanges: if a download worker throws, persist the manifest

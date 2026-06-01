@@ -9,10 +9,11 @@ with **check-out/check-in locks moved to the team server**.
 | Piece | What | State |
 |-------|------|-------|
 | 1 | Engine + types + config + drive.ts / drive-project.ts / google-auth.ts | ✅ done |
-| 2 | ipc.ts routing (sync/publish/status/locks branch on `driveProject.isOpen()`) | ✅ done + builds |
+| 2 | ipc.ts routing (sync/publish/status/locks/**history** on `driveProject.isOpen()`) | ✅ done (shipped v5.1.0) |
 | 3 | Server-side locks (migration v15 + routes + teamServer client + ipc wiring) | ✅ done + verified live |
-| 4 | Renderer UI (Google sign-in → pick Shared Drive + folder → join) | ✅ done + builds |
-| 5 | Git rip-out (the actual destructive "full replacement") | ⬜ NOT started — left for Trent |
+| 4 | Renderer UI (Google sign-in → pick Shared Drive + folder → join) | ✅ done |
+| 4b | Drive parity: persistence, **publish history** (v17), COTS-on-Drive, SolidWorks REST | ✅ done (shipped v5.1.0) |
+| 5 | Git rip-out — client **and** server LFS (the destructive "full replacement") | ⬜ NOT started — staged on `chore/remove-git` |
 
 **Build/typecheck (all green as of this session):**
 - `npm run build` — desktop builds clean.
@@ -66,13 +67,46 @@ registered in `projects` (that table is keyed on a GitHub repoUrl). Documented i
   an always-visible **"Join from Google Drive"** outline button on the welcome screen (no team
   enrollment required, since Drive auths against Google directly).
 
-## Piece 5 — git rip-out (NOT started, leave for Trent — destructive)
+## Drive parity — DONE (shipped to main, v5.1.0)
 
-The Drive backend currently **coexists** with git (runtime-routed). That's a fine transition
-state — the app does both. Ripping out `git.ts` (imported by 10 main modules: admin, thumbnails,
-parts, large-files, locking, documents, rest, meta, ipc, +test) is the big destructive step.
-parts/meta/thumbnails are mostly filesystem; publish/locking/history are git. **Recommend Trent
-explicitly green-lights this** — don't do it autonomously.
+Drive now has full feature parity; git remains a dormant runtime-routed fallback.
+- Parallel transfers + background staging (promote-by-move on publish), freeze/idle-GPU fixes.
+- Backend-agnostic persistence (`persistence.ts`): parts.json / parts-meta.json / admin.json
+  upload straight to the Drive project folder (`drive.ts` pullMetadataFile/pushMetadataFile).
+- Publish **history** via the team server (`publish_log` table + `/api/projects/:key/history`;
+  `get-history` and publish both wired through `teamServer`).
+- **COTS on Drive** (`drive.ts syncCotsDrive`, admin `cotsDriveFolderId`/`cotsSharedDriveId`).
+- **SolidWorks REST** (`rest.ts`) Drive-routed: status/file/locks/checkout/checkin/sync/publish.
+- `project-paths.ts` extracted from git.ts; admin/parts/meta/thumbnails/documents off git.ts.
+
+## Piece 5 — git rip-out (NOT started — destructive; staged on `chore/remove-git`)
+
+The app still *coexists* with git as a fallback. The deletion is mechanical but large; do it as
+whole-file rewrites (not incremental edits — those misfired badly mid-session), build-gating each
+file, on the `chore/remove-git` branch → PR. Scope:
+
+**Client (`src/`):**
+- Delete `git.ts`, `locking.ts`, `lfsMultipart.ts`, `large-files.ts`, `deps.ts`. Drop `simple-git`.
+- Rewrite `ipc.ts` + `rest.ts` Drive-only (strip every `else` git-fallback branch + git-only
+  handlers: create-project, join-by-URL, github-*, check-dependencies, git-resetup,
+  list/create-github-repo, create-progress-tag, renormalize-all, get-main-remote-url,
+  scan-large-files). New projects = "folder in Drive + Join" (no in-app create).
+- Renderer Phase 5: remove ahead/behind pulse badges, GitHub-URL/LFS join UI + sentinels,
+  git-identity → team identity (already aliased in ipc), the create-project flow.
+
+**Server (`server/`) — LFS is now dead weight (Drive holds the bytes):**
+- Delete `src/lfs.ts`, the `POST /api/lfs/token` route, `POST /api/admin/test-lfs`, and the
+  LFS bits of `storage.ts` / `config.ts` / `routes/admin.ts` / `routes/client.ts`.
+- `docker-compose.yml`: drop the `framecad-lfs` (Giftless) + `framecad-lfs-init` containers,
+  the `./data/lfs-objects` bind-mount, and the `LFS_JWT_SECRET` env requirement → stack
+  collapses to one Node container + SQLite. Update `server/README.md` + `.env.example`.
+- DB: the LFS policy columns on `team` (`lfsTokenTtlMinutes`, `quotaGraceHours`, etc.) can stay
+  (cheap, additive) or be dropped in a new migration — leave for now.
+- Client `teamServer.ts` still references `/api/lfs/token`; remove with the client git rip-out.
+
+After this the server's job is purely team coordination: identity/enrollment, locks, publish
+history, team config + Shared Drive allowlist, capabilities, audit, version banner. It no longer
+touches a CAD byte.
 
 ## Still needs Trent / a real environment to exercise end-to-end
 
@@ -86,5 +120,5 @@ explicitly green-lights this** — don't do it autonomously.
 ## Possible follow-ups (not required for the feature to work)
 
 - Admin web UI "Locks" page (view / break locks) — server API supports it; no UI yet.
-- Drive revision history (`get-history` returns `[]` today).
 - Conflict UX on sync (current behavior: local edits always win, never silently clobbered).
+- New-project creation flow on Drive (currently "make a folder in Drive + Join"; no in-app create).

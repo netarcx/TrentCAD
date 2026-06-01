@@ -431,8 +431,9 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
                   moment the response lands. */}
               {authStatus !== null && !authStatus.loggedIn && authStatus.ghCliAvailable !== false && (
                 <div className="enroll-github-hint">
-                  GitHub sign-in is required so FrameCAD can clone your team's
-                  private repos and identify your check-outs to teammates.
+                  GitHub sign-in is optional — the Google Drive backend signs
+                  in against Google directly, and your check-outs are tracked
+                  by the team server. You can finish without it.
                 </div>
               )}
             </div>
@@ -447,22 +448,19 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
               >
                 Back
               </button>
-              {/* Finish is disabled until GitHub sign-in succeeds.
-                  Was previously skippable, but private-repo support
-                  + auditability mean we need a real GitHub identity
-                  on every device. Users without `gh` installed see
-                  the install-instructions hint above instead of a
-                  dead-end. */}
+              {/* GitHub sign-in is OPTIONAL now that the backend is Google
+                  Drive (Drive auths against Google directly, and locks live
+                  on the team server). Finish only needs a display name —
+                  gating on `gh` previously locked out every Drive-only
+                  machine that didn't have the GitHub CLI installed. */}
               <button
                 className="toolbar-btn primary"
                 onClick={() => void submitEnroll()}
-                disabled={busy || !displayName.trim() || !authStatus?.loggedIn}
+                disabled={busy || !displayName.trim()}
                 style={{ minWidth: 120 }}
-                title={authStatus === null
-                  ? 'Checking GitHub sign-in…'
-                  : authStatus.loggedIn
-                    ? 'Finish enrollment with your GitHub account'
-                    : 'Sign in with GitHub first — required for private-repo access'}
+                title={displayName.trim()
+                  ? 'Finish enrollment'
+                  : 'Enter your name to finish'}
               >
                 {busy ? 'Enrolling…' : 'Finish'}
               </button>

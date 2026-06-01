@@ -20,7 +20,7 @@ import ActivityView from './components/ActivityView'
 import PartsManager from './components/PartsManager'
 import ApprovalsPanel from './components/ApprovalsPanel'
 import logoUrl from './assets/logo.png'
-import type { AdminConfig, DependencyStatus, FileEntry, GlobalAdminConfig, ProjectTotals, PublishProgress, UpdateInfo, UpdateRetryStatus } from '@shared/types'
+import type { AdminConfig, FileEntry, GlobalAdminConfig, ProjectTotals, PublishProgress, UpdateInfo, UpdateRetryStatus } from '@shared/types'
 import { useTeam } from './hooks/useTeam'
 
 function countByState(files: FileEntry[], state: string): number {
@@ -324,8 +324,6 @@ export default function App() {
     setShowOnboarding(false)
   }, [])
 
-  const [missingDeps, setMissingDeps] = useState<DependencyStatus | null>(null)
-  const [checkingDeps, setCheckingDeps] = useState(false)
   const [publishProgress, setPublishProgress] = useState<PublishProgress | null>(null)
   const [progressHidden, setProgressHidden] = useState(false)
   const [progressKind, setProgressKind] = useState<'publish' | 'join'>('publish')
@@ -402,17 +400,9 @@ export default function App() {
     }
   }, [])
 
-  const recheckDeps = useCallback(() => {
-    setCheckingDeps(true)
-    window.api.checkDependencies().then(status => {
-      setMissingDeps(!status.git.installed || !status.lfs.installed ? status : null)
-    }).catch(() => {}).finally(() => setCheckingDeps(false))
-  }, [])
-
   useEffect(() => {
     window.api.getAppVersion().then(setAppVersion).catch(() => {})
-    recheckDeps()
-  }, [recheckDeps])
+  }, [])
 
   const refreshAdminConfig = useCallback(() => {
     if (!project) {
@@ -604,10 +594,13 @@ export default function App() {
   }, [dyslexicFont])
 
   useEffect(() => {
+    // Identity is the team-server display name now (set at enrollment); the
+    // git user.name/email are only read here to pre-fill the optional profile
+    // editor. We no longer GATE launch on them — a Drive-only machine has no
+    // git identity and must not be locked out of the app.
     window.api.getGitIdentity().then(({ name, email }) => {
       setGitName(name)
       setGitEmail(email)
-      setNeedsProfile(!name || !email)
       setIdentityChecked(true)
     }).catch(() => setIdentityChecked(true))
   }, [])
@@ -855,45 +848,6 @@ export default function App() {
     <OnboardingTour onClose={dismissOnboarding} />
   )
 
-  const depsModal = missingDeps && (
-    <div className="modal-overlay">
-      <div className="modal deps-modal">
-        <h2>Required software missing</h2>
-        <p className="deps-intro">
-          FrameCAD uses Git and Git LFS under the hood to manage CAD files.
-          Install whichever is missing and click "Check again" to continue.
-        </p>
-        {!missingDeps.git.installed && (
-          <div className="deps-row">
-            <div>
-              <strong>Git</strong>
-              <div className="deps-sub">Not found in PATH</div>
-            </div>
-            <button className="toolbar-btn primary" onClick={() => window.api.openExternal('https://git-scm.com/download/win')}>
-              Download Git
-            </button>
-          </div>
-        )}
-        {!missingDeps.lfs.installed && (
-          <div className="deps-row">
-            <div>
-              <strong>Git LFS</strong>
-              <div className="deps-sub">Not found in PATH</div>
-            </div>
-            <button className="toolbar-btn primary" onClick={() => window.api.openExternal('https://git-lfs.com')}>
-              Download Git LFS
-            </button>
-          </div>
-        )}
-        <div className="actions">
-          <button className="toolbar-btn primary" onClick={recheckDeps} disabled={checkingDeps}>
-            {checkingDeps ? 'Checking...' : 'Check again'}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-
   const progressModal = publishProgress && !progressHidden && (
     <div className="modal-overlay">
       <div className="modal publish-progress-modal">
@@ -1054,7 +1008,6 @@ export default function App() {
           initialName={gitName}
           initialEmail={gitEmail}
         />
-        {depsModal}
         {offlineBanner}
         {onboardingModal}
         {versionCorner}
@@ -1124,7 +1077,6 @@ export default function App() {
             }}
           />
         )}
-        {depsModal}
         {offlineBanner}
         {onboardingModal}
         {progressModal}
@@ -1401,8 +1353,6 @@ export default function App() {
           <span className="publish-mini-bar-expand">Show</span>
         </button>
       )}
-
-      {depsModal}
 
       <div className="status-bar">
         <BusyLabel />

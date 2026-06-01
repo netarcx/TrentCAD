@@ -363,6 +363,10 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     publishingNow = true
     try {
       if (driveProject.isOpen()) {
+        // Flush any deferred metadata commit (release-state / mass / cost /
+        // comments) so a just-made edit publishes with this batch instead of
+        // lingering on the 60s timer and shipping in a later, confusing push.
+        await metaOps.flushMetaCommit()
         const result = await driveProject.publish(progress => {
           if (win && !win.isDestroyed()) win.webContents.send('publish-progress', progress)
         })
@@ -549,7 +553,12 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     await gitOps.setGitIdentity(name, email)
   })
 
-  ipcMain.handle('close-project', () => {
+  ipcMain.handle('close-project', async () => {
+    // Flush a pending deferred meta commit BEFORE we tear down the project
+    // path — otherwise the 60s timer fires later against the next project's
+    // path (or throws and is dropped), silently losing the edit. No-ops when
+    // nothing is pending.
+    await metaOps.flushMetaCommit()
     currentProject = null
     driveProject.close()
     gitOps.closeProject()

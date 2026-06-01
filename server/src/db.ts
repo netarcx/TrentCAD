@@ -176,12 +176,12 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE devices ADD COLUMN clientVersion TEXT;
   `,
-  // v4: per-project storage quota for the self-hosted LFS server.
-  // quotaBytes is the hard cap (NULL = unlimited; we set a 10GB
-  // default at insert time so the admin doesn't have to think about
-  // it upfront). storageBytes is the most-recently-scanned disk
-  // usage under that project's LFS prefix; updated lazily on every
-  // /api/lfs/token call and shown in the admin Projects page.
+  // v4: per-project storage quota for the (now-removed) self-hosted LFS
+  // server. quotaBytes/storageBytes/storageScannedAt are VESTIGIAL since the
+  // Google Drive migration — their only writer was the deleted
+  // /api/lfs/token route, so storageBytes is now always 0 and quotaBytes is
+  // enforced nowhere. Columns are kept (append-only migrations); the admin
+  // Projects "quota" UI is a decide-later item, not a live control.
   // setupComplete on the team row gates the first-launch wizard —
   // flipped to 1 once the admin walks through team info + first
   // project + first member.
@@ -300,17 +300,14 @@ const MIGRATIONS: string[] = [
   // day this migration shipped so existing deployments are
   // byte-identical until an admin edits something.
   //
-  // - maxFileSizeMb: hard refusal at publish time. Range 10-2048.
-  // - lfsAutotrackThresholdMb: files above this auto-route to LFS
-  //   via the publish-time self-heal. Must be < maxFileSizeMb.
+  // - maxFileSizeMb: hard refusal at publish time. Range 10-2048. STILL LIVE.
   // - blockedExtensionsJson: JSON array of extensions (no dot) the
-  //   publish guard refuses. Default mirrors src/main/git.ts's
-  //   BLOCKED_EXTS set as of v3.0.16.
-  // - lfsTokenTtlMinutes: lifetime of the JWT clients send to
-  //   Giftless. Range 5-120. Bumping helps slow uploads complete
-  //   on one token; lowering tightens the security window.
-  // - quotaGraceHours: how long a project can keep publishing
-  //   after crossing its storage cap. Range 0-168 (one week).
+  //   publish guard refuses. STILL LIVE.
+  // NOTE: lfsAutotrackThresholdMb, lfsTokenTtlMinutes and quotaGraceHours
+  // are VESTIGIAL since the Google Drive migration (the self-hosted LFS /
+  // Giftless server and the per-project storage quota were removed). The
+  // columns are kept because migrations are append-only and dropping them
+  // would require a risky table rebuild; nothing reads them at runtime.
   `
   ALTER TABLE team ADD COLUMN maxFileSizeMb INTEGER NOT NULL DEFAULT 256;
   ALTER TABLE team ADD COLUMN lfsAutotrackThresholdMb INTEGER NOT NULL DEFAULT 50;

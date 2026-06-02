@@ -606,6 +606,11 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     broadcastStatus(getMainWindow)
   })
 
+  ipcMain.handle('set-purchase-info', async (_e, filePath: string, patch: Parameters<typeof metaOps.setPurchaseInfo>[1]) => {
+    await metaOps.setPurchaseInfo(pathsOps.toGitRel(filePath), patch)
+    broadcastStatus(getMainWindow)
+  })
+
   ipcMain.handle('bulk-update-meta', async (_e, updates: Record<string, metaOps.BulkMetaPatch>) => {
     // Renderer keys these by subpath-relative paths (from the file
     // tree it sees). Internal storage is keyed by git-relative paths,

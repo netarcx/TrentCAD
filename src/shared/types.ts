@@ -36,7 +36,24 @@ export interface PartReleaseInfo {
   note?: string
 }
 
-export type ManufacturingMethod = 'print' | 'cnc' | 'manual' | 'other'
+export type ManufacturingMethod = 'print' | 'cnc' | 'manual' | 'purchase' | 'other'
+
+/** Order status for a part whose manufacturing method is 'purchase' (a
+ *  bought, not made, part — COTS or a custom-order). Drives the Purchasing
+ *  queue. 'received' is the purchase equivalent of 'manufactured'. */
+export type PurchaseStatus = 'to-order' | 'ordered' | 'received'
+
+export interface PartPurchaseInfo {
+  vendor?: string
+  /** Vendor part number / SKU. */
+  sku?: string
+  qty?: number
+  /** Per-unit cost in USD. */
+  unitCost?: number
+  /** Product/order URL. */
+  url?: string
+  status?: PurchaseStatus
+}
 
 export interface DeepLinkPayload {
   action: 'join'
@@ -65,6 +82,8 @@ export interface PartMeta {
   cost?: number
   manufacturingMethod?: ManufacturingMethod
   manufacturingMaterial?: string
+  /** Purchasing details, when manufacturingMethod === 'purchase'. */
+  purchase?: PartPurchaseInfo
 }
 
 export interface ManufacturingQueueItem {
@@ -501,6 +520,7 @@ export interface IpcApi {
   getProjectTotals(): Promise<ProjectTotals>
   setManufacturingMethod(filePath: string, method: ManufacturingMethod | null): Promise<void>
   setManufacturingMaterial(filePath: string, material: string): Promise<void>
+  setPurchaseInfo(filePath: string, patch: PartPurchaseInfo | null): Promise<void>
   bulkUpdateMeta(updates: Record<string, BulkMetaPatch>): Promise<number>
   getManufacturingQueue(): Promise<ManufacturingQueueItem[]>
   getExportStatus(): Promise<{

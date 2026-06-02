@@ -13,13 +13,14 @@ interface Props {
   embedded?: boolean
 }
 
-const METHODS: ManufacturingMethod[] = ['print', 'cnc', 'manual', 'other']
+const METHODS: ManufacturingMethod[] = ['print', 'cnc', 'manual', 'purchase', 'other']
 
 function methodLabel(m: ManufacturingMethod): string {
   switch (m) {
     case 'print': return '3D Print'
     case 'cnc': return 'CNC'
     case 'manual': return 'Hand'
+    case 'purchase': return 'Purchase'
     case 'other': return 'Other'
   }
 }

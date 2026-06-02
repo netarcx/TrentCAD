@@ -1,6 +1,6 @@
 import path from 'path'
 import fs from 'fs/promises'
-import type { BulkMetaPatch, ManufacturingMethod, ManufacturingQueueItem, PartMeta, ProjectTotals, ReleaseState } from '@shared/types'
+import type { BulkMetaPatch, ManufacturingMethod, ManufacturingQueueItem, PartMeta, PartPurchaseInfo, ProjectTotals, ReleaseState } from '@shared/types'
 export type { BulkMetaPatch }
 import { getProjectPath } from './project-paths'
 import { pullSharedFile, pushSharedFile } from './persistence'
@@ -355,6 +355,27 @@ export async function setManufacturingMethod(
       else entry.manufacturingMethod = method
     },
     `[mfg-method] ${path.basename(filePath)} = ${method ?? 'cleared'}`
+  )
+}
+
+/** Merge purchasing details for a buy-not-make ('purchase') part. Pass only
+ *  the fields to change; pass null to clear the whole purchase block. */
+export async function setPurchaseInfo(filePath: string, patch: PartPurchaseInfo | null): Promise<void> {
+  await modifyAndSync(
+    filePath,
+    entry => {
+      if (patch === null) { delete entry.purchase; return }
+      const next: PartPurchaseInfo = { ...(entry.purchase || {}), ...patch }
+      // Normalise: drop empty strings / non-finite numbers so the stored
+      // block stays clean.
+      if (!next.vendor?.trim()) delete next.vendor; else next.vendor = next.vendor.trim()
+      if (!next.sku?.trim()) delete next.sku; else next.sku = next.sku.trim()
+      if (!next.url?.trim()) delete next.url; else next.url = next.url.trim()
+      if (next.qty == null || !isFinite(next.qty) || next.qty < 0) delete next.qty
+      if (next.unitCost == null || !isFinite(next.unitCost) || next.unitCost < 0) delete next.unitCost
+      entry.purchase = next
+    },
+    `[purchase] ${path.basename(filePath)}${patch?.status ? ` → ${patch.status}` : ''}`
   )
 }
 

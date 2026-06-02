@@ -536,7 +536,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         const body = parseJson(await readBody(req)) as { path?: string; method?: string | null } | null
         const safePath = sanitizeProjectRelPath(body?.path ?? null)
         if (!safePath) { json(res, 400, { error: 'Missing or invalid path' }); return }
-        const validMethods = ['print', 'cnc', 'manual', 'other']
+        const validMethods = ['print', 'cnc', 'manual', 'purchase', 'other']
         const method = body?.method === null || body?.method === '' ? null : body?.method
         if (method !== null && method !== undefined && !validMethods.includes(method)) {
           json(res, 400, { error: `Invalid method. Expected one of: ${validMethods.join(', ')}, or null to clear` })
@@ -546,7 +546,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           const meta = await import('./meta')
           await serialWrite(() => meta.setManufacturingMethod(
             toGitRel(safePath),
-            method as 'print' | 'cnc' | 'manual' | 'other' | null
+            method as 'print' | 'cnc' | 'manual' | 'purchase' | 'other' | null
           ))
           broadcastStatus()
           json(res, 200, { success: true })

@@ -155,6 +155,9 @@ const api: IpcApi = {
   setManufacturingMaterial: (filePath, material) =>
     ipcRenderer.invoke('set-mfg-material', filePath, material),
 
+  setPurchaseInfo: (filePath, patch) =>
+    ipcRenderer.invoke('set-purchase-info', filePath, patch),
+
   bulkUpdateMeta: (updates) =>
     ipcRenderer.invoke('bulk-update-meta', updates),
 

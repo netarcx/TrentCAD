@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { X } from 'lucide-react'
-import type { BulkMetaPatch, FileEntry, FileState, ManufacturingMethod, PartMeta, ReleaseState } from '@shared/types'
+import type { BulkMetaPatch, FileEntry, FileState, ManufacturingMethod, PartMeta, PartPurchaseInfo, PurchaseStatus, ReleaseState } from '@shared/types'
 import FileThumbnail from './FileThumbnail'
 import ErrorMsg from './ErrorMsg'
 
@@ -107,6 +107,18 @@ export default function DetailsPanel({ file, onCheckOut, onCheckIn, onClose, onN
 
   useEffect(() => {
     if (file && !file.isDirectory) refreshMeta(file.path)
+  }, [file, refreshMeta])
+
+  // Purchasing details persist immediately (separate from the dirty-patch save
+  // bar) — each field saves on blur, the status on change.
+  const savePurchase = useCallback(async (patch: PartPurchaseInfo) => {
+    if (!file) return
+    try {
+      await window.api.setPurchaseInfo(file.path, patch)
+      await refreshMeta(file.path)
+    } catch (err) {
+      setError((err as Error).message)
+    }
   }, [file, refreshMeta])
 
   // Where-used: list of assemblies that contain this part (folder
@@ -431,14 +443,14 @@ export default function DetailsPanel({ file, onCheckOut, onCheckIn, onClose, onN
           <div className="details-section">
             <div className="section-title">Manufacturing Method</div>
             <div className="mfg-method-row">
-              {(['print', 'cnc', 'manual', 'other'] as ManufacturingMethod[]).map(m => (
+              {(['print', 'cnc', 'manual', 'purchase', 'other'] as ManufacturingMethod[]).map(m => (
                 <button
                   key={m}
                   className={`mfg-method-pill${mfgMethod === m ? ' active' : ''}`}
                   onClick={() => setMfgMethod(mfgMethod === m ? null : m)}
                   disabled={savingMeta}
                 >
-                  {m === 'print' ? '3D Print' : m === 'cnc' ? 'CNC' : m === 'manual' ? 'Hand' : 'Other'}
+                  {m === 'print' ? '3D Print' : m === 'cnc' ? 'CNC' : m === 'manual' ? 'Hand' : m === 'purchase' ? 'Purchase' : 'Other'}
                 </button>
               ))}
             </div>
@@ -451,6 +463,30 @@ export default function DetailsPanel({ file, onCheckOut, onCheckIn, onClose, onN
               disabled={savingMeta}
             />
           </div>
+
+          {mfgMethod === 'purchase' && (
+            <div className="details-section">
+              <div className="section-title">Purchasing</div>
+              <div className="purchase-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <input key={`pv-${file.path}`} defaultValue={meta.purchase?.vendor ?? ''} placeholder="Vendor"
+                  onBlur={e => savePurchase({ vendor: e.target.value })} />
+                <input key={`ps-${file.path}`} defaultValue={meta.purchase?.sku ?? ''} placeholder="Vendor part # / SKU"
+                  onBlur={e => savePurchase({ sku: e.target.value })} />
+                <input key={`pq-${file.path}`} type="number" min="0" defaultValue={meta.purchase?.qty ?? ''} placeholder="Qty"
+                  onBlur={e => savePurchase({ qty: e.target.value === '' ? undefined : Number(e.target.value) })} />
+                <input key={`pc-${file.path}`} type="number" min="0" step="0.01" defaultValue={meta.purchase?.unitCost ?? ''} placeholder="Unit cost ($)"
+                  onBlur={e => savePurchase({ unitCost: e.target.value === '' ? undefined : Number(e.target.value) })} />
+                <input key={`pu-${file.path}`} defaultValue={meta.purchase?.url ?? ''} placeholder="Product / order URL" style={{ gridColumn: '1 / -1' }}
+                  onBlur={e => savePurchase({ url: e.target.value })} />
+                <select value={meta.purchase?.status ?? 'to-order'} style={{ gridColumn: '1 / -1' }}
+                  onChange={e => savePurchase({ status: e.target.value as PurchaseStatus })}>
+                  <option value="to-order">To order</option>
+                  <option value="ordered">Ordered</option>
+                  <option value="received">Received</option>
+                </select>
+              </div>
+            </div>
+          )}
 
           <div className="details-section">
             <div className="section-title">Manufacturing Notes</div>

@@ -407,6 +407,10 @@ export interface TeamSnapshot {
   lastSyncAt: number | null
   /** Best-effort error string from the last fetch attempt, or null. */
   error: string | null
+  /** True after the server revoked this device (a 401 on refresh) —
+   *  distinct from "never enrolled". The UI must not grant standalone-admin
+   *  to a revoked device. Optional so a legacy snapshot still parses. */
+  revoked?: boolean
 }
 
 export interface EnrollResult {

@@ -5,7 +5,7 @@ import { randomBytes } from 'crypto'
 import path from 'path'
 import { Readable } from 'stream'
 import { pipeline } from 'stream/promises'
-import { getAuthClient } from './google-auth'
+import { getAuthClient, markAuthInvalid } from './google-auth'
 import { currentSnapshot } from './teamServer'
 import {
   loadManifest,
@@ -126,6 +126,15 @@ function isNotFound(err: unknown): boolean {
   return code?.code === 404 || code?.status === 404 || code?.response?.status === 404
 }
 
+// True when a Drive API error means our auth is dead (401 / invalid_grant /
+// invalid_token). Retrying these is pointless (every attempt fails the same
+// way, ~3.5s wasted) and they need a re-sign-in, not a backoff.
+function isAuthError(err: unknown): boolean {
+  const e = err as { code?: number; status?: number; response?: { status?: number }; message?: string }
+  const status = e?.code ?? e?.status ?? e?.response?.status
+  return status === 401 || /invalid_grant|invalid_token|unauthorized/i.test(e?.message ?? '')
+}
+
 async function withRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
   let lastErr: unknown
   for (let attempt = 0; attempt < attempts; attempt++) {
@@ -133,6 +142,12 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
       return await fn()
     } catch (err) {
       lastErr = err
+      // A dead token won't recover on retry — drop the cached sign-in so the
+      // UI prompts re-authentication, and fail fast instead of backing off.
+      if (isAuthError(err)) {
+        await markAuthInvalid().catch(() => {})
+        break
+      }
       if (attempt === attempts - 1) break
       await new Promise(r => setTimeout(r, 500 * 2 ** attempt))
     }
@@ -1107,13 +1122,17 @@ export interface SyncRemoteResult {
  */
 export function syncRemote(
   projectDir: string,
-  onProgress?: (progress: DownloadProgress) => void
+  onProgress?: (progress: DownloadProgress) => void,
+  /** Project-relative paths this user holds a check-out lock on. The
+   *  rename-reconcile must not move these out from under the held lock. */
+  lockedByMe?: Set<string>
 ): Promise<SyncRemoteResult> {
-  return withManifestLock(projectDir, () => syncRemoteImpl(projectDir, onProgress))
+  return withManifestLock(projectDir, () => syncRemoteImpl(projectDir, onProgress, lockedByMe))
 }
 async function syncRemoteImpl(
   projectDir: string,
-  onProgress?: (progress: DownloadProgress) => void
+  onProgress?: (progress: DownloadProgress) => void,
+  lockedByMe?: Set<string>
 ): Promise<SyncRemoteResult> {
   const manifest = await loadManifest(projectDir)
   if (!manifest) throw new Error('No Drive manifest — this project is not a Drive project.')
@@ -1152,11 +1171,13 @@ async function syncRemoteImpl(
     if (!oldPath || oldPath === r.relativePath) continue // unchanged or untracked
     if (remoteByPath.has(oldPath)) continue              // old path still exists → a copy, not a move
     if (manifest.files[r.relativePath]) continue          // new path already tracked → not a simple rename
-    if (locallyDirty.has(oldPath)) {
-      // The user is editing the renamed file locally. Keep their copy under the
-      // old path (their edits win and re-publish to the same Drive file id on
-      // their next publish) and do NOT create a second entry for the same id at
-      // the new path. The deletion sweep already preserves a locally-dirty path.
+    if (locallyDirty.has(oldPath) || lockedByMe?.has(oldPath)) {
+      // The user is editing OR holds a check-out lock on the renamed file. Keep
+      // their copy under the old path (their lock + edits stay valid and
+      // re-publish to the same Drive file id) and do NOT create a second entry
+      // for the same id at the new path — renaming it out from under a held
+      // lock would strand the server-side path-keyed lock and leave one
+      // driveFileId under two manifest keys.
       skipDownloadPaths.add(r.relativePath)
       continue
     }
@@ -1175,8 +1196,12 @@ async function syncRemoteImpl(
       delete manifest.files[oldPath]
       updated++
     } catch {
-      // Local move failed (e.g. file open/locked) — fall back to the default
-      // behaviour: let the new path download and the old entry get swept.
+      // Local move failed (e.g. file open in SolidWorks). Do NOT let the new
+      // path download as a fresh copy — that would leave the same driveFileId
+      // under both the old (still-present) and new manifest keys (the
+      // two-keys-one-id corruption). Skip it; the old entry stays and the move
+      // reconciles on a later sync once the file is closed.
+      skipDownloadPaths.add(r.relativePath)
     }
   }
 

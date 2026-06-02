@@ -128,6 +128,27 @@ export default function useParts({ enabled }: UsePartsOptions) {
     }
   }, [])
 
+  // Flush when the project CLOSES (enabled → false). The hook stays mounted
+  // across project switches (only `enabled` toggles), so the unmount effect
+  // above only fires on app quit — without this, a Mass/Cost edit made within
+  // the 1.2s debounce of clicking "Back" was silently dropped.
+  const prevEnabledRef = useRef(enabled)
+  useEffect(() => {
+    if (prevEnabledRef.current && !enabled) {
+      if (flushTimerRef.current) {
+        clearTimeout(flushTimerRef.current)
+        flushTimerRef.current = null
+      }
+      if (pendingRef.current.size > 0) {
+        const batch = Object.fromEntries(pendingRef.current)
+        pendingRef.current = new Map()
+        setPendingCount(0)
+        window.api.bulkUpdateMeta(batch).catch(() => {})
+      }
+    }
+    prevEnabledRef.current = enabled
+  }, [enabled])
+
   const queueEdit = useCallback((path: string, patch: BulkMetaPatch, optimisticPatch: Partial<PartMeta>) => {
     const existing = pendingRef.current.get(path) || {}
     pendingRef.current.set(path, { ...existing, ...patch })

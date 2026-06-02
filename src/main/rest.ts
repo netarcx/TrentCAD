@@ -210,6 +210,18 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     return
   }
 
+  // CSRF guard. This API binds to loopback, but a malicious web page can still
+  // fire "simple" cross-origin POSTs (text/plain, no preflight) at
+  // 127.0.0.1:42129 — and these endpoints publish / check out / mutate. The
+  // SolidWorks add-in is a native client and sends NO Origin header, so reject
+  // any request that DOES carry a non-loopback Origin (a browser CSRF page, or
+  // a DNS-rebinding page whose Origin is still the attacker's domain).
+  const origin = req.headers.origin
+  if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)) {
+    json(res, 403, { error: 'Cross-origin requests are not allowed.' })
+    return
+  }
+
   // Every incoming REST call comes from the SW add-in (the renderer
   // goes through IPC), so any request is proof of life. The export
   // queue uses this to gate auto-export at release time.
@@ -326,7 +338,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       }
 
       case 'POST /api/sync': {
-        const driveResult = await serialWrite(() => driveProject.sync())
+        // Flush deferred meta first (mirror the IPC sync) so a pull can't
+        // clobber an unpushed local release-state/comment edit.
+        const driveResult = await serialWrite(async () => {
+          await (await import('./meta')).flushMetaCommit()
+          return driveProject.sync()
+        })
         json(res, driveResult.success ? 200 : 500, driveResult)
         return
       }

@@ -100,6 +100,19 @@ export async function googleSignOut(): Promise<void> {
   await setGoogleAuthSettings(null)
 }
 
+/**
+ * Mark the stored Google auth as invalid after the API rejected our token
+ * (401 / invalid_grant — refresh token revoked or expired). Drops the dead
+ * credentials so a status poll won't resurrect a "signed in" state from disk
+ * and the UI prompts a fresh sign-in. No revoke call — the token is already
+ * dead — and no thrown errors so it's safe to call from a transfer retry path.
+ */
+export async function markAuthInvalid(): Promise<void> {
+  oauthClient = null
+  cachedStatus = { signedIn: false }
+  await setGoogleAuthSettings(null).catch(() => {})
+}
+
 async function fetchUserInfo(
   client: OAuth2Client
 ): Promise<{ email: string; name: string }> {

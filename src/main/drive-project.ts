@@ -25,7 +25,7 @@ import {
 } from './drive'
 import { loadManifest } from './drive-manifest'
 import { addRecentProject } from './config'
-import { getPolicies } from './teamServer'
+import { getPolicies, currentSnapshot, listDriveLocks } from './teamServer'
 
 interface OpenDriveProject {
   dir: string
@@ -156,12 +156,56 @@ async function assertPublishAllowed(dir: string): Promise<void> {
 }
 
 /**
+ * Enforce check-out locks before publishing. The lock is the PDM exclusivity
+ * guarantee, but publish used to upload every changed file regardless — so a
+ * user who never checked out (or whose lock view was stale) could silently
+ * overwrite a teammate's revision (last-writer-wins). Here we refuse to
+ * publish a MODIFIED file (an existing tracked file) that the publisher doesn't
+ * hold the lock on. New (untracked) files need no lock.
+ *
+ * Standalone (un-enrolled) use has no team server / no locks, so it's exempt.
+ * If we ARE enrolled but can't reach the server to verify, we block rather
+ * than risk a blind overwrite (publish needs the network anyway).
+ */
+async function assertLocksHeld(dir: string, key: string): Promise<void> {
+  const snap = currentSnapshot()
+  if (!snap.enrolled) return // standalone — no team locks to honor
+  const modified = collectFiles(await getLocalStatus(dir), new Set(['modified']))
+  if (modified.length === 0) return
+  let locks: { filePath: string; ownerMemberId: number; ownerName: string }[]
+  try {
+    locks = await listDriveLocks(key)
+  } catch {
+    throw new Error('Couldn’t verify check-outs with the team server. Connect to it and try again — publishing without a confirmed check-out could overwrite a teammate’s work.')
+  }
+  const myId = snap.me?.id
+  const byPath = new Map(locks.map(l => [l.filePath, l]))
+  const notHeld = modified.filter(p => byPath.get(p)?.ownerMemberId !== myId)
+  if (notHeld.length) {
+    const lines = notHeld.map(p => {
+      const l = byPath.get(p)
+      return l ? `${p} — checked out by ${l.ownerName}` : `${p} — you haven't checked this out`
+    })
+    throw new Error(`Check out these files before publishing changes to them:\n${lines.map(s => `  • ${s}`).join('\n')}`)
+  }
+}
+
+/**
  * Background-upload one file's current bytes to the staging area so a later
  * publish can promote it without re-uploading. Best effort and a no-op when
  * no Drive project is open.
  */
 export async function stageFile(relativePath: string): Promise<void> {
   if (!current) return
+  // Don't background-upload a file the team policy would reject at publish —
+  // staging it would put oversized bytes on the Shared Drive before the
+  // publish guard ever runs (defeating "enforce before uploading anything").
+  try {
+    const st = await fs.stat(path.join(current.dir, ...relativePath.split('/')))
+    if (st.size > getPolicies().maxFileSizeMb * 1024 * 1024) return
+  } catch {
+    return // file vanished — nothing to stage
+  }
   await driveStageFile(current.dir, relativePath)
 }
 
@@ -172,13 +216,25 @@ export async function sync(onProgress?: (p: PublishProgress) => void): Promise<{
 }> {
   if (!current) return { success: false, filesUpdated: 0, error: 'No Drive project open' }
   try {
+    // Files this user holds a lock on — the rename-reconcile must not move
+    // them out from under the held lock. Best effort: offline → no set → the
+    // existing locally-dirty guard still protects actively-edited files.
+    let lockedByMe: Set<string> | undefined
+    try {
+      const key = current.config.driveFolderId
+      const myId = currentSnapshot().me?.id
+      if (key && myId != null) {
+        const locks = await listDriveLocks(key)
+        lockedByMe = new Set(locks.filter(l => l.ownerMemberId === myId).map(l => l.filePath))
+      }
+    } catch { /* offline / not enrolled — skip the lock-aware guard */ }
     const res = await syncRemote(current.dir, prog => {
       onProgress?.({
         phase: prog.percent >= 100 ? 'done' : 'uploading',
         percent: prog.percent,
         detail: prog.detail
       })
-    })
+    }, lockedByMe)
     return { success: true, filesUpdated: res.filesUpdated }
   } catch (err) {
     return { success: false, filesUpdated: 0, error: (err as Error).message }
@@ -194,8 +250,11 @@ export async function publish(onProgress?: (p: PublishProgress) => void): Promis
   if (!current) return { success: false, error: 'No Drive project open' }
   try {
     onProgress?.({ phase: 'preparing', percent: 0 })
-    // Enforce per-file size cap + blocked extensions BEFORE uploading anything.
+    // Enforce policy (size/extension) AND check-out locks BEFORE uploading.
     await assertPublishAllowed(current.dir)
+    if (current.config.driveFolderId) {
+      await assertLocksHeld(current.dir, current.config.driveFolderId)
+    }
     const result = await publishChanges(current.dir, prog => {
       onProgress?.({
         phase: prog.percent >= 100 ? 'done' : 'uploading',

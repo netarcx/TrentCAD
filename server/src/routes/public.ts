@@ -83,15 +83,18 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
       (body.displayName ?? '').trim() ||
       pinRow.displayName ||
       'Unnamed member'
-    const githubUsername =
-      (body.githubUsername ?? '').trim() ||
-      pinRow.githubUsername ||
-      null
+    // SECURITY: identity comes from the PIN's bound githubUsername ONLY — a
+    // caller-supplied `body.githubUsername` is NEVER trusted for identity or
+    // member-reuse. Otherwise any PIN-holder could pass another member's
+    // (public) GitHub handle, get matched to that member's row, and inherit
+    // their role (roles are upgrade-only on reuse → privilege escalation to
+    // admin). The PIN is the capability; the admin binds the identity to it
+    // at PIN-issue time. (The desktop no longer sends a handle at all.)
+    const githubUsername = pinRow.githubUsername || null
 
-    // If a member with the same GitHub username already exists, reuse
-    // that record — same person enrolling a second device. Otherwise
-    // create a fresh member row. The admin can clean up duplicates
-    // from the web UI if a bare displayName collides.
+    // Reuse an existing member row only for the PIN's own bound identity —
+    // the same person enrolling a second device with an identity-bound PIN.
+    // An unbound PIN always creates a fresh member row.
     let member: MemberRow | undefined
     if (githubUsername) {
       member = db.prepare(

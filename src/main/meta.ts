@@ -52,24 +52,41 @@ function metaRelPath(): string {
   return `${META_DIR}/${META_FILE}`
 }
 
+// Serialize the whole load→mutate→save cycle. Meta mutations arrive from two
+// independent entry points — IPC (desktop) and the REST server (the SolidWorks
+// add-in) — with no shared serialization, so without this lock two concurrent
+// edits each load a copy, mutate it, and the later save clobbers the earlier
+// (lost update). Every read-modify-write below runs inside withMetaLock.
+let metaLock: Promise<unknown> = Promise.resolve()
+function withMetaLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = metaLock.then(fn, fn)
+  metaLock = run.catch(() => {}) // a rejected mutation must not poison the chain
+  return run
+}
+
 export async function loadAllMeta(): Promise<PartsMetaFile> {
+  let raw: string
   try {
-    const raw = await fs.readFile(metaAbsPath(), 'utf-8')
+    raw = await fs.readFile(metaAbsPath(), 'utf-8')
+  } catch {
+    return {} // no metadata file yet — fresh project
+  }
+  try {
     return JSON.parse(raw)
   } catch {
-    // File might contain git conflict markers — try to salvage by
-    // stripping markers and merging both sides of the conflict.
-    try {
-      const raw = await fs.readFile(metaAbsPath(), 'utf-8')
-      if (raw.includes('<<<<<<<') && raw.includes('>>>>>>>')) {
-        const merged = mergeConflictedJson(raw)
-        if (merged) {
-          await saveAllMeta(merged)
-          return merged
-        }
+    // Legacy: a git-conflict-marked file — salvage by merging both sides.
+    if (raw.includes('<<<<<<<') && raw.includes('>>>>>>>')) {
+      const merged = mergeConflictedJson(raw)
+      if (merged) {
+        await saveAllMeta(merged)
+        return merged
       }
-    } catch { /* give up */ }
-    return {}
+    }
+    // Genuine corruption (e.g. a crash truncated the file). Do NOT return {} —
+    // the next mutation would save a near-empty file and the deferred push
+    // would propagate that wipe to the whole team. Fail loudly so the edit
+    // aborts and the file can be restored from Drive / a teammate.
+    throw new Error('parts-meta.json could not be parsed — it may be corrupted. Refusing to overwrite it; restore it (Sync, or from a teammate) and retry.')
   }
 }
 
@@ -99,7 +116,12 @@ function mergeConflictedJson(raw: string): PartsMetaFile | null {
 async function saveAllMeta(meta: PartsMetaFile): Promise<void> {
   const full = metaAbsPath()
   await fs.mkdir(path.dirname(full), { recursive: true })
-  await fs.writeFile(full, JSON.stringify(meta, null, 2) + '\n')
+  // Atomic write (temp + rename) so a crash mid-write can't truncate
+  // parts-meta.json — a truncated file would make loadAllMeta throw (and,
+  // before the fail-closed fix, silently wipe the team's metadata).
+  const tmp = `${full}.tmp`
+  await fs.writeFile(tmp, JSON.stringify(meta, null, 2) + '\n')
+  await fs.rename(tmp, full)
 }
 
 /**
@@ -170,13 +192,15 @@ async function modifyAndSync(
   mutator: (entry: PartMeta) => void,
   commitMessage: string
 ): Promise<void> {
-  await pullSharedFile(metaRelPath())
-  const all = await loadAllMeta()
-  const entry = all[filePath] || {}
-  mutator(entry)
-  all[filePath] = entry
-  await saveAllMeta(all)
-  scheduleMetaCommit(commitMessage)
+  await withMetaLock(async () => {
+    await pullSharedFile(metaRelPath())
+    const all = await loadAllMeta()
+    const entry = all[filePath] || {}
+    mutator(entry)
+    all[filePath] = entry
+    await saveAllMeta(all)
+    scheduleMetaCommit(commitMessage)
+  })
 }
 
 /**
@@ -231,36 +255,38 @@ export async function setReleaseState(
   const at = new Date().toISOString()
   const trimmedNote = note?.trim() || undefined
 
-  await pullSharedFile(metaRelPath())
-  const all = await loadAllMeta()
-  all[filePath] = {
-    ...(all[filePath] || {}),
-    release: { state, by, at, note: trimmedNote }
-  }
-
-  let cascadeCount = 0
-  if (state === 'in-review' && filePath.toLowerCase().endsWith('.sldasm')) {
-    cascadeCount = await cascadeAssemblyInReview(all, [filePath], by, at, trimmedNote)
-  }
-  await saveAllMeta(all)
-
-  const baseName = path.basename(filePath, path.extname(filePath))
-  const msg = cascadeCount > 0
-    ? `[release] ${baseName} → ${state} (+ ${cascadeCount} cascaded)`
-    : `[release] ${baseName} → ${state}`
-  scheduleMetaCommit(msg)
-
-  // After a CAM-track part lands in "released", try to get an export
-  // paired with it. If SolidWorks is open and listening we kick off an
-  // async export task; otherwise the part shows up in the needs-export
-  // queue and someone can batch-trigger from the admin panel later.
-  if (state === 'released') {
-    const method = all[filePath]?.manufacturingMethod
-    const format = exportFormatFor(method)
-    if (format && !(await exportExistsOnDisk(filePath, format)) && isSwAlive()) {
-      queuePendingExport(getProjectPath(), filePath, format)
+  await withMetaLock(async () => {
+    await pullSharedFile(metaRelPath())
+    const all = await loadAllMeta()
+    all[filePath] = {
+      ...(all[filePath] || {}),
+      release: { state, by, at, note: trimmedNote }
     }
-  }
+
+    let cascadeCount = 0
+    if (state === 'in-review' && filePath.toLowerCase().endsWith('.sldasm')) {
+      cascadeCount = await cascadeAssemblyInReview(all, [filePath], by, at, trimmedNote)
+    }
+    await saveAllMeta(all)
+
+    const baseName = path.basename(filePath, path.extname(filePath))
+    const msg = cascadeCount > 0
+      ? `[release] ${baseName} → ${state} (+ ${cascadeCount} cascaded)`
+      : `[release] ${baseName} → ${state}`
+    scheduleMetaCommit(msg)
+
+    // After a CAM-track part lands in "released", try to get an export
+    // paired with it. If SolidWorks is open and listening we kick off an
+    // async export task; otherwise the part shows up in the needs-export
+    // queue and someone can batch-trigger from the admin panel later.
+    if (state === 'released') {
+      const method = all[filePath]?.manufacturingMethod
+      const format = exportFormatFor(method)
+      if (format && !(await exportExistsOnDisk(filePath, format)) && isSwAlive()) {
+        queuePendingExport(getProjectPath(), filePath, format)
+      }
+    }
+  })
 }
 
 export async function addComment(filePath: string, text: string): Promise<void> {
@@ -354,10 +380,20 @@ export async function setManufacturingMaterial(filePath: string, material: strin
  * the count of patched entries.
  */
 export async function bulkUpdateMeta(updates: Record<string, BulkMetaPatch>): Promise<number> {
+  // Serialize the whole read-modify-write against concurrent IPC/REST edits.
+  return withMetaLock(() => bulkUpdateMetaImpl(updates))
+}
+
+async function bulkUpdateMetaImpl(updates: Record<string, BulkMetaPatch>): Promise<number> {
   const entries = Object.entries(updates).filter(([, p]) => p && Object.keys(p).length > 0)
   if (entries.length === 0) return 0
 
-  const by = await currentUsername()
+  // Only release writes are attributed (they stamp `by`). Editing just
+  // mass/cost/method/material must still work for a standalone/unenrolled
+  // user — the renderer routes EVERY parts-manager edit through this bulk
+  // path — so don't demand a team identity unless a release patch is present.
+  const needsAttribution = entries.some(([, p]) => p.release !== undefined)
+  const by = needsAttribution ? await currentUsername() : ''
   const now = new Date().toISOString()
 
   await pullSharedFile(metaRelPath())

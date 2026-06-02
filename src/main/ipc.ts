@@ -223,6 +223,15 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     projectPaths.setProjectPath(dirPath)
     currentProject = driveConfig
     setRestProject(currentProject)
+    // Seed the path-translation cache from the project's admin config so a
+    // configured subpath is honoured on FIRST open (file tree, parts, meta,
+    // REST status root) — previously the cache stayed empty until the next
+    // save-admin-config, silently breaking subpath projects after launch.
+    try {
+      const cfg = await adminOps.loadAdminConfig()
+      pathsOps.setProjectSubpath(cfg.projectSubpath ?? '')
+      pathsOps.setCotsSubpath(cfg.cotsSubpath ?? '')
+    } catch { /* best effort — defaults to no subpath */ }
     const win = getMainWindow()
     if (win) startWatching(dirPath, win)
     void syncDriveCotsBestEffort(dirPath)
@@ -231,6 +240,10 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('sync', async () => {
     const win = getMainWindow()
+    // Flush any deferred meta commit BEFORE pulling — sync downloads the
+    // remote .framecad/parts-meta.json and would otherwise clobber a local
+    // release-state/comment edit still sitting on the 60s timer.
+    await metaOps.flushMetaCommit()
     const result = await driveProject.sync(progress => {
       if (win && !win.isDestroyed()) win.webContents.send('publish-progress', progress)
     })

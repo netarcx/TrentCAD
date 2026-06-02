@@ -324,10 +324,15 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       .run(...values)
     if (result.changes === 0) return reply.code(404).send({ error: 'Member not found' })
 
-    // Inactive members shouldn't retain working tokens. Wipe their
-    // devices so a status flip ≈ a session revoke.
+    // Inactive members shouldn't retain working tokens OR hold check-out
+    // locks. Wipe their devices (status flip ≈ session revoke) AND release
+    // their locks — deactivation is the normal removal path, and ON DELETE
+    // CASCADE only fires on a hard member DELETE, so without this a
+    // deactivated member's files stay locked forever (they can't self-release
+    // once their token is gone).
     if (req.body?.status === 'inactive') {
       getDb().prepare(`DELETE FROM devices WHERE memberId = ?`).run(id)
+      getDb().prepare(`DELETE FROM locks WHERE ownerMemberId = ?`).run(id)
     }
 
     logAudit({
@@ -1100,6 +1105,12 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Body: { confirm?: string } }>(
     '/api/admin/dev-reset',
     async (req, reply) => {
+      // DESTRUCTIVE + irreversible (wipes the audit trail too). Gate it behind
+      // an explicit env opt-in so a production deployment can't reach it even
+      // with a valid admin token (or a hijacked one). Off by default.
+      if (process.env.FRAMECAD_DEV_RESET !== '1') {
+        return reply.code(404).send({ error: 'Not found.' })
+      }
       if (req.body?.confirm !== 'RESET') {
         return reply.code(400).send({
           error: 'Refusing to reset without confirm="RESET" in the body.',

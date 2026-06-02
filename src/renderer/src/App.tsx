@@ -433,7 +433,12 @@ export default function App() {
   // values take over via the next render.
   const enrolled = team.loading ? true : !!teamSnapshot?.enrolled
   const myRole = teamSnapshot?.me?.role ?? null
-  const isAdmin = team.loading ? false : (!enrolled || myRole === 'admin')
+  // A device the server REVOKED (401) is un-enrolled but must NOT get the
+  // standalone-admin grant — otherwise a removed/demoted student flips to full
+  // admin UI on a shared machine. Standalone-admin is only for genuinely
+  // never-enrolled solo users.
+  const revoked = !!teamSnapshot?.revoked
+  const isAdmin = team.loading ? false : ((!enrolled && !revoked) || myRole === 'admin')
   const isMentor = team.loading ? false : (isAdmin || myRole === 'mentor')
 
   // If a server-side demotion takes effect (e.g. admin changed our

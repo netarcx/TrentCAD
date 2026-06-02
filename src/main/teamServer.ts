@@ -45,6 +45,10 @@ interface InMemoryState {
   projects: ProjectEntry[]
   lastSyncAt: number | null
   error: string | null
+  /** True after the server revoked this device (a 401 on refresh) — distinct
+   *  from "never enrolled". The renderer must NOT grant standalone-admin to a
+   *  revoked device (otherwise a removed student flips to full admin UI). */
+  revoked: boolean
 }
 
 const state: InMemoryState = {
@@ -56,6 +60,7 @@ const state: InMemoryState = {
   projects: [],
   lastSyncAt: null,
   error: null,
+  revoked: false,
 }
 
 // Listeners notified whenever the snapshot changes — used by the
@@ -88,6 +93,7 @@ export function currentSnapshot(): TeamSnapshot {
     projects: state.projects,
     lastSyncAt: state.lastSyncAt,
     error: state.error,
+    revoked: state.revoked,
   }
 }
 
@@ -325,6 +331,7 @@ export async function refresh(): Promise<TeamSnapshot> {
     state.projects = projects
     state.lastSyncAt = Date.now()
     state.error = null
+    state.revoked = false // a successful refresh means our token is good again
     void persistSnapshot()
     broadcast()
   } catch (err) {
@@ -345,6 +352,8 @@ export async function refresh(): Promise<TeamSnapshot> {
       void persistEnrollment()
       void fs.rm(snapshotCachePath(), { force: true })
       state.error = 'Your device was removed from the team. Re-enroll to continue.'
+      state.revoked = true // don't let the renderer grant standalone-admin
+
     } else {
       state.error = e.message
     }

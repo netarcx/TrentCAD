@@ -18,6 +18,14 @@ export interface AdminConfig {
    * buttons) since COTS files have their own external numbering authority.
    */
   isCotsProject?: boolean
+  /**
+   * Monorepo-style subpaths (full doc on the shared AdminConfig). Persisted
+   * here so loadAdminConfig() can seed the path-translation cache on project
+   * open — otherwise a configured subpath isn't honoured until the next
+   * save-admin-config round-trip.
+   */
+  projectSubpath?: string
+  cotsSubpath?: string
 }
 
 // `teamName`, `welcomeMessage`, `gitHubOrg`, `projectPrefix` moved to the

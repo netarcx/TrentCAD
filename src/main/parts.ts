@@ -52,12 +52,20 @@ function ensureYearPrefix(manifest: PartsManifest): PartsManifest {
 }
 
 export async function loadManifest(): Promise<PartsManifest> {
+  let data: string
   try {
-    const filePath = path.join(getProjectPath(), MANIFEST_FILE)
-    const data = await fs.readFile(filePath, 'utf-8')
+    data = await fs.readFile(path.join(getProjectPath(), MANIFEST_FILE), 'utf-8')
+  } catch {
+    return emptyManifest() // no manifest yet — fresh project
+  }
+  try {
     return ensureYearPrefix(JSON.parse(data))
   } catch {
-    return emptyManifest()
+    // Genuine corruption (e.g. a crash truncated parts.json). Do NOT fall
+    // back to an empty manifest — that would re-issue part numbers from 1,
+    // drop every tombstone, and the deferred push would propagate the damage
+    // team-wide. Fail loudly so the file can be restored instead.
+    throw new Error('parts.json could not be parsed — it may be corrupted. Refusing to overwrite it; restore it (Sync, or from a teammate) and retry.')
   }
 }
 
@@ -108,7 +116,11 @@ export async function findWhereUsed(filePath: string): Promise<string[]> {
 
 export async function saveManifest(manifest: PartsManifest): Promise<void> {
   const filePath = path.join(getProjectPath(), MANIFEST_FILE)
-  await fs.writeFile(filePath, JSON.stringify(manifest, null, 2) + '\n')
+  // Atomic write (temp + rename) so a crash mid-write can't truncate
+  // parts.json (which loadManifest now refuses to silently treat as empty).
+  const tmp = `${filePath}.tmp`
+  await fs.writeFile(tmp, JSON.stringify(manifest, null, 2) + '\n')
+  await fs.rename(tmp, filePath)
 }
 
 export function classifyFile(filename: string): PartType | null {
@@ -501,6 +513,14 @@ export async function createNewAssembly(
   if (await isCotsProject()) {
     throw new Error('COTS library projects do not use part numbers')
   }
+  // Path-traversal guard (mirrors createSubsystem). parentFolder + name reach
+  // here from the renderer AND the localhost REST API (the SolidWorks add-in),
+  // and the REST /api/parts/new-assembly route does NOT sanitize them. Reject
+  // names with separators/traversal up front, and verify the resolved path
+  // stays inside the project below.
+  if (!name.trim() || /[\\/:"*?<>|]/.test(name) || name === '.' || name === '..') {
+    throw new Error('Invalid assembly name')
+  }
   await pullSharedFile(MANIFEST_FILE)
 
   const projectDir = getProjectPath()
@@ -528,6 +548,11 @@ export async function createNewAssembly(
   const fileName = `${partNumber}.sldasm`
   const relPath = `${folderPath}/${fileName}`
   const fullPath = path.join(projectDir, relPath)
+  // Final guard: a `..`-laden parentFolder must not let the assembly escape
+  // the project directory.
+  if (!fullPath.startsWith(projectDir + path.sep)) {
+    throw new Error('Assembly path escapes project directory')
+  }
 
   // Create the assembly folder but not the .sldasm itself (an empty .sldasm
   // is invalid and SolidWorks reports it as corrupt). Drop a .gitkeep so the

@@ -225,8 +225,15 @@ app.on('window-all-closed', () => {
 })
 
 // Flush any deferred metadata commit on a graceful exit so a release-state /
-// mass / cost edit made in the last 60s isn't lost. `before-quit` fires
-// regardless of platform and before windows are destroyed.
-app.on('before-quit', () => {
-  flushMetaCommit().catch(() => { /* best-effort */ })
+// mass / cost edit made in the last 60s isn't lost. The flush is an async
+// Drive upload, so we must hold the quit until it finishes — fire-and-forget
+// abandons the upload at teardown. preventDefault + re-quit behind a guard.
+let flushingBeforeQuit = false
+app.on('before-quit', (e) => {
+  if (flushingBeforeQuit) return // second pass — let the quit proceed
+  e.preventDefault()
+  flushingBeforeQuit = true
+  flushMetaCommit()
+    .catch(() => { /* best-effort — already logged */ })
+    .finally(() => app.quit())
 })

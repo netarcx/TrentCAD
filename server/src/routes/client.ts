@@ -71,6 +71,9 @@ interface ProjectRow {
   id: number
   name: string
   repoUrl: string
+  /** Google Drive folder id when this is a Drive project (the canonical
+   *  per-project key); null for legacy GitHub-only rows. */
+  driveFolderId: string | null
   description: string
   archived: number  // SQLite booleans are 0/1
   createdAt: number
@@ -389,7 +392,7 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     // allowlist on a non-admin role is a strict filter.
     const member = req.member!
     const rows = getDb().prepare(
-      `SELECT id, name, repoUrl, description, createdAt, remoteStatus
+      `SELECT id, name, repoUrl, driveFolderId, description, createdAt, remoteStatus
          FROM projects
         WHERE archived = 0
         ORDER BY createdAt DESC`

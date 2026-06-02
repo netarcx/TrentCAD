@@ -369,7 +369,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     // don't need it); this admin variant returns the full row so
     // the Projects page can render usage indicators and quota inputs.
     const rows = getDb().prepare(
-      `SELECT id, name, repoUrl, description, archived, createdAt,
+      `SELECT id, name, repoUrl, driveFolderId, sharedDriveId, description, archived, createdAt,
               quotaBytes, storageBytes, storageScannedAt,
               remoteStatus, remoteCheckedAt
          FROM projects
@@ -381,16 +381,29 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Body: {
     name?: string
     repoUrl?: string
+    driveFolderId?: string
+    sharedDriveId?: string
     description?: string
     quotaBytes?: number | null
   } }>(
     '/api/admin/projects',
     async (req, reply) => {
       const name = (req.body?.name ?? '').trim()
-      const repoUrl = (req.body?.repoUrl ?? '').trim()
-      if (!name || !repoUrl) {
-        return reply.code(400).send({ error: 'name and repoUrl are required' })
+      const repoUrlIn = (req.body?.repoUrl ?? '').trim()
+      const driveFolderId = (req.body?.driveFolderId ?? '').trim()
+      const sharedDriveId = (req.body?.sharedDriveId ?? '').trim()
+      if (!name) {
+        return reply.code(400).send({ error: 'name is required' })
       }
+      // A project is identified EITHER by a Google Drive folder (the current
+      // backend) OR by a legacy GitHub repo URL. Drive projects use a synthetic
+      // `drive:<folderId>` repoUrl so the existing NOT NULL UNIQUE repoUrl
+      // constraint holds without a schema rebuild; `driveFolderId` is the
+      // canonical key the locks / history / allowlist routes match on.
+      if (!driveFolderId && !repoUrlIn) {
+        return reply.code(400).send({ error: 'A Google Drive folder id or a repo URL is required' })
+      }
+      const repoUrl = driveFolderId ? `drive:${driveFolderId}` : repoUrlIn
       // Quota: explicit number wins; explicit null means "unlimited";
       // missing means "use the default" (admin didn't have to think).
       const quota =
@@ -401,20 +414,24 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
             : DEFAULT_PROJECT_QUOTA_BYTES
       try {
         const result = getDb().prepare(
-          `INSERT INTO projects (name, repoUrl, description, createdAt, quotaBytes)
-           VALUES (?, ?, ?, ?, ?)`
-        ).run(name, repoUrl, (req.body?.description ?? '').trim(), Date.now(), quota)
+          `INSERT INTO projects (name, repoUrl, driveFolderId, sharedDriveId, description, createdAt, quotaBytes)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).run(name, repoUrl, driveFolderId || null, sharedDriveId || null, (req.body?.description ?? '').trim(), Date.now(), quota)
         logAudit({
           actorId: req.member!.id,
           actorLabel: req.member!.displayName,
           action: 'project.create',
           target: `project:${result.lastInsertRowid}`,
-          detail: repoUrl,
+          detail: driveFolderId ? `drive:${driveFolderId}` : repoUrl,
         })
         return { id: result.lastInsertRowid, success: true }
       } catch (err) {
         if ((err as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE') {
-          return reply.code(409).send({ error: 'A project with that repoUrl is already registered' })
+          return reply.code(409).send({
+            error: driveFolderId
+              ? 'That Google Drive folder is already registered as a project'
+              : 'A project with that repoUrl is already registered',
+          })
         }
         throw err
       }

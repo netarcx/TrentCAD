@@ -6,6 +6,9 @@ interface Project {
   id: number
   name: string
   repoUrl: string
+  /** Google Drive folder id when this is a Drive project; null for
+   *  legacy GitHub-only rows. The canonical per-project key. */
+  driveFolderId?: string | null
   description: string
   createdAt: number
   quotaBytes: number | null
@@ -34,7 +37,8 @@ export default function Projects() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [name, setName] = useState('')
-  const [repoUrl, setRepoUrl] = useState('')
+  const [driveFolderId, setDriveFolderId] = useState('')
+  const [sharedDriveId, setSharedDriveId] = useState('')
   const [description, setDescription] = useState('')
   // Quota for the project being created. UI works in GB; the wire
   // format is bytes. Empty string = "unlimited".
@@ -110,8 +114,8 @@ export default function Projects() {
   useEffect(() => { load() }, [])
 
   async function add(): Promise<void> {
-    if (!name.trim() || !repoUrl.trim()) {
-      setError('Name and repo URL are required')
+    if (!name.trim() || !driveFolderId.trim()) {
+      setError('Name and the Google Drive folder ID are required')
       return
     }
     setBusy(true)
@@ -126,8 +130,14 @@ export default function Projects() {
         return
       }
       const quotaBytes = parsedGb === null ? null : Math.round(parsedGb * 1024 * 1024 * 1024)
-      await api('POST', '/api/admin/projects', { name, repoUrl, description, quotaBytes })
-      setName(''); setRepoUrl(''); setDescription('')
+      await api('POST', '/api/admin/projects', {
+        name,
+        driveFolderId: driveFolderId.trim(),
+        sharedDriveId: sharedDriveId.trim() || undefined,
+        description,
+        quotaBytes,
+      })
+      setName(''); setDriveFolderId(''); setSharedDriveId(''); setDescription('')
       setQuotaGb(String(DEFAULT_QUOTA_GB))
       await load()
     } catch (err) {
@@ -215,8 +225,14 @@ export default function Projects() {
             <input value={name} onChange={e => setName(e.target.value)} placeholder="2026 Robot" />
           </div>
           <div>
-            <label>Repo URL</label>
-            <input value={repoUrl} onChange={e => setRepoUrl(e.target.value)} placeholder="https://github.com/org/repo.git" />
+            <label>Google Drive folder ID</label>
+            <input value={driveFolderId} onChange={e => setDriveFolderId(e.target.value)} placeholder="the project folder's Drive id" />
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12 }}>
+          <div>
+            <label>Shared Drive ID (optional)</label>
+            <input value={sharedDriveId} onChange={e => setSharedDriveId(e.target.value)} placeholder="the Shared Drive the folder lives in" />
           </div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
@@ -237,8 +253,8 @@ export default function Projects() {
           </div>
         </div>
         <div style={{ marginTop: 14, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          <button className="primary" onClick={add} disabled={busy || !name.trim() || !repoUrl.trim()}>
-            {busy ? 'Adding…' : 'Add existing repo'}
+          <button className="primary" onClick={add} disabled={busy || !name.trim() || !driveFolderId.trim()}>
+            {busy ? 'Adding…' : 'Add Drive project'}
           </button>
           <button
             className="secondary"
@@ -390,7 +406,9 @@ export default function Projects() {
                       )}
                     </td>
                     <td className="mono" style={{ wordBreak: 'break-all' }}>
-                      {p.repoUrl.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '')}
+                      {p.driveFolderId
+                        ? `Drive · ${p.driveFolderId}`
+                        : p.repoUrl.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '')}
                     </td>
                     <td style={{ minWidth: 130 }}>
                       {p.remoteStatus === 'missing' ? (

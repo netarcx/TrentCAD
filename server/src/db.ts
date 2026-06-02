@@ -396,6 +396,19 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX publish_log_projectKey_idx ON publish_log(projectKey, publishedAt DESC);
   `,
+  // v18: register Google Drive projects in the (historically GitHub-keyed)
+  // projects table so check-out locks, publish history, the per-member project
+  // allowlist, and kiosk auto-open can all key on a real project record.
+  // Additive columns only — NO table rebuild. A Drive project stores its
+  // folder id in `driveFolderId` (the canonical per-project key, identical to
+  // the locks/publish_log `projectKey`) and a synthetic `repoUrl` of
+  // `drive:<folderId>`, which satisfies the existing NOT NULL UNIQUE `repoUrl`
+  // constraint without a risky constraint change. `sharedDriveId` records
+  // which Shared Drive the folder lives in.
+  `
+  ALTER TABLE projects ADD COLUMN driveFolderId TEXT;
+  ALTER TABLE projects ADD COLUMN sharedDriveId TEXT;
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

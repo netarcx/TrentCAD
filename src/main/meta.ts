@@ -360,6 +360,10 @@ export async function setManufacturingMethod(
     entry => {
       if (method === null) delete entry.manufacturingMethod
       else entry.manufacturingMethod = method
+      // Purchasing details only make sense for a 'purchase' part — drop the
+      // block when the method moves away so a stale (hidden) purchase record
+      // doesn't linger in the shared file and resurrect on switch-back.
+      if (method !== 'purchase') delete entry.purchase
     },
     `[mfg-method] ${path.basename(filePath)} = ${method ?? 'cleared'}`
   )
@@ -436,7 +440,10 @@ async function bulkUpdateMetaImpl(updates: Record<string, BulkMetaPatch>): Promi
   for (const [filePath, patch] of entries) {
     const entry = all[filePath] || {}
     if (patch.release !== undefined) {
-      entry.release = { state: patch.release, by, at: now }
+      // Preserve a previously-captured location (and note) across a bulk state
+      // change — mirrors setReleaseState, so the shop-dashboard location set
+      // when a part was manufactured survives a later bulk re-release.
+      entry.release = { state: patch.release, by, at: now, note: entry.release?.note, location: entry.release?.location }
       fieldCounts.release = (fieldCounts.release || 0) + 1
       if (uniformRelease === null) uniformRelease = patch.release
       else if (uniformRelease !== patch.release) uniformRelease = 'mixed'
@@ -447,6 +454,7 @@ async function bulkUpdateMetaImpl(updates: Record<string, BulkMetaPatch>): Promi
     if (patch.manufacturingMethod !== undefined) {
       if (patch.manufacturingMethod === null) delete entry.manufacturingMethod
       else entry.manufacturingMethod = patch.manufacturingMethod
+      if (patch.manufacturingMethod !== 'purchase') delete entry.purchase
       fieldCounts.method = (fieldCounts.method || 0) + 1
       if (uniformMethod === undefined) uniformMethod = patch.manufacturingMethod
       else if (uniformMethod !== patch.manufacturingMethod) uniformMethod = 'mixed'

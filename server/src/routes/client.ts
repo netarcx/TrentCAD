@@ -384,12 +384,13 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
   })
 
   app.get('/api/projects', async req => {
-    // Students with a per-member allowlist only see those project IDs.
-    // Admins and mentors always see the full registry — they need to
-    // be able to add a student to a project, which requires seeing
-    // the project. Members with an empty allowlist see everything,
-    // since "no allowlist" means "no restriction." A non-empty
-    // allowlist on a non-admin role is a strict filter.
+    // Deny-by-default for students: a student sees ONLY the registered
+    // projects on their allowlist (an empty allowlist = no registered projects,
+    // NOT "everything" — access is granted by the admin). Admins and mentors
+    // always see the full registry so they can add students to projects.
+    // Note: this gates only REGISTERED projects; an unregistered Drive folder a
+    // student joined directly isn't in this table and stays usable (so teams
+    // that haven't adopted the registry yet aren't disrupted).
     const member = req.member!
     const rows = getDb().prepare(
       `SELECT id, name, repoUrl, driveFolderId, description, createdAt, remoteStatus
@@ -398,7 +399,7 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
         ORDER BY createdAt DESC`
     ).all() as Array<Omit<ProjectRow, 'archived'> & { remoteStatus: string }>
 
-    if (member.role === 'student' && member.allowedProjectIds.length > 0) {
+    if (member.role === 'student') {
       const allowed = new Set(member.allowedProjectIds)
       return { projects: rows.filter(p => allowed.has(p.id)) }
     }
@@ -418,17 +419,17 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     lockedAt: number
   }
 
-  // Per-project authorization for the Drive folder id in `:key`. A student
-  // with a non-empty project allowlist may only touch projects on that list;
-  // admins/mentors and students with an empty allowlist (= unrestricted) pass.
-  // Only REGISTERED Drive projects (driveFolderId in the projects table) are
-  // restricted — an unregistered folder has no registry entry to check against,
-  // so it stays unrestricted (back-compat). Returns true when access is OK.
+  // Per-project authorization for the Drive folder id in `:key`. Deny-by-
+  // default for students: a student may only touch a REGISTERED project that's
+  // on their allowlist — an empty allowlist grants NO registered projects
+  // (access is admin-granted, matching /api/projects above). Admins/mentors
+  // always pass. An UNREGISTERED Drive folder (no driveFolderId row) has no
+  // registry entry to gate against, so it stays open — teams that haven't
+  // adopted the registry yet aren't disrupted. Returns true when access is OK.
   function keyAllowed(member: { role: string; allowedProjectIds: number[] }, key: string): boolean {
     if (member.role !== 'student') return true
-    if (member.allowedProjectIds.length === 0) return true
     const proj = getDb().prepare(`SELECT id FROM projects WHERE driveFolderId = ?`).get(key) as { id: number } | undefined
-    if (!proj) return true
+    if (!proj) return true // unregistered folder — not gated by the registry
     return member.allowedProjectIds.includes(proj.id)
   }
   function denyKey(reply: import('fastify').FastifyReply): unknown {

@@ -261,6 +261,7 @@ export default function PartsManager(props: Props) {
                         <option value="print">3D Print</option>
                         <option value="cnc">CNC</option>
                         <option value="manual">Hand</option>
+                        <option value="purchase">Purchase</option>
                         <option value="other">Other</option>
                       </select>
                     </td>

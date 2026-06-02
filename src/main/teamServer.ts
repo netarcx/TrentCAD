@@ -321,6 +321,8 @@ export async function refresh(): Promise<TeamSnapshot> {
         browseTeamProjects: true,
         openProject: true,
         manufacturingView: true,
+        manageCadStructure: true,
+        forceCheckIn: true,
       },
       allowedProjectIds: me.allowedProjectIds ?? [],
       autoOpenProjectId: me.autoOpenProjectId ?? null,

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { X } from 'lucide-react'
 import type { BulkMetaPatch, FileEntry, FileState, ManufacturingMethod, PartMeta, PartPurchaseInfo, PurchaseStatus, ReleaseState } from '@shared/types'
 import FileThumbnail from './FileThumbnail'
@@ -83,10 +83,16 @@ export default function DetailsPanel({ file, onCheckOut, onCheckIn, onClose, onN
   const [saveStatus, setSaveStatus] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // Last-write-wins guard: a blur-save on file A then a quick switch to file B
+  // can resolve A's getPartMeta after B's and paint A's metadata under B.
+  // Track the most-recent requested path and ignore stale resolutions.
+  const metaReqRef = useRef('')
   const refreshMeta = useCallback(async (path: string) => {
+    metaReqRef.current = path
     setLoading(true)
     try {
       const m = await window.api.getPartMeta(path)
+      if (metaReqRef.current !== path) return // a newer refresh superseded this
       setMeta(m || {})
       setMfgNotes(m?.manufacturingNotes || '')
       setMfgMaterial(m?.manufacturingMaterial || '')

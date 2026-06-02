@@ -550,6 +550,7 @@ export default function ProjectBrowser({ files, selectedFile, onSelect, onCheckO
             <option value="print">3D Print</option>
             <option value="cnc">CNC</option>
             <option value="manual">Hand</option>
+            <option value="purchase">Purchase</option>
             <option value="other">Other</option>
             <option value="clear">(clear)</option>
           </select>

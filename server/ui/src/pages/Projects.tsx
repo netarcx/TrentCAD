@@ -411,6 +411,9 @@ export default function Projects() {
                         : p.repoUrl.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '')}
                     </td>
                     <td style={{ minWidth: 130 }}>
+                      {p.driveFolderId ? (
+                        <span className="hint" style={{ fontSize: 11 }}>n/a — Drive project</span>
+                      ) : (<>
                       {p.remoteStatus === 'missing' ? (
                         <div>
                           <span
@@ -447,6 +450,7 @@ export default function Projects() {
                           {checkingId === p.id ? 'Checking…' : 'Check now'}
                         </button>
                       </div>
+                      </>)}
                     </td>
                     <td style={{ minWidth: 220 }}>
                       {isEditing ? (

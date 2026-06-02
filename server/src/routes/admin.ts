@@ -105,6 +105,17 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         ? null
         : (Number.isFinite(req.body?.autoOpenProjectId) ? req.body!.autoOpenProjectId! : undefined)
 
+    // A kiosk/auto-open target the member can't actually access just makes the
+    // desktop stall on the welcome screen with no recovery. Reject the config
+    // when an auto-open project sits outside a non-empty allowlist.
+    if (
+      autoOpenProjectId != null &&
+      allowedProjectIds && allowedProjectIds.length > 0 &&
+      !allowedProjectIds.includes(autoOpenProjectId)
+    ) {
+      return reply.code(400).send({ error: 'The auto-open project must be one of the allowed projects.' })
+    }
+
     const pin = issuePin({
       role,
       displayName: req.body?.displayName?.trim() || null,

@@ -313,7 +313,7 @@ export default function Pins() {
                   </td>
                   <td className="mono">{p.useCount}/{p.maxUses}</td>
                   <td className="mono" title={JSON.stringify(p.capabilities)}>
-                    {capCount(p.capabilities)}/4
+                    {capCount(p.capabilities)} caps
                     {p.allowedProjectIds.length > 0 && (
                       <span className="hint" style={{ marginLeft: 6 }}>
                         ({p.allowedProjectIds.length} proj)

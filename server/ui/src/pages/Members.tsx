@@ -147,7 +147,7 @@ export default function Members() {
                     </select>
                   </td>
                   <td className="mono">
-                    {capCount(m.capabilities)}/4
+                    {capCount(m.capabilities)} caps
                     {m.allowedProjectIds.length > 0 && (
                       <span className="hint" style={{ marginLeft: 6 }}>
                         ({m.allowedProjectIds.length} proj)

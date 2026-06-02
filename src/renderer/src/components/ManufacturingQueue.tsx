@@ -119,7 +119,13 @@ export default function ManufacturingQueue({ onClose, embedded = false }: Props)
     setMarkingDone(path)
     setError(null)
     try {
-      await window.api.setReleaseState(path, 'manufactured', `Finished by ${initials}`, loc || undefined)
+      // A purchased part is "received" rather than "manufactured" — advance the
+      // purchase axis too so it doesn't drift (and so it reads correctly in the
+      // part details), then move the release state so it leaves the queue.
+      if (tab === 'purchase') {
+        await window.api.setPurchaseInfo(path, { status: 'received' })
+      }
+      await window.api.setReleaseState(path, 'manufactured', `${tab === 'purchase' ? 'Received' : 'Finished'} by ${initials}`, loc || undefined)
       await refresh()
     } catch (err) {
       setError((err as Error).message)
@@ -225,7 +231,7 @@ export default function ManufacturingQueue({ onClose, embedded = false }: Props)
                   disabled={markingDone === item.path || !operatorReady}
                   title={!operatorReady ? 'Enter your initials at the top first' : undefined}
                 >
-                  {markingDone === item.path ? '...' : 'Done'}
+                  {markingDone === item.path ? '...' : tab === 'purchase' ? 'Received' : 'Done'}
                 </button>
               </div>
             ))}

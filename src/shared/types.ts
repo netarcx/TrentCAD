@@ -34,6 +34,10 @@ export interface PartReleaseInfo {
   by?: string
   at?: string
   note?: string
+  /** Where the finished part physically lives (shop dashboard). Captured when
+   *  a part is marked 'manufactured'; preserved across later state changes so
+   *  "where is part X" stays answerable. */
+  location?: string
 }
 
 export type ManufacturingMethod = 'print' | 'cnc' | 'manual' | 'purchase' | 'other'
@@ -512,7 +516,7 @@ export interface IpcApi {
   getPartMeta(filePath: string): Promise<PartMeta>
   getWhereUsed(filePath: string): Promise<string[]>
   getThumbnail(filePath: string, size: number): Promise<string | null>
-  setReleaseState(filePath: string, state: ReleaseState, note?: string): Promise<void>
+  setReleaseState(filePath: string, state: ReleaseState, note?: string, location?: string): Promise<void>
   addComment(filePath: string, text: string): Promise<void>
   setManufacturingNotes(filePath: string, notes: string): Promise<void>
   setPartMass(filePath: string, mass: number | null): Promise<void>

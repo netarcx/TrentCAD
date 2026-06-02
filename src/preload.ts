@@ -131,8 +131,8 @@ const api: IpcApi = {
   getThumbnail: (filePath, size) =>
     ipcRenderer.invoke('get-thumbnail', filePath, size),
 
-  setReleaseState: (filePath, state, note) =>
-    ipcRenderer.invoke('set-release-state', filePath, state, note),
+  setReleaseState: (filePath, state, note, location) =>
+    ipcRenderer.invoke('set-release-state', filePath, state, note, location),
 
   addComment: (filePath, text) =>
     ipcRenderer.invoke('add-comment', filePath, text),

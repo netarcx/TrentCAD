@@ -41,6 +41,7 @@ function relativeTime(iso?: string): string {
 // Done. localStorage key is intentionally distinct from any git config
 // (these are shop-floor initials, not the GitHub identity).
 const OPERATOR_KEY = 'framecad-mfg-operator-initials'
+const LOCATION_KEY = 'framecad-mfg-location'
 
 function normalizeInitials(raw: string): string {
   return raw.trim().replace(/[^A-Za-z0-9.]/g, '').slice(0, 6).toUpperCase()
@@ -55,6 +56,9 @@ export default function ManufacturingQueue({ onClose, embedded = false }: Props)
   const [operator, setOperator] = useState<string>(() =>
     normalizeInitials(localStorage.getItem(OPERATOR_KEY) || '')
   )
+  // Where finished parts are being put right now (e.g. "Shelf B3"). Persisted
+  // like the operator initials so a station doesn't re-type it each part.
+  const [location, setLocation] = useState<string>(() => localStorage.getItem(LOCATION_KEY) || '')
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -110,10 +114,12 @@ export default function ManufacturingQueue({ onClose, embedded = false }: Props)
     // before pressing Done, we want next session to remember the
     // updated value, not the stale one from page load.
     localStorage.setItem(OPERATOR_KEY, initials)
+    const loc = location.trim()
+    if (loc) localStorage.setItem(LOCATION_KEY, loc)
     setMarkingDone(path)
     setError(null)
     try {
-      await window.api.setReleaseState(path, 'manufactured', `Finished by ${initials}`)
+      await window.api.setReleaseState(path, 'manufactured', `Finished by ${initials}`, loc || undefined)
       await refresh()
     } catch (err) {
       setError((err as Error).message)
@@ -150,6 +156,17 @@ export default function ManufacturingQueue({ onClose, embedded = false }: Props)
           <span className="mfg-operator-hint">
             Required to mark parts done — the next person can edit this before pressing Done.
           </span>
+          <label htmlFor="mfg-location-input" style={{ marginLeft: 16 }}>Storing at (optional)</label>
+          <input
+            id="mfg-location-input"
+            type="text"
+            value={location}
+            onChange={e => setLocation(e.target.value)}
+            onBlur={() => { const v = location.trim(); if (v) localStorage.setItem(LOCATION_KEY, v) }}
+            placeholder="e.g. Shelf B3"
+            maxLength={60}
+            autoComplete="off"
+          />
         </div>
 
         {totalNeedsExport > 0 && (

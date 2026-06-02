@@ -567,8 +567,8 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     return getThumbnail(pathsOps.toGitRel(filePath), size)
   })
 
-  ipcMain.handle('set-release-state', async (_e, filePath: string, state: string, note?: string) => {
-    await metaOps.setReleaseState(pathsOps.toGitRel(filePath), state as Parameters<typeof metaOps.setReleaseState>[1], note)
+  ipcMain.handle('set-release-state', async (_e, filePath: string, state: string, note?: string, location?: string) => {
+    await metaOps.setReleaseState(pathsOps.toGitRel(filePath), state as Parameters<typeof metaOps.setReleaseState>[1], note, location)
     broadcastStatus(getMainWindow)
   })
 

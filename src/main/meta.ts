@@ -249,18 +249,25 @@ async function cascadeAssemblyInReview(
 export async function setReleaseState(
   filePath: string,
   state: ReleaseState,
-  note?: string
+  note?: string,
+  location?: string
 ): Promise<void> {
   const by = await currentUsername()
   const at = new Date().toISOString()
   const trimmedNote = note?.trim() || undefined
+  const trimmedLocation = location?.trim()
 
   await withMetaLock(async () => {
     await pullSharedFile(metaRelPath())
     const all = await loadAllMeta()
+    // Preserve a previously-recorded location unless this call sets a new one,
+    // so the shop dashboard can still answer "where is it" after a later state
+    // change.
+    const prevLocation = all[filePath]?.release?.location
+    const finalLocation = location !== undefined ? (trimmedLocation || undefined) : prevLocation
     all[filePath] = {
       ...(all[filePath] || {}),
-      release: { state, by, at, note: trimmedNote }
+      release: { state, by, at, note: trimmedNote, location: finalLocation }
     }
 
     let cascadeCount = 0

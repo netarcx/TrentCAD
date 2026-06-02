@@ -43,6 +43,12 @@ export interface MemberCapabilities {
   browseTeamProjects: boolean
   openProject: boolean
   manufacturingView: boolean
+  /** "Trusted student": manage the CAD file structure (new part/assembly/
+   *  subsystem). Additive on top of the mentor/admin role grant. */
+  manageCadStructure: boolean
+  /** Break (force-release) another member's check-out. Additive on top of
+   *  the mentor/admin role grant. */
+  forceCheckIn: boolean
 }
 
 /** New PIN / new member default. Admin ticks what they want enabled
@@ -54,6 +60,8 @@ export const EMPTY_CAPABILITIES: MemberCapabilities = {
   browseTeamProjects: false,
   openProject: false,
   manufacturingView: false,
+  manageCadStructure: false,
+  forceCheckIn: false,
 }
 
 /** Parse a JSON-encoded capability blob (DB column) into the shape.
@@ -67,6 +75,8 @@ export function parseCapabilities(raw: string | null | undefined): MemberCapabil
       browseTeamProjects: !!v.browseTeamProjects,
       openProject: !!v.openProject,
       manufacturingView: !!v.manufacturingView,
+      manageCadStructure: !!v.manageCadStructure,
+      forceCheckIn: !!v.forceCheckIn,
     }
   } catch {
     return { ...EMPTY_CAPABILITIES }

@@ -152,6 +152,8 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
         browseTeamProjects: existingCaps.browseTeamProjects || pinCaps.browseTeamProjects,
         openProject: existingCaps.openProject || pinCaps.openProject,
         manufacturingView: existingCaps.manufacturingView || pinCaps.manufacturingView,
+        manageCadStructure: existingCaps.manageCadStructure || pinCaps.manageCadStructure,
+        forceCheckIn: existingCaps.forceCheckIn || pinCaps.forceCheckIn,
       }
       // Merge project allowlists (union). If either was empty (= "all"),
       // we'd want to keep that — but our convention is empty = none, so

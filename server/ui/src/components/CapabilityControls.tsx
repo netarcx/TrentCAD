@@ -36,6 +36,8 @@ interface Props {
 const CAP_LABELS: Array<{ key: keyof CapabilityValue['capabilities']; label: string; hint: string }> = [
   { key: 'browseTeamProjects', label: 'Team Projects',      hint: 'Lets them see and join projects registered in this server.' },
   { key: 'manufacturingView',  label: 'Manufacturing View', hint: 'Shop-floor queue grouped by manufacturing method.' },
+  { key: 'manageCadStructure', label: 'Manage CAD structure', hint: 'Trusted student: create/rename parts, assemblies, and subsystem folders. Mentors/admins always have this.' },
+  { key: 'forceCheckIn',       label: 'Force check-in',     hint: 'Break another member’s check-out (lock). Mentors/admins always have this.' },
 ]
 
 export default function CapabilityControls(props: Props) {
@@ -67,7 +69,7 @@ export default function CapabilityControls(props: Props) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div>
-        <label style={{ display: 'block', marginBottom: 4 }}>Home-screen buttons</label>
+        <label style={{ display: 'block', marginBottom: 4 }}>Capabilities</label>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
           {CAP_LABELS.map(({ key, label, hint }) => (
             <label

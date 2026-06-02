@@ -8,6 +8,12 @@ export interface MemberCapabilities {
   browseTeamProjects: boolean
   openProject: boolean
   manufacturingView: boolean
+  /** "Trusted student": manage the CAD file structure (new part/assembly/
+   *  subsystem). Mentors/admins always have it via role. */
+  manageCadStructure: boolean
+  /** Break (force-release) another member's check-out. Additive on top of
+   *  the mentor/admin role grant. */
+  forceCheckIn: boolean
 }
 
 /** Convenience bundle: every form that edits capabilities edits this
@@ -33,6 +39,8 @@ export const EMPTY_CAPABILITY_VALUE: CapabilityValue = {
     browseTeamProjects: false,
     openProject: false,
     manufacturingView: false,
+    manageCadStructure: false,
+    forceCheckIn: false,
   },
   allowedProjectIds: [],
   autoOpenProjectId: null,

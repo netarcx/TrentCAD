@@ -418,10 +418,28 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     lockedAt: number
   }
 
+  // Per-project authorization for the Drive folder id in `:key`. A student
+  // with a non-empty project allowlist may only touch projects on that list;
+  // admins/mentors and students with an empty allowlist (= unrestricted) pass.
+  // Only REGISTERED Drive projects (driveFolderId in the projects table) are
+  // restricted — an unregistered folder has no registry entry to check against,
+  // so it stays unrestricted (back-compat). Returns true when access is OK.
+  function keyAllowed(member: { role: string; allowedProjectIds: number[] }, key: string): boolean {
+    if (member.role !== 'student') return true
+    if (member.allowedProjectIds.length === 0) return true
+    const proj = getDb().prepare(`SELECT id FROM projects WHERE driveFolderId = ?`).get(key) as { id: number } | undefined
+    if (!proj) return true
+    return member.allowedProjectIds.includes(proj.id)
+  }
+  function denyKey(reply: import('fastify').FastifyReply): unknown {
+    return reply.code(403).send({ error: 'You don’t have access to this project.' })
+  }
+
   // List every active lock for a Drive project.
   app.get<{ Params: { key: string } }>(
     '/api/projects/:key/locks',
-    async req => {
+    async (req, reply) => {
+      if (!keyAllowed(req.member!, req.params.key)) return denyKey(reply)
       const rows = getDb().prepare(
         `SELECT filePath, ownerMemberId, ownerName, lockedAt
            FROM locks WHERE projectKey = ?
@@ -437,6 +455,7 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     '/api/projects/:key/locks',
     async (req, reply) => {
       const member = req.member!
+      if (!keyAllowed(member, req.params.key)) return denyKey(reply)
       const filePath = (req.body?.filePath ?? '').trim()
       if (!filePath) return reply.code(400).send({ error: 'filePath is required' })
 
@@ -496,6 +515,7 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     '/api/projects/:key/locks',
     async (req, reply) => {
       const member = req.member!
+      if (!keyAllowed(member, req.params.key)) return denyKey(reply)
       const filePath = (req.body?.filePath ?? '').trim()
       if (!filePath) return reply.code(400).send({ error: 'filePath is required' })
 
@@ -506,7 +526,9 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
       if (!existing) return { ok: true }
 
       const isOwner = existing.ownerMemberId === member.id
-      const canForce = member.role === 'admin' || member.role === 'mentor'
+      // Force-release is allowed for mentors/admins (by role) OR anyone granted
+      // the forceCheckIn capability (e.g. a trusted student running the shop).
+      const canForce = member.role === 'admin' || member.role === 'mentor' || member.capabilities.forceCheckIn
       const wantsForce = req.body?.force === true
       if (!isOwner && (!wantsForce || !canForce)) {
         return reply.code(403).send({ error: `Checked out by ${existing.ownerName}` })
@@ -545,7 +567,8 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
   // (default 100, hard max 500 so a huge project can't OOM the response).
   app.get<{ Params: { key: string }, Querystring: { limit?: string } }>(
     '/api/projects/:key/history',
-    async req => {
+    async (req, reply) => {
+      if (!keyAllowed(req.member!, req.params.key)) return denyKey(reply)
       const limit = Math.min(500, Math.max(1, parseInt(req.query.limit ?? '', 10) || 100))
       const rows = getDb().prepare(
         `SELECT id, authorName, message, filesJson, publishedAt
@@ -568,8 +591,9 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
   // Drive publish. `files` is the list of changed project-relative paths.
   app.post<{ Params: { key: string }, Body: { message?: string, files?: string[] } }>(
     '/api/projects/:key/history',
-    async (req) => {
+    async (req, reply) => {
       const member = req.member!
+      if (!keyAllowed(member, req.params.key)) return denyKey(reply)
       const message = (req.body?.message ?? '').toString().slice(0, 2000)
       const files = Array.isArray(req.body?.files)
         ? req.body!.files.filter(f => typeof f === 'string').slice(0, 5000)

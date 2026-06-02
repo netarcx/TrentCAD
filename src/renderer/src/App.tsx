@@ -440,6 +440,9 @@ export default function App() {
   const revoked = !!teamSnapshot?.revoked
   const isAdmin = team.loading ? false : ((!enrolled && !revoked) || myRole === 'admin')
   const isMentor = team.loading ? false : (isAdmin || myRole === 'mentor')
+  // "Trusted student" CAD-structure power (goal 7): mentors/admins always have
+  // it; a student gets it via the server-granted manageCadStructure capability.
+  const canManageCad = isMentor || !!teamSnapshot?.me?.capabilities?.manageCadStructure
 
   // If a server-side demotion takes effect (e.g. admin changed our
   // role from mentor to student) while we're sitting on the Parts
@@ -1015,6 +1018,7 @@ export default function App() {
         inspectorOpen={inspectorOpen}
         onToggleInspector={() => setInspectorOpen(o => !o)}
         legacyMode={parts.legacyMode}
+        canManageCad={canManageCad}
       />
 
       <div className="app-main">

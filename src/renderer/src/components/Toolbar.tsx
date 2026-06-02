@@ -21,6 +21,11 @@ interface Props {
    *  New Part / New Assembly buttons are hidden so we don't impose
    *  the YY-team-XX-YYY scheme on a project that has its own. */
   legacyMode?: boolean
+  /** Whether this user may manage the CAD file structure (create parts /
+   *  assemblies / subsystem folders). Mentors/admins always can; a student
+   *  needs the server-granted `manageCadStructure` capability. Gates the
+   *  "New" menu. Defaults true so non-team / standalone use is unaffected. */
+  canManageCad?: boolean
 }
 
 function getSelectedFolder(file: FileEntry | null): string {
@@ -33,7 +38,7 @@ export default function Toolbar({
   onSync, onPublish, onNewPart, onNewAssembly, onNewSubsystem,
   selectedFile, isLoading, hasProject, isCotsProject,
   activeSection, inspectorOpen, onToggleInspector,
-  legacyMode = false
+  legacyMode = false, canManageCad = true
 }: Props) {
   const [showPublish, setShowPublish] = useState(false)
   const [message, setMessage] = useState('')
@@ -129,7 +134,7 @@ export default function Toolbar({
           </button>
         </div>
 
-        {activeSection === 'files' && !isCotsProject && (
+        {activeSection === 'files' && !isCotsProject && canManageCad && (
           <>
             <div className="toolbar-sep" />
             <div className="toolbar-group">

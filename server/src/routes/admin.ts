@@ -38,6 +38,8 @@ function coerceCapabilities(input: unknown): MemberCapabilities | null {
     browseTeamProjects: !!v.browseTeamProjects,
     openProject: !!v.openProject,
     manufacturingView: !!v.manufacturingView,
+    manageCadStructure: !!v.manageCadStructure,
+    forceCheckIn: !!v.forceCheckIn,
   }
 }
 

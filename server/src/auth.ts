@@ -179,7 +179,7 @@ export function issuePin(args: {
   const isBootstrap = args.createdBy === null
   const capabilities: MemberCapabilities = args.capabilities ?? (
     isBootstrap
-      ? { createProject: true, browseTeamProjects: true, openProject: true, manufacturingView: true }
+      ? { createProject: true, browseTeamProjects: true, openProject: true, manufacturingView: true, manageCadStructure: true, forceCheckIn: true }
       : { ...EMPTY_CAPABILITIES }
   )
   const allowedProjectIds = args.allowedProjectIds ?? []

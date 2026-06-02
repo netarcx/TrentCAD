@@ -339,6 +339,13 @@ export interface MemberCapabilities {
   browseTeamProjects: boolean
   openProject: boolean
   manufacturingView: boolean
+  /** "Trusted student" power: create/rename parts, assemblies, and subsystem
+   *  folders (manage the CAD file structure). Additive — mentors/admins always
+   *  have it via role; this grants it to a student without promoting them. */
+  manageCadStructure: boolean
+  /** Break (force-release) another member's check-out. Additive on top of the
+   *  mentor/admin role grant. */
+  forceCheckIn: boolean
 }
 
 export interface TeamMember {

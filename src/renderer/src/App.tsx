@@ -14,6 +14,7 @@ import ManufacturingQueue from './components/ManufacturingQueue'
 import { useApiBusy } from './hooks/useApiBusy'
 import ManufacturingModeShell from './components/ManufacturingModeShell'
 import OnboardingTour from './components/OnboardingTour'
+import ArchiveDashboard from './components/ArchiveDashboard'
 import Sidebar, { type SidebarSection } from './components/Sidebar'
 import ActivityView from './components/ActivityView'
 import PartsManager from './components/PartsManager'
@@ -256,7 +257,11 @@ export default function App() {
   // so the banner used to need an unrelated state change to appear.
   const [autoOpenAttempted, setAutoOpenAttempted] = useState<number | null>(null)
   const kioskMode = !!teamSnapshot?.me?.kioskMode
+  // Archive devices are read-only mirrors with their own dedicated screen —
+  // they never open a project for editing, so auto-open/kiosk don't apply.
+  const archiveMode = !!teamSnapshot?.me?.archiveMode
   useEffect(() => {
+    if (archiveMode) return                      // archive box never auto-opens
     if (project) return                          // already in a project
     if (team.loading) return                     // wait for snapshot
     const target = teamSnapshot?.me?.autoOpenProjectId ?? null
@@ -287,7 +292,7 @@ export default function App() {
         // alternative is a blank window with no recovery path.
       } catch { /* let the welcome screen surface the issue */ }
     })()
-  }, [teamSnapshot, team.loading, project, openProject, kioskMode, autoOpenAttempted])
+  }, [teamSnapshot, team.loading, project, openProject, kioskMode, archiveMode, autoOpenAttempted])
 
   const dismissOnboarding = useCallback(() => {
     localStorage.setItem('framecad-onboarding-seen', '1')
@@ -848,6 +853,21 @@ export default function App() {
       </div>
     </div>
   )
+
+  // ── Archive mode (read-only local mirror) ──
+  // Takes precedence over the welcome screen, auto-open, and kiosk: an
+  // archive device has no editing surface, only a status dashboard.
+  if (archiveMode) {
+    return (
+      <ArchiveDashboard
+        teamSnapshot={teamSnapshot}
+        serverReach={serverReach}
+        gitName={gitName}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />
+    )
+  }
 
   // ── Welcome screen (no project open) ──
   if (!project) {

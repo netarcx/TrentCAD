@@ -208,6 +208,23 @@ const api: IpcApi = {
     return () => ipcRenderer.removeListener('team-snapshot', handler)
   },
 
+  // Archive mode (read-only local mirror)
+  archiveGetStatus: () =>
+    ipcRenderer.invoke('archive-get-status'),
+
+  archiveSyncNow: () =>
+    ipcRenderer.invoke('archive-sync-now'),
+
+  archiveChooseRoot: () =>
+    ipcRenderer.invoke('archive-choose-root'),
+
+  onArchiveStatus: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: unknown) =>
+      callback(status as Parameters<typeof callback>[0])
+    ipcRenderer.on('archive-status', handler)
+    return () => ipcRenderer.removeListener('archive-status', handler)
+  },
+
   onFileChange: (callback) => {
     const handler = (_event: Electron.IpcRendererEvent, files: unknown) =>
       callback(files as Parameters<typeof callback>[0])

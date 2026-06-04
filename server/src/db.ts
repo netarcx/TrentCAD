@@ -419,6 +419,16 @@ const MIGRATIONS: string[] = [
   ALTER TABLE projects ADD COLUMN driveFolderId TEXT;
   ALTER TABLE projects ADD COLUMN sharedDriveId TEXT;
   `,
+  // v19: archive-mode flag on PINs + members. When ON (1) the desktop
+  // client turns into a read-only local mirror: it auto-downloads every
+  // project on the member's allowlist and can never upload (publish /
+  // check-out are blocked client-side AND server-side). Independent of
+  // kioskMode and needs no autoOpenProjectId — it stands alone. OFF (0,
+  // the default) is an ordinary editing client.
+  `
+  ALTER TABLE pins    ADD COLUMN archiveMode INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE members ADD COLUMN archiveMode INTEGER NOT NULL DEFAULT 0;
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

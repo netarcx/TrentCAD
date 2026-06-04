@@ -21,6 +21,7 @@ interface PinRow {
   allowedProjectIds: number[]
   autoOpenProjectId: number | null
   kioskMode: boolean
+  archiveMode: boolean
   maxUses: number
   useCount: number
 }
@@ -84,6 +85,7 @@ export default function Pins() {
         allowedProjectIds: caps.allowedProjectIds,
         autoOpenProjectId: caps.autoOpenProjectId,
         kioskMode: caps.kioskMode,
+        archiveMode: caps.archiveMode,
         maxUses,
       })
       setJustIssued(res)
@@ -326,6 +328,15 @@ export default function Pins() {
                         title="Kiosk PIN — enrollee will be locked into the auto-open project"
                       >
                         KIOSK
+                      </span>
+                    )}
+                    {p.archiveMode && (
+                      <span
+                        className="pill"
+                        style={{ marginLeft: 6, color: 'var(--accent)', background: 'var(--accent-tint)' }}
+                        title="Archive PIN — enrollee becomes a read-only mirror that auto-downloads and never uploads"
+                      >
+                        ARCHIVE
                       </span>
                     )}
                   </td>

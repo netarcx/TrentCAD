@@ -92,6 +92,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     allowedProjectIds?: unknown
     autoOpenProjectId?: number | null
     kioskMode?: boolean
+    archiveMode?: boolean
     maxUses?: number
   } }>('/api/admin/pins', async (req, reply) => {
     const role = req.body?.role as Role | undefined
@@ -126,6 +127,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       allowedProjectIds,
       autoOpenProjectId,
       kioskMode: !!req.body?.kioskMode,
+      archiveMode: !!req.body?.archiveMode,
       maxUses: typeof req.body?.maxUses === 'number' ? req.body.maxUses : undefined,
     })
     logAudit({
@@ -142,7 +144,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     const now = Date.now()
     const rows = getDb().prepare(
       `SELECT code, role, displayName, githubUsername, expiresAt, createdAt,
-              capabilities, allowedProjectIds, autoOpenProjectId, kioskMode,
+              capabilities, allowedProjectIds, autoOpenProjectId, kioskMode, archiveMode,
               maxUses, useCount
          FROM pins
         WHERE useCount < maxUses
@@ -159,6 +161,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       allowedProjectIds: string | null
       autoOpenProjectId: number | null
       kioskMode: number
+      archiveMode: number
       maxUses: number
       useCount: number
     }>
@@ -174,6 +177,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         allowedProjectIds: parseAllowedProjectIds(r.allowedProjectIds),
         autoOpenProjectId: r.autoOpenProjectId,
         kioskMode: r.kioskMode === 1 && r.autoOpenProjectId !== null,
+        archiveMode: r.archiveMode === 1,
         maxUses: r.maxUses,
         useCount: r.useCount,
       })),
@@ -202,7 +206,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     // needs them so it can render the edit form.
     const rows = getDb().prepare(
       `SELECT id, displayName, githubUsername, role, status, joinedAt,
-              capabilities, allowedProjectIds, autoOpenProjectId, kioskMode
+              capabilities, allowedProjectIds, autoOpenProjectId, kioskMode, archiveMode
          FROM members
         WHERE status = 'active'
         ORDER BY role = 'admin' DESC, role = 'mentor' DESC, displayName COLLATE NOCASE ASC`
@@ -217,6 +221,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       allowedProjectIds: string | null
       autoOpenProjectId: number | null
       kioskMode: number
+      archiveMode: number
     }>
     return {
       members: rows.map(r => ({
@@ -229,6 +234,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         allowedProjectIds: parseAllowedProjectIds(r.allowedProjectIds),
         autoOpenProjectId: r.autoOpenProjectId,
         kioskMode: r.kioskMode === 1 && r.autoOpenProjectId !== null,
+        archiveMode: r.archiveMode === 1,
       })),
     }
   })
@@ -243,6 +249,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       allowedProjectIds?: unknown
       autoOpenProjectId?: number | null
       kioskMode?: boolean
+      archiveMode?: boolean
     }
   }>('/api/admin/members/:id', async (req, reply) => {
     const id = Number.parseInt(req.params.id, 10)
@@ -328,6 +335,12 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       // to enforce a multi-column invariant inside the UPDATE.
       updates.push('kioskMode = ?')
       values.push(req.body!.kioskMode ? 1 : 0)
+    }
+    if ('archiveMode' in (req.body ?? {})) {
+      // Read-only-mirror flag. Stands alone (no autoOpen precondition), so
+      // a plain 0/1 write is the whole story.
+      updates.push('archiveMode = ?')
+      values.push(req.body!.archiveMode ? 1 : 0)
     }
     if (updates.length === 0) return { success: true } // no-op patch
 

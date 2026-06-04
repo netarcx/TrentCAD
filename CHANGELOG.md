@@ -10,7 +10,7 @@ versions are mostly chronology markers.
 > The big architectural arc since 1.0. Exact per-version dates aren't
 > reconstructed here — see [`git log`](https://github.com/netarcx/FrameCAD/commits/main)
 > for the precise milestone-by-milestone history. Desktop is currently
-> at **5.1.1**, the team server at **5.0.8**.
+> at **5.1.6**, the team server at **5.0.12**.
 
 The headline change: **Google Drive replaced Git, Git LFS, and GitHub as
 the storage backend.** CAD files now live in a team Google Shared Drive;
@@ -40,6 +40,14 @@ the "report a problem" issue flow).
   Google Drive) so enrolled clients only see and join sanctioned drives;
   OAuth credentials + allowlist can also be baked into the installer at
   build time.
+- **Archive mode (read-only local mirror)** — an admin issues an enrollment
+  PIN with the new "Archive device" flag (alongside role / capabilities /
+  project allowlist). A client enrolled with it becomes a read-only Drive
+  mirror: a dedicated Archive Dashboard replaces the editing UI, every
+  project on its allowlist is auto-downloaded and kept current as teammates
+  publish, and it can never upload — Publish and Check Out are hidden in the
+  UI and rejected by the server (403). Lets a team keep a continuously
+  updated offline backup of its CAD on a spare machine.
 
 ### Changed
 - **Terminology now maps to Drive**: Project = a Shared Drive folder,

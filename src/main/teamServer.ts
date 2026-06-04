@@ -327,6 +327,10 @@ export async function refresh(): Promise<TeamSnapshot> {
       allowedProjectIds: me.allowedProjectIds ?? [],
       autoOpenProjectId: me.autoOpenProjectId ?? null,
       kioskMode: !!me.kioskMode,
+      // FAIL-SAFE: unlike the caps above (fail-open for legacy servers), a
+      // missing archiveMode must NEVER turn an ordinary client into a
+      // read-only mirror. Default false; only an explicit true flips it.
+      archiveMode: !!me.archiveMode,
     }
     state.team = team
     state.members = members

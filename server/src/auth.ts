@@ -141,6 +141,10 @@ export interface IssuedPin {
    *  appears, closing the project re-opens it. Locked-down kiosk
    *  for shared shop computers. */
   kioskMode: boolean
+  /** When true, the desktop becomes a read-only local mirror: it
+   *  auto-downloads every project on the allowlist and can never
+   *  upload. Independent of kioskMode; needs no autoOpenProjectId. */
+  archiveMode: boolean
   maxUses: number
 }
 
@@ -167,6 +171,7 @@ export function issuePin(args: {
   allowedProjectIds?: number[]
   autoOpenProjectId?: number | null
   kioskMode?: boolean
+  archiveMode?: boolean
   maxUses?: number
 }): IssuedPin {
   const now = Date.now()
@@ -189,6 +194,8 @@ export function issuePin(args: {
   // the admin UI prevents the bad-config combination but a hand-
   // crafted API call could still set kiosk without a project.
   const kioskMode = !!args.kioskMode && autoOpenProjectId !== null
+  // archiveMode stands alone — no autoOpenProjectId precondition.
+  const archiveMode = !!args.archiveMode
   const maxUses = Math.max(1, Math.min(10, Math.floor(args.maxUses ?? 3)))
 
   // Loop on the very rare PRIMARY-KEY collision. We're not relying on
@@ -199,8 +206,8 @@ export function issuePin(args: {
     try {
       getDb().prepare(
         `INSERT INTO pins (code, role, displayName, githubUsername, expiresAt, createdBy, createdAt,
-                           capabilities, allowedProjectIds, autoOpenProjectId, kioskMode, maxUses)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                           capabilities, allowedProjectIds, autoOpenProjectId, kioskMode, archiveMode, maxUses)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         code,
         args.role,
@@ -213,9 +220,10 @@ export function issuePin(args: {
         JSON.stringify(allowedProjectIds),
         autoOpenProjectId,
         kioskMode ? 1 : 0,
+        archiveMode ? 1 : 0,
         maxUses,
       )
-      return { code, role: args.role, expiresAt, capabilities, allowedProjectIds, autoOpenProjectId, kioskMode, maxUses }
+      return { code, role: args.role, expiresAt, capabilities, allowedProjectIds, autoOpenProjectId, kioskMode, archiveMode, maxUses }
     } catch (err) {
       // SQLITE_CONSTRAINT_PRIMARYKEY — try a different code.
       if ((err as { code?: string }).code === 'SQLITE_CONSTRAINT_PRIMARYKEY') continue
@@ -240,6 +248,7 @@ export interface PinRecord {
   allowedProjectIds: string | null
   autoOpenProjectId: number | null
   kioskMode: number  // SQLite stores boolean as 0/1
+  archiveMode: number  // SQLite stores boolean as 0/1
   maxUses: number
   useCount: number
 }
@@ -300,6 +309,7 @@ export interface AuthedMember {
   allowedProjectIds: number[]
   autoOpenProjectId: number | null
   kioskMode: boolean
+  archiveMode: boolean
 }
 
 export interface AuthedDevice {
@@ -333,7 +343,7 @@ async function findDeviceByToken(token: string): Promise<{
   const rows = getDb().prepare(
     `SELECT d.id AS dId, d.memberId, d.label, d.tokenHash, d.lastSeenAt, d.kind,
             m.id AS mId, m.displayName, m.githubUsername, m.role, m.status,
-            m.capabilities, m.allowedProjectIds, m.autoOpenProjectId, m.kioskMode
+            m.capabilities, m.allowedProjectIds, m.autoOpenProjectId, m.kioskMode, m.archiveMode
        FROM devices d
        JOIN members m ON m.id = d.memberId
       WHERE m.status = 'active'`
@@ -353,6 +363,7 @@ async function findDeviceByToken(token: string): Promise<{
     allowedProjectIds: string | null
     autoOpenProjectId: number | null
     kioskMode: number
+    archiveMode: number
   }>
 
   // 30 days for browser/web sessions; desktop devices never expire
@@ -384,6 +395,7 @@ async function findDeviceByToken(token: string): Promise<{
           allowedProjectIds: parseAllowedProjectIds(row.allowedProjectIds),
           autoOpenProjectId: row.autoOpenProjectId,
           kioskMode: row.kioskMode === 1 && row.autoOpenProjectId !== null,
+          archiveMode: row.archiveMode === 1,
         },
       }
     }

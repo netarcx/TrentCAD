@@ -395,6 +395,13 @@ export interface MyMember extends TeamMember {
    *  the project on close, and hides any UI that would let the user
    *  navigate to a different project. For shared shop computers. */
   kioskMode?: boolean
+  /** Read-only archive device. When true, the desktop becomes a local
+   *  mirror: it auto-downloads every project on `allowedProjectIds`
+   *  (whatever the server hands back in the snapshot) and can never
+   *  upload — publish + check-out are blocked client- and server-side.
+   *  Independent of kiosk; needs no auto-open project. Defaults to
+   *  false on a legacy server that doesn't send the field. */
+  archiveMode?: boolean
 }
 
 export interface ProjectEntry {
@@ -415,6 +422,11 @@ export interface ProjectEntry {
    *  downloaded Drive project by folder id (Drive recents have no GitHub
    *  remote). Optional — empty on GitHub-only/legacy project rows. */
   driveFolderId?: string
+  /** Which Shared Drive the Drive folder lives in. Lets a client
+   *  auto-join a Drive project without a Shared-Drive picker (used by
+   *  archive mode). Optional — empty on GitHub-only/legacy rows or a
+   *  server that doesn't record it. */
+  sharedDriveId?: string
 }
 
 /** What the renderer reads to decide what to render. Mirrors what the
@@ -449,6 +461,38 @@ export interface EnrollResult {
   snapshot?: TeamSnapshot
   /** Populated only when success === false. */
   error?: string
+}
+
+/** Per-project state of the read-only archive mirror (archive mode). */
+export interface ArchiveProjectStatus {
+  /** Drive folder id — the canonical per-project key. */
+  projectKey: string
+  name: string
+  /** Local directory this project is mirrored into. */
+  localPath: string
+  /** 'pending' = known but not yet synced this session; 'syncing' =
+   *  download/sync in flight; 'idle' = up to date; 'error' = last
+   *  attempt failed (see lastError). */
+  state: 'pending' | 'syncing' | 'idle' | 'error'
+  /** Last successful sync, or null if never synced this session. */
+  lastSyncAt: number | null
+  /** Files in the local mirror (from the manifest). */
+  fileCount: number
+  /** Download/sync progress 0–100 while state === 'syncing'. */
+  percent: number
+  /** Error from the last failed attempt, or null. */
+  lastError: string | null
+}
+
+/** Whole-machine archive-mode status, pushed to the Archive Dashboard. */
+export interface ArchiveStatus {
+  /** True while the archive loop is running (device is in archive mode). */
+  active: boolean
+  /** Root directory all project mirrors live under. */
+  archiveRoot: string
+  /** When the loop last polled the server, or null. */
+  lastTickAt: number | null
+  projects: ArchiveProjectStatus[]
 }
 
 export interface AppState {
@@ -585,6 +629,18 @@ export interface IpcApi {
   teamPingServer(): Promise<'reachable' | 'unreachable' | 'not-enrolled'>
   /** Subscribe to push notifications when the cached snapshot changes. */
   onTeamSnapshot(callback: (snapshot: TeamSnapshot) => void): () => void
+
+  // ── Archive mode (read-only local mirror) ──
+  /** Current archive-mirror status (cached; no network). */
+  archiveGetStatus(): Promise<ArchiveStatus>
+  /** Kick an immediate poll + sync pass instead of waiting for the timer. */
+  archiveSyncNow(): Promise<ArchiveStatus>
+  /** Open a folder picker to relocate the archive root, then restart the
+   *  mirror against the new location. Returns the fresh status (unchanged
+   *  if the user cancels). */
+  archiveChooseRoot(): Promise<ArchiveStatus>
+  /** Subscribe to push updates as projects download / sync. */
+  onArchiveStatus(callback: (status: ArchiveStatus) => void): () => void
 
   // ── Google Drive storage backend ──
   /** Current Google sign-in state (cached; no network). */

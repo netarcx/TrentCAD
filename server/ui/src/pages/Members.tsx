@@ -19,6 +19,7 @@ interface Member {
   allowedProjectIds?: number[]
   autoOpenProjectId?: number | null
   kioskMode?: boolean
+  archiveMode?: boolean
 }
 
 /** /api/members only returns the lean shape (no caps). For the admin
@@ -28,6 +29,7 @@ interface MemberFull extends Member {
   allowedProjectIds: number[]
   autoOpenProjectId: number | null
   kioskMode: boolean
+  archiveMode: boolean
 }
 
 export default function Members() {
@@ -53,6 +55,7 @@ export default function Members() {
           allowedProjectIds: m.allowedProjectIds ?? [],
           autoOpenProjectId: m.autoOpenProjectId ?? null,
           kioskMode: !!m.kioskMode,
+          archiveMode: !!m.archiveMode,
         })),
       )
       setProjects(projectsRes.projects)
@@ -96,6 +99,7 @@ export default function Members() {
       allowedProjectIds: next.allowedProjectIds,
       autoOpenProjectId: next.autoOpenProjectId,
       kioskMode: next.kioskMode,
+      archiveMode: next.archiveMode,
     })
     setEditingId(null)
   }
@@ -162,6 +166,15 @@ export default function Members() {
                         KIOSK
                       </span>
                     )}
+                    {m.archiveMode && (
+                      <span
+                        className="pill"
+                        style={{ marginLeft: 6, color: 'var(--accent)', background: 'var(--accent-tint)' }}
+                        title="Archive device — read-only mirror that auto-downloads and never uploads"
+                      >
+                        ARCHIVE
+                      </span>
+                    )}
                   </td>
                   <td className="mono">{new Date(m.joinedAt).toLocaleDateString()}</td>
                   <td className="row-actions">
@@ -214,6 +227,7 @@ function MemberCapsEditor(props: {
     allowedProjectIds: member.allowedProjectIds,
     autoOpenProjectId: member.autoOpenProjectId,
     kioskMode: member.kioskMode,
+    archiveMode: member.archiveMode,
   })
   return (
     <div style={{ padding: '12px 4px' }}>

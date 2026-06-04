@@ -321,7 +321,3 @@ See [google-workspace-setup.md](google-workspace-setup.md) for how to obtain the
 Because files live in Google Drive as opaque blobs, FrameCAD uploads any file in the project folder regardless of extension — there's no LFS configuration step and no per-file host limit to dodge. The part-numbering engine recognizes SolidWorks documents (`.sldprt`, `.sldasm`, `.slddrw`, `.sldlfp`) for auto-numbering and drawing-pairing; everything else (CAD interchange formats, PDFs, images, archives) rides along unchanged.
 
 The team's blocked-extension policy (configured on the team server) and the pre-publish guard are the backstops that keep junk out of a project, replacing the old "must be LFS-tracked or GitHub rejects the push" failure mode.
-
-## License
-
-Source-available for FRC team use. No license file is currently included — if you're a mentor on another team interested in using FrameCAD, open an issue and we'll talk.

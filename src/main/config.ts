@@ -93,6 +93,12 @@ interface AppConfig {
     email?: string
     name?: string
   }
+  /**
+   * Override for where archive-mode mirrors are stored. When unset, the
+   * archive loop defaults to `<userData>/archive`. Only meaningful on a
+   * device enrolled as an archive box; harmless otherwise.
+   */
+  archiveRoot?: string
 }
 
 function getConfigPath(): string {
@@ -182,6 +188,23 @@ export async function setCachedBrowseConfig(
 export async function getCachedBrowseConfig(): Promise<{ gitHubOrg?: string; projectPrefix?: string }> {
   const config = await readConfig()
   return config.cachedBrowseConfig || {}
+}
+
+/** Archive-mode mirror root. Defaults to `<userData>/archive` when the
+ *  admin hasn't relocated it. The default is resolved here (not in the
+ *  caller) so there's a single source of truth. */
+export async function getArchiveRoot(): Promise<string> {
+  const config = await readConfig()
+  const override = config.archiveRoot
+  if (typeof override === 'string' && override.trim()) return override
+  return path.join(app.getPath('userData'), 'archive')
+}
+
+export async function setArchiveRoot(root: string | null): Promise<void> {
+  const config = await readConfig()
+  if (root && root.trim()) config.archiveRoot = root.trim()
+  else delete config.archiveRoot
+  await writeConfig(config)
 }
 
 export async function getTeamServerSettings(): Promise<{ serverUrl: string; token: string } | null> {

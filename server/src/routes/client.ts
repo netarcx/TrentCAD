@@ -74,6 +74,9 @@ interface ProjectRow {
   /** Google Drive folder id when this is a Drive project (the canonical
    *  per-project key); null for legacy GitHub-only rows. */
   driveFolderId: string | null
+  /** Which Shared Drive the folder lives in. Lets a client auto-join a
+   *  Drive project without a Shared-Drive picker (used by archive mode). */
+  sharedDriveId: string | null
   description: string
   archived: number  // SQLite booleans are 0/1
   createdAt: number
@@ -293,6 +296,7 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
         allowedProjectIds: m.allowedProjectIds,
         autoOpenProjectId: m.autoOpenProjectId,
         kioskMode: m.kioskMode,
+        archiveMode: m.archiveMode,
         // Boolean-only — actual token never leaves the server. Admin
         // UI uses this to render "Linked / Not linked" status.
         hasGitHubPat: !!patRow?.gitHubPat,
@@ -393,7 +397,7 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     // that haven't adopted the registry yet aren't disrupted).
     const member = req.member!
     const rows = getDb().prepare(
-      `SELECT id, name, repoUrl, driveFolderId, description, createdAt, remoteStatus
+      `SELECT id, name, repoUrl, driveFolderId, sharedDriveId, description, createdAt, remoteStatus
          FROM projects
         WHERE archived = 0
         ORDER BY createdAt DESC`
@@ -435,6 +439,12 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
   function denyKey(reply: import('fastify').FastifyReply): unknown {
     return reply.code(403).send({ error: 'You don’t have access to this project.' })
   }
+  // Archive devices are read-only mirrors — they may never acquire a lock or
+  // record a publish. The desktop never exposes these actions in archive mode;
+  // this is the authoritative backstop so a hand-crafted request can't write.
+  function denyArchive(reply: import('fastify').FastifyReply): unknown {
+    return reply.code(403).send({ error: 'Archive devices are read-only.' })
+  }
 
   // List every active lock for a Drive project.
   app.get<{ Params: { key: string } }>(
@@ -456,6 +466,7 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     '/api/projects/:key/locks',
     async (req, reply) => {
       const member = req.member!
+      if (member.archiveMode) return denyArchive(reply)
       if (!keyAllowed(member, req.params.key)) return denyKey(reply)
       const filePath = (req.body?.filePath ?? '').trim()
       if (!filePath) return reply.code(400).send({ error: 'filePath is required' })
@@ -516,6 +527,7 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     '/api/projects/:key/locks',
     async (req, reply) => {
       const member = req.member!
+      if (member.archiveMode) return denyArchive(reply)
       if (!keyAllowed(member, req.params.key)) return denyKey(reply)
       const filePath = (req.body?.filePath ?? '').trim()
       if (!filePath) return reply.code(400).send({ error: 'filePath is required' })
@@ -594,6 +606,7 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     '/api/projects/:key/history',
     async (req, reply) => {
       const member = req.member!
+      if (member.archiveMode) return denyArchive(reply)
       if (!keyAllowed(member, req.params.key)) return denyKey(reply)
       const message = (req.body?.message ?? '').toString().slice(0, 2000)
       const files = Array.isArray(req.body?.files)

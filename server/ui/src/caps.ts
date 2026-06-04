@@ -26,6 +26,10 @@ export interface CapabilityValue {
    *  kiosk lockdown: welcome screen hidden, project auto-reopens
    *  on close, no escape hatch to other projects. */
   kioskMode: boolean
+  /** When true, the desktop becomes a read-only local mirror: it
+   *  auto-downloads every project on the allowlist and can never
+   *  upload. Independent of kiosk; needs no auto-open project. */
+  archiveMode: boolean
 }
 
 export interface ProjectOption {
@@ -45,6 +49,7 @@ export const EMPTY_CAPABILITY_VALUE: CapabilityValue = {
   allowedProjectIds: [],
   autoOpenProjectId: null,
   kioskMode: false,
+  archiveMode: false,
 }
 
 export function capCount(c: MemberCapabilities): number {

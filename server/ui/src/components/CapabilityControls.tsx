@@ -65,6 +65,9 @@ export default function CapabilityControls(props: Props) {
   function toggleKiosk(): void {
     onChange({ ...value, kioskMode: !value.kioskMode })
   }
+  function toggleArchive(): void {
+    onChange({ ...value, archiveMode: !value.archiveMode })
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -96,7 +99,7 @@ export default function CapabilityControls(props: Props) {
         <label style={{ display: 'block', marginBottom: 4 }}>
           Project allowlist
           <span className="hint" style={{ marginLeft: 6 }}>
-            (Students only see ticked projects. Leave all unticked to grant access to every project.)
+            (Students only see ticked projects. Leave all unticked to grant access to no projects.)
           </span>
         </label>
         {projects.length === 0 ? (
@@ -114,6 +117,32 @@ export default function CapabilityControls(props: Props) {
                 {p.name}
               </label>
             ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <label
+          title="Turn this machine into a read-only local archive: it auto-downloads every allowlisted project and can never upload (publish + check-out are blocked). Issue with role Student + the allowlist above to scope exactly what it mirrors."
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            opacity: disabled ? 0.5 : 1, cursor: disabled ? 'default' : 'pointer',
+            textTransform: 'none', letterSpacing: 0, fontWeight: 400,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={value.archiveMode}
+            disabled={disabled}
+            onChange={toggleArchive}
+          />
+          <span>Archive device — read-only mirror of the allowlisted projects (never uploads)</span>
+        </label>
+        {value.archiveMode && (
+          <div className="hint" style={{ marginTop: 4 }}>
+            Tip: issue this as role <strong>Student</strong> with the projects ticked above —
+            that allowlist is exactly what the box mirrors. An admin/mentor archive device
+            mirrors <em>every</em> project.
           </div>
         )}
       </div>

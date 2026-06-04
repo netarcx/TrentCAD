@@ -90,7 +90,3 @@ For a student-friendly walkthrough, see [docs/STUDENT_SETUP.md](docs/STUDENT_SET
 ## Contributing
 
 This is a small project built for one FRC team, but PRs and issues are welcome — especially if you're running FrameCAD for your own team and have hit a wall.
-
-## License
-
-Source-available for FRC team use. No license file is currently included — if you're a mentor on another team interested in using FrameCAD, open an issue and we'll talk.

@@ -55,6 +55,7 @@ interface MemberRow {
   allowedProjectIds: string | null
   autoOpenProjectId: number | null
   kioskMode: number
+  archiveMode: number
 }
 
 export async function registerPublicRoutes(app: FastifyInstance): Promise<void> {
@@ -109,12 +110,13 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
     const pinAllowlist = parseAllowedProjectIds(pinRow.allowedProjectIds)
     const pinAutoOpen = pinRow.autoOpenProjectId
     const pinKiosk = (pinRow as { kioskMode?: number }).kioskMode === 1 && pinAutoOpen !== null
+    const pinArchive = (pinRow as { archiveMode?: number }).archiveMode === 1
 
     if (!member) {
       const result = db.prepare(
         `INSERT INTO members (displayName, githubUsername, role, status, joinedAt,
-                              capabilities, allowedProjectIds, autoOpenProjectId, kioskMode)
-         VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)`
+                              capabilities, allowedProjectIds, autoOpenProjectId, kioskMode, archiveMode)
+         VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`
       ).run(
         displayName,
         githubUsername,
@@ -124,6 +126,7 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
         JSON.stringify(pinAllowlist),
         pinAutoOpen,
         pinKiosk ? 1 : 0,
+        pinArchive ? 1 : 0,
       )
       member = db.prepare(
         `SELECT * FROM members WHERE id = ?`
@@ -169,22 +172,28 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
       // mergedAutoOpen value — kiosk without a project is meaningless.
       const existingKiosk = member.kioskMode === 1
       const mergedKiosk = (existingKiosk || pinKiosk) && mergedAutoOpen !== null
+      // Archive mode: OR-merge like kiosk so an archive PIN can promote an
+      // existing member into a read-only mirror, but a normal re-enroll never
+      // drops them out of it. No autoOpen precondition — it stands alone.
+      const mergedArchive = member.archiveMode === 1 || pinArchive
       db.prepare(
         `UPDATE members
             SET capabilities = ?, allowedProjectIds = ?, autoOpenProjectId = ?,
-                kioskMode = ?
+                kioskMode = ?, archiveMode = ?
           WHERE id = ?`
       ).run(
         JSON.stringify(mergedCaps),
         JSON.stringify(mergedAllowlist),
         mergedAutoOpen,
         mergedKiosk ? 1 : 0,
+        mergedArchive ? 1 : 0,
         member.id,
       )
       member.capabilities = JSON.stringify(mergedCaps)
       member.allowedProjectIds = JSON.stringify(mergedAllowlist)
       member.autoOpenProjectId = mergedAutoOpen
       member.kioskMode = mergedKiosk ? 1 : 0
+      member.archiveMode = mergedArchive ? 1 : 0
     }
 
     // Mint the device row + bearer token. Token is shown ONCE (in the
@@ -221,6 +230,7 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
         allowedProjectIds: parseAllowedProjectIds(member.allowedProjectIds),
         autoOpenProjectId: member.autoOpenProjectId,
         kioskMode: member.kioskMode === 1 && member.autoOpenProjectId !== null,
+        archiveMode: member.archiveMode === 1,
       },
       team: {
         name: team.name,

@@ -16,8 +16,9 @@ import {
   resetGlobalAdmin,
   migrateFromCachedBrowseConfig
 } from './global-admin'
-import { getRecentProjects, getCachedBrowseConfig, setProjectPinned, removeRecentProject, resetAllAppState } from './config'
+import { getRecentProjects, getCachedBrowseConfig, setProjectPinned, removeRecentProject, resetAllAppState, setArchiveRoot } from './config'
 import * as teamServer from './teamServer'
+import * as archive from './archive'
 import * as googleAuth from './google-auth'
 import * as driveProject from './drive-project'
 import * as driveOps from './drive'
@@ -785,6 +786,28 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   ipcMain.handle('team-admin-ui-url', () => teamServer.adminUiUrl())
   ipcMain.handle('team-ping-server', () => teamServer.pingTeamServer())
 
+  // ── Archive mode (read-only local mirror) ──
+  ipcMain.handle('archive-get-status', () => archive.getStatus())
+  ipcMain.handle('archive-sync-now', async () => {
+    await archive.syncNow()
+    return archive.getStatus()
+  })
+  ipcMain.handle('archive-choose-root', async () => {
+    const win = getMainWindow()
+    const opts: Electron.OpenDialogOptions = {
+      title: 'Choose archive folder',
+      properties: ['openDirectory', 'createDirectory'],
+    }
+    const result = win
+      ? await dialog.showOpenDialog(win, opts)
+      : await dialog.showOpenDialog(opts)
+    if (!result.canceled && result.filePaths[0]) {
+      await setArchiveRoot(result.filePaths[0])
+      await archive.restartWithRoot(getMainWindow)
+    }
+    return archive.getStatus()
+  })
+
   // ── Google Drive storage backend ──
   // Sign-in lives in the main process (loopback OAuth needs a localhost
   // server + the system browser). The renderer only ever sees status.
@@ -828,7 +851,19 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     if (win && !win.isDestroyed()) {
       win.webContents.send('team-snapshot', snapshot)
     }
+    // Flip the read-only mirror loop on/off as the device's archive flag
+    // changes (enroll, re-enroll, admin edit, or token revoke).
+    syncArchiveLoop(snapshot)
   })
+
+  // Catch the archive flag already present in the snapshot restored from
+  // disk at launch (onSnapshot only fires on a later refresh).
+  syncArchiveLoop(teamServer.currentSnapshot())
+
+  function syncArchiveLoop(snapshot: { me?: { archiveMode?: boolean } | null }): void {
+    if (snapshot?.me?.archiveMode) void archive.start(getMainWindow)
+    else archive.stop()
+  }
 }
 
 export { stopWatching, stopRestServer }

@@ -162,22 +162,27 @@ namespace FrameCAD.SolidWorksAddin
 
         public async Task<SyncResult> SyncAsync()
         {
-            // Long timeout — pulling a big LFS-tracked assembly from
-            // GitHub can take minutes on a slow link.
+            // Long timeout — pulling a big assembly down from the team's
+            // Shared Drive can take minutes on a slow link.
             var response = await PostJsonAsync("/api/sync", new { }, LongTimeout);
             var json = await response.Content.ReadAsStringAsync();
-            return JsonConvert.DeserializeObject<SyncResult>(json);
+            // Coalesce: an empty/non-JSON body (e.g. a bare HTTP 500 with no
+            // payload) deserializes to null, and the caller dereferences
+            // .Success — an NRE that masks the real server error.
+            return JsonConvert.DeserializeObject<SyncResult>(json)
+                ?? new SyncResult { Success = false, Error = $"Sync failed (HTTP {(int)response.StatusCode})" };
         }
 
         public async Task<PublishResult> PublishAsync(string message)
         {
-            // Long timeout — same reason as sync, but worse: publish
-            // pushes LFS objects to GitHub. A 10s ceiling would let
-            // the server happily complete while the add-in shows a
-            // misleading "Upload failed" toast.
+            // Long timeout — same reason as sync, but worse: publish uploads
+            // changed files to the Shared Drive. A 10s ceiling would let the
+            // server happily complete while the add-in shows a misleading
+            // "Upload failed" toast.
             var response = await PostJsonAsync("/api/publish", new { message }, LongTimeout);
             var json = await response.Content.ReadAsStringAsync();
-            return JsonConvert.DeserializeObject<PublishResult>(json);
+            return JsonConvert.DeserializeObject<PublishResult>(json)
+                ?? new PublishResult { Success = false, Error = $"Publish failed (HTTP {(int)response.StatusCode})" };
         }
 
         public async Task<CreatePartResult> CreateNewPartAsync(string folder = "", string description = null)

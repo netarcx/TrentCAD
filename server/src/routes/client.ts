@@ -563,6 +563,71 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     },
   )
 
+  // ── Part-number claim registry ──
+  // Atomic part-number allocation. The desktop computes numbers client-side
+  // (parts.json) but registers each scheme number here so two clients can't
+  // both take the same one — the UNIQUE(projectKey, partNumber) is the real
+  // guard, exactly like the locks table. ALWAYS 200 on a well-formed request:
+  // `{ ok:true }` when the number is now yours (or a same-file re-claim, which
+  // is idempotent), or `{ ok:false, reassigned:true, nextCounter }` on a
+  // genuine collision so the client can jump its local counter and re-claim.
+  // Non-200 is reserved for real errors (auth / access / archive / bad input),
+  // which the client treats as "offline" → keep a provisional number.
+  app.post<{
+    Params: { key: string }
+    Body: { partNumber?: string; scope?: string; counter?: number; filePath?: string }
+  }>(
+    '/api/projects/:key/part-numbers/claim',
+    async (req, reply) => {
+      const member = req.member!
+      if (member.archiveMode) return denyArchive(reply)
+      if (!keyAllowed(member, req.params.key)) return denyKey(reply)
+      const key = req.params.key
+      const partNumber = (req.body?.partNumber ?? '').trim()
+      if (!partNumber) return reply.code(400).send({ error: 'partNumber is required' })
+      const scope = (req.body?.scope ?? '').trim()
+      const counter = Number.isFinite(req.body?.counter) ? Math.trunc(req.body!.counter!) : 0
+      const filePath = (req.body?.filePath ?? '').trim() || null
+      const now = Date.now()
+      const db = getDb()
+
+      try {
+        db.prepare(
+          `INSERT INTO part_numbers (projectKey, partNumber, scope, counter, filePath, memberId, allocatedAt)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).run(key, partNumber, scope, counter, filePath, member.id, now)
+      } catch {
+        // UNIQUE(projectKey, partNumber) violation → already claimed.
+        const existing = db.prepare(
+          `SELECT partNumber, filePath FROM part_numbers WHERE projectKey = ? AND partNumber = ?`
+        ).get(key, partNumber) as { partNumber: string; filePath: string | null } | undefined
+        // Same file re-claiming its own number → idempotent success. Covers
+        // retries and reconciliation of a number already registered. (Drawings
+        // that share a part's number never reach here — the client doesn't
+        // claim for them; they inherit the linked part's claimed number.)
+        if (existing && filePath && existing.filePath === filePath) {
+          return { ok: true, reassigned: false, partNumber }
+        }
+        // Genuine collision: report the next free counter in this scope so the
+        // client formats the next candidate and re-claims, rather than probing.
+        const row = db.prepare(
+          `SELECT MAX(counter) AS maxc FROM part_numbers WHERE projectKey = ? AND scope = ?`
+        ).get(key, scope) as { maxc: number | null } | undefined
+        const nextCounter = (row?.maxc ?? counter) + 1
+        return { ok: false, reassigned: true, nextCounter }
+      }
+
+      const { logAudit } = await import('../db.js')
+      logAudit({
+        actorId: member.id,
+        actorLabel: member.displayName,
+        action: 'partnumber.claim',
+        target: `${key}:${partNumber}`,
+      })
+      return { ok: true, reassigned: false, partNumber }
+    },
+  )
+
   // ── Drive-backend publish history ──
   // Replaces `git log` for Drive projects (which have no commit graph).
   // Same free-text `:key` = Drive folder id as the locks routes above,

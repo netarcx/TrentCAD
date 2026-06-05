@@ -205,6 +205,24 @@ async function syncDriveCotsBestEffort(dir: string): Promise<void> {
   } catch { /* COTS is optional — never block project open on it */ }
 }
 
+// Finalise any part numbers that were assigned while the team server was
+// unreachable. No-op (and no network) when nothing is provisional. Runs in the
+// background on open/join so it never blocks the project view; a conflict
+// (a number a teammate took while we were offline) raises a desktop notice.
+function reconcilePartNumbersBestEffort(): void {
+  void partsOps.reconcilePartNumbers().then(r => {
+    if (r.conflicts.length > 0 && Notification.isSupported()) {
+      try {
+        new Notification({
+          title: 'FrameCAD — Part number conflict',
+          body: `${r.conflicts.length} part number${r.conflicts.length === 1 ? '' : 's'} created offline ${r.conflicts.length === 1 ? 'was' : 'were'} already taken by a teammate. Open Parts to rename and resolve.`,
+          silent: false,
+        }).show()
+      } catch { /* not all platforms support notifications */ }
+    }
+  }).catch(() => { /* best effort */ })
+}
+
 export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   let currentProject: ProjectConfig | null = null
 
@@ -233,6 +251,14 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
       pathsOps.setProjectSubpath(cfg.projectSubpath ?? '')
       pathsOps.setCotsSubpath(cfg.cotsSubpath ?? '')
     } catch { /* best effort — defaults to no subpath */ }
+    // Auto-assign part numbers to any unnumbered SolidWorks files on disk, and
+    // record renames/deletions as tombstones — so files saved directly in
+    // SolidWorks (not just those made via "+ Part / + Assembly") get a number.
+    // Local-only + best-effort: a failure must never block opening the project,
+    // and an imported project (admin flag) preserves its existing numbers. The
+    // updated parts.json rides to the team on the next publish.
+    try { await partsOps.syncManifest() } catch { /* best effort */ }
+    reconcilePartNumbersBestEffort()
     const win = getMainWindow()
     if (win) startWatching(dirPath, win)
     void syncDriveCotsBestEffort(dirPath)
@@ -838,6 +864,10 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     projectPaths.setProjectPath(config.path)
     currentProject = config
     setRestProject(currentProject)
+    // Number any unnumbered SolidWorks files that came down with the join
+    // (best-effort, local-only; imported projects keep their existing numbers).
+    try { await partsOps.syncManifest() } catch { /* best effort */ }
+    reconcilePartNumbersBestEffort()
     if (win) startWatching(config.path, win)
     void syncDriveCotsBestEffort(config.path)
     return config

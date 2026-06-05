@@ -166,6 +166,15 @@ export interface PartEntry {
   type: PartType
   description?: string
   linkedTo?: string
+  /**
+   * This scheme number was assigned without a confirmed server claim — the
+   * team server was unreachable when the part was created or auto-numbered.
+   * A reconcile pass re-claims it on the next server contact; if the number
+   * had already been taken, the server reassigns it (and, for a file that's
+   * literally named by its number, the part is flagged for a rename). Cleared
+   * once the number is confirmed. Absent/undefined = a confirmed number.
+   */
+  provisional?: boolean
 }
 
 export interface PartsManifest {
@@ -237,6 +246,16 @@ export interface AdminConfig {
   /** Per-project default part-number prefix (e.g. "26-2129") */
   defaultPartPrefix?: string
   isCotsProject?: boolean
+  /**
+   * Mark THIS project as imported — its files already have part numbers (from
+   * a previous season, another team, or a non-FrameCAD source) that must be
+   * preserved. Auto-assign then adopts each file using its existing filename
+   * as the part number instead of imposing the YY-prefix scheme, so importing
+   * never renumbers anyone's existing files. Equivalent to forcing legacy mode
+   * for the project. Default (undefined) = a normal FrameCAD project that
+   * auto-numbers new files with the scheme.
+   */
+  isImportedProject?: boolean
   /** Suppress the project-totals mass rollup (status bar, BOM summary).
    *  Useful for projects without a meaningful weight target. Default
    *  (undefined) = shown. */

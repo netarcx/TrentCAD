@@ -582,6 +582,20 @@ export default function App() {
   // Parts data for the sidebar badge + Parts/Approvals views
   const parts = useParts({ enabled: !!project })
 
+  // Flush any queued Parts-Manager edits (1.2s debounce in useParts) to the
+  // main process BEFORE syncing or publishing. Without this, a metadata edit
+  // made within the debounce window of clicking Sync/Publish never reaches
+  // parts-meta.json in time and silently ships in a *later* publish.
+  const syncWithFlush = useCallback(async () => {
+    await parts.flushNow()
+    return sync()
+  }, [parts.flushNow, sync])
+
+  const publishWithFlush = useCallback(async (message: string) => {
+    await parts.flushNow()
+    return publish(message)
+  }, [parts.flushNow, publish])
+
   const stats = useMemo(() => ({
     modified: countByState(files, 'modified'),
     untracked: countByState(files, 'untracked'),
@@ -1025,8 +1039,8 @@ export default function App() {
       </div>
 
       <Toolbar
-        onSync={sync}
-        onPublish={publish}
+        onSync={syncWithFlush}
+        onPublish={publishWithFlush}
         onNewPart={createNewPart}
         onNewAssembly={createNewAssembly}
         onNewSubsystem={createSubsystem}

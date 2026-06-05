@@ -19,6 +19,13 @@ export interface AdminConfig {
    */
   isCotsProject?: boolean
   /**
+   * Mark THIS project as imported — preserve its existing part numbers. Auto-
+   * assign adopts each file by its filename instead of imposing the YY-prefix
+   * scheme (equivalent to forcing legacy mode), so importing a previous
+   * season / another team's project never renumbers their files.
+   */
+  isImportedProject?: boolean
+  /**
    * Monorepo-style subpaths (full doc on the shared AdminConfig). Persisted
    * here so loadAdminConfig() can seed the path-translation cache on project
    * open — otherwise a configured subpath isn't honoured until the next

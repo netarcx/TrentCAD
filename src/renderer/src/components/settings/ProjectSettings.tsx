@@ -110,6 +110,22 @@ export default function ProjectSettings() {
         <label className="admin-checkbox-row">
           <input
             type="checkbox"
+            checked={!!config.isImportedProject}
+            onChange={e => set('isImportedProject', e.target.checked || undefined)}
+          />
+          <span>Imported project (keep existing part numbers)</span>
+        </label>
+        <p className="admin-hint">
+          Turn this on for a project whose files already have part numbers — a
+          previous season, another team, or a non-FrameCAD source. FrameCAD then
+          adopts each file by its existing filename and <strong>never
+          auto-renumbers it</strong>, so importing can't change the team's
+          numbers. New files still get a name-based number rather than the
+          scheme. Takes effect on the next open / sync.
+        </p>
+        <label className="admin-checkbox-row">
+          <input
+            type="checkbox"
             checked={legacyMode}
             onChange={e => handleToggleLegacy(e.target.checked)}
             disabled={legacyToggling}

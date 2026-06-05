@@ -58,11 +58,62 @@ interface MemberRow {
   archiveMode: number
 }
 
+// ── PIN brute-force throttle (per client IP) ──────────────────────────────
+// Enrollment is the ONLY unauthenticated way to obtain a bearer token, and a
+// 6-char PIN (32^6 ≈ 1e9 keyspace) is brute-forceable on an internet-exposed
+// server without a throttle. `/api/login` has a per-member lockout, but enroll
+// has no member yet — the PIN *is* the identity — so we throttle per source IP
+// instead. We track FAILED guesses in memory and lock an IP out for a cooldown
+// once it crosses the threshold within a rolling window; a successful enroll
+// resets that IP's counter. Thresholds are deliberately generous so a whole
+// team behind one NATed school IP fat-fingering PINs won't lock out, yet brute
+// force is cut to a few thousand guesses/day (millennia to exhaust the space).
+const ENROLL_WINDOW_MS = 15 * 60 * 1000
+const ENROLL_MAX_FAILS = 20
+const ENROLL_LOCK_MS = 15 * 60 * 1000
+const enrollAttempts = new Map<string, { fails: number; windowStart: number; lockedUntil: number }>()
+
+function enrollLockRemainingMs(ip: string, now: number): number {
+  const rec = enrollAttempts.get(ip)
+  return rec && rec.lockedUntil > now ? rec.lockedUntil - now : 0
+}
+
+function recordEnrollFailure(ip: string, now: number): void {
+  let rec = enrollAttempts.get(ip)
+  if (!rec || now - rec.windowStart > ENROLL_WINDOW_MS) {
+    rec = { fails: 0, windowStart: now, lockedUntil: 0 }
+  }
+  rec.fails += 1
+  if (rec.fails >= ENROLL_MAX_FAILS) {
+    rec.lockedUntil = now + ENROLL_LOCK_MS
+    rec.fails = 0
+    rec.windowStart = now
+  }
+  enrollAttempts.set(ip, rec)
+  // Opportunistic prune so one-off scanner IPs can't grow the map unbounded.
+  if (enrollAttempts.size > 5000) {
+    for (const [k, v] of enrollAttempts) {
+      if (v.lockedUntil <= now && now - v.windowStart > ENROLL_WINDOW_MS) enrollAttempts.delete(k)
+    }
+  }
+}
+
 export async function registerPublicRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/health', async () => ({ status: 'ok', name: 'framecad-server' }))
 
   app.post<{ Body: EnrollBody }>('/api/enroll', async (req, reply) => {
     const body = req.body ?? {}
+    const now = Date.now()
+    const clientIp = req.ip || 'unknown'
+
+    const lockMs = enrollLockRemainingMs(clientIp, now)
+    if (lockMs > 0) {
+      const minutes = Math.ceil(lockMs / 60000)
+      return reply.code(429).send({
+        error: `Too many failed enrollment attempts. Try again in about ${minutes} minute${minutes === 1 ? '' : 's'}.`,
+      })
+    }
+
     const pin = (body.pin ?? '').trim().toUpperCase()
     if (!pin) {
       return reply.code(400).send({ error: 'Missing PIN' })
@@ -71,11 +122,13 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
     // Burn the PIN atomically. Returns null on unknown / consumed / expired.
     const pinRow = consumePin(pin)
     if (!pinRow) {
+      recordEnrollFailure(clientIp, now)
       return reply.code(401).send({ error: 'PIN is invalid, has no remaining uses, or has expired' })
     }
+    // Valid PIN → this IP isn't brute-forcing; clear its failure record.
+    enrollAttempts.delete(clientIp)
 
     const db = getDb()
-    const now = Date.now()
 
     // Resolve display name + GitHub username. Caller-supplied values win,
     // PIN-baked-in values are fallbacks. If neither, we use a placeholder

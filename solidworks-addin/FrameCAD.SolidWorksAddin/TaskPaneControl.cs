@@ -418,7 +418,11 @@ namespace FrameCAD.SolidWorksAddin
             _cmbMfgMethod.DrawItem += ComboDrawItem;
             // "(not set)" sentinel maps to a null write so the user can
             // clear the field from the add-in too.
-            _cmbMfgMethod.Items.AddRange(new object[] { "(not set)", "print", "cnc", "manual", "other" });
+            // Keep this list in lock-step with rest.ts `validMethods`
+            // (['print','cnc','manual','purchase','other']). Omitting a value
+            // makes a part with that method display as "(not set)" and lets a
+            // stray combo change silently overwrite it.
+            _cmbMfgMethod.Items.AddRange(new object[] { "(not set)", "print", "cnc", "manual", "purchase", "other" });
             _cmbMfgMethod.SelectedIndexChanged += async (s, e) =>
             {
                 if (_suppressMethodChange) return;

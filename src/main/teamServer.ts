@@ -493,6 +493,25 @@ export async function releaseDriveLock(
   )
 }
 
+/**
+ * Claim a part number from the team server so two clients can't take the
+ * same one. Returns `{ ok:true }` when the number is now reserved for this
+ * file, or `{ ok:false, reassigned:true, nextCounter }` on a collision so the
+ * caller can format the next candidate and re-claim. THROWS when not enrolled
+ * or the server is unreachable — the caller treats that as "work offline" and
+ * keeps a provisional number to reconcile later.
+ */
+export async function claimPartNumber(
+  projectKey: string,
+  body: { partNumber: string; scope: string; counter: number; filePath?: string },
+): Promise<{ ok: boolean; reassigned: boolean; nextCounter?: number }> {
+  if (!state.token) throw new Error('Not enrolled with a team server')
+  return await fetchTeamApi(
+    `/api/projects/${encodeURIComponent(projectKey)}/part-numbers/claim`,
+    { method: 'POST', body, timeoutMs: 6000 },
+  )
+}
+
 // --- Drive publish history (replaces `git log` for Drive projects) ---
 
 /** One publish event from the team server, shaped like a HistoryEntry. */

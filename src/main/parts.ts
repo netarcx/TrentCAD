@@ -19,6 +19,19 @@ async function isCotsProject(): Promise<boolean> {
     return false
   }
 }
+
+async function isImportedProject(): Promise<boolean> {
+  // As above. An imported project preserves its existing part numbers, so
+  // auto-assign runs in legacy (filename-as-number) mode and never imposes
+  // the YY-prefix scheme on files that already carry numbers.
+  try {
+    const adminFile = path.join(getProjectPath(), '.framecad', 'admin.json')
+    const raw = await fs.readFile(adminFile, 'utf-8')
+    return JSON.parse(raw).isImportedProject === true
+  } catch {
+    return false
+  }
+}
 function defaultPrefix(): string {
   const yy = new Date().getFullYear().toString().slice(-2)
   // Build-time default first (forks set FRAMECAD_DEFAULT_PROJECT_PREFIX).
@@ -32,6 +45,30 @@ function defaultPrefix(): string {
 }
 
 let manifestLock: Promise<void> = Promise.resolve()
+
+/**
+ * Serialise a parts.json read-modify-write against every other one. ALL
+ * mutators (create part/assembly, syncManifest, reconcile — from both the IPC
+ * renderer path AND the localhost REST add-in path, since they share this one
+ * module) must go through here, or two concurrent pull→modify→push cycles can
+ * clobber each other (each writes the whole file via atomic temp+rename, so the
+ * loser's entry — including a just-created part — silently vanishes).
+ */
+function withManifestLock<T>(fn: () => Promise<T>): Promise<T> {
+  const p = manifestLock.then(fn)
+  manifestLock = p.then(() => {}, () => {})
+  return p
+}
+
+/** True if any entry (optionally other than `exceptPath`) already carries this
+ *  part number — so a server-suggested counter that's free in the registry but
+ *  already used in this project's parts.json can't create a duplicate. */
+function isNumberTaken(manifest: PartsManifest, partNumber: string, exceptPath?: string): boolean {
+  for (const [p, e] of Object.entries(manifest.entries)) {
+    if (p !== exceptPath && e.partNumber === partNumber) return true
+  }
+  return false
+}
 
 function emptyManifest(): PartsManifest {
   return {
@@ -293,7 +330,11 @@ export function assignPartNumber(manifest: PartsManifest, relPath: string): Part
         const entry: PartEntry = {
           partNumber: asmNumber,
           assignedAt: new Date().toISOString(),
-          type: 'assembly'
+          type: 'assembly',
+          // Auto-numbered locally (this is the sync/scan path, which can't make
+          // a server round-trip). Mark provisional so reconcilePartNumbers
+          // registers it with the team server on the next online open.
+          provisional: true
         }
         manifest.entries[relPath] = entry
         return entry
@@ -307,7 +348,10 @@ export function assignPartNumber(manifest: PartsManifest, relPath: string): Part
   const entry: PartEntry = {
     partNumber,
     assignedAt: new Date().toISOString(),
-    type
+    type,
+    // Auto-numbered locally — see the bare-assembly branch above. Reconciled
+    // (registered, or safely re-labelled on a clash) on the next online open.
+    provisional: true
   }
   manifest.entries[relPath] = entry
   return entry
@@ -389,12 +433,20 @@ async function syncManifestImpl(): Promise<PartsManifest> {
   const swFiles = await collectSolidWorksFiles(projectDir, projectDir)
   const currentPaths = new Set(swFiles)
 
-  // Legacy-mode auto-detect: this is a first-time open if the manifest
-  // has zero entries yet. If there are SolidWorks files on disk anyway,
-  // the project pre-dates FrameCAD and the team already has filenames
-  // they care about — switch to legacy mode so we don't rename anything.
-  // Explicit `legacyMode: false` (toggled by the user later) wins.
-  if (manifest.legacyMode === undefined && Object.keys(manifest.entries).length === 0 && swFiles.length > 0) {
+  // Imported project (explicit admin flag): the team brought in files that
+  // already have part numbers (a previous season, another team, a non-FrameCAD
+  // source). Force legacy mode so auto-assign adopts each file by its filename
+  // and NEVER imposes the scheme — even when the manifest already has entries
+  // (which the first-open auto-detect below would miss). This is the
+  // user-declared "don't change my part numbers" switch.
+  if (await isImportedProject()) {
+    manifest.legacyMode = true
+  } else if (manifest.legacyMode === undefined && Object.keys(manifest.entries).length === 0 && swFiles.length > 0) {
+    // Legacy-mode auto-detect: this is a first-time open if the manifest
+    // has zero entries yet. If there are SolidWorks files on disk anyway,
+    // the project pre-dates FrameCAD and the team already has filenames
+    // they care about — switch to legacy mode so we don't rename anything.
+    // Explicit `legacyMode: false` (toggled by the user later) wins.
     manifest.legacyMode = true
   }
 
@@ -447,7 +499,219 @@ export function syncManifest(): Promise<PartsManifest> {
   return p
 }
 
-export async function createNewPart(
+/** The open project's Drive folder id — the key the team server coordinates
+ *  part numbers (and locks) under. Read straight from drive-manifest.json (the
+ *  same import-free pattern as isCotsProject) to avoid pulling the Electron-
+ *  dependent drive layer into this module. Null when there's no Drive project
+ *  (e.g. unit tests) → callers fall back to provisional numbers. */
+async function projectKey(): Promise<string | null> {
+  try {
+    const f = path.join(getProjectPath(), '.framecad', 'drive-manifest.json')
+    const id = JSON.parse(await fs.readFile(f, 'utf-8')).projectFolderId
+    return typeof id === 'string' && id ? id : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Reserve a scheme part number via the team server so two clients can't take
+ * the same one. The client owns all formatting: `build(counter)` returns the
+ * full number + the file path it would own for a given counter. We claim;
+ * on a server-reported collision we jump to the next free counter and re-claim;
+ * when the server is unreachable (or there's no project) we fall back to the
+ * locally-computed number marked `provisional`, to be reconciled later.
+ *
+ * Returns the final number + path + the counter actually used (so the caller
+ * can advance its local nextCounters) + whether it's provisional.
+ */
+async function claimNumber(
+  scope: string,
+  initialCounter: number,
+  build: (counter: number) => { partNumber: string; filePath: string },
+  isTaken?: (partNumber: string) => boolean,
+): Promise<{ partNumber: string; filePath: string; counter: number; provisional: boolean }> {
+  const key = await projectKey()
+  // Advance past any counter whose formatted number is ALREADY used in this
+  // project's parts.json. The server registry only knows CLAIMED numbers, so on
+  // a team that adopted it mid-season it can hand back a counter that's free in
+  // the registry but already taken locally — accepting it would duplicate a
+  // number. This guard (used for both the offline fallback and every claim
+  // candidate) keeps the result unique locally too.
+  let c = initialCounter
+  const bump = (n: number): number => {
+    let v = n
+    while (isTaken && isTaken(build(v).partNumber)) v++
+    return v
+  }
+  c = bump(c)
+  if (!key) {
+    const b = build(c)
+    return { ...b, counter: c, provisional: true }
+  }
+  const team = await import('./teamServer')
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const b = build(c)
+    try {
+      const res = await team.claimPartNumber(key, {
+        partNumber: b.partNumber, scope, counter: c, filePath: b.filePath,
+      })
+      if (res.ok) return { ...b, counter: c, provisional: false }
+      // Collision — jump to the server's next free counter (or just bump),
+      // then skip past anything already used locally.
+      c = bump(typeof res.nextCounter === 'number' && res.nextCounter > c ? res.nextCounter : c + 1)
+    } catch {
+      // Server unreachable / not enrolled → keep working offline with the
+      // current candidate; the reconcile pass finalises it on reconnect.
+      const b2 = build(c)
+      return { ...b2, counter: c, provisional: true }
+    }
+  }
+  // Pathological (200 consecutive collisions) — fall back to provisional.
+  const bf = build(c)
+  return { ...bf, counter: c, provisional: true }
+}
+
+/**
+ * Recover the claim coordinates (server scope + numeric counter + a formatter)
+ * from a scheme part number, so a provisional entry can be re-claimed. Returns
+ * null for legacy/imported (filename-based) numbers — those are unique by
+ * filename and never coordinated through the server.
+ */
+function deriveClaimCoords(
+  manifest: PartsManifest,
+  relPath: string,
+  partNumber: string,
+): { scope: string; counter: number; format: (c: number) => string } | null {
+  const prefix = manifest.prefix
+  if (!partNumber.startsWith(prefix + '-')) return null
+  const rest = partNumber.slice(prefix.length + 1)
+  const dir = getScope(relPath)
+  let m = rest.match(/^(\d{2})-(\d{3})$/)        // prefix-XX-YYY (scoped part)
+  if (m) {
+    const xx = m[1]
+    const topLevel = topLevelSegment(dir)
+    return { scope: `part:${topLevel}`, counter: parseInt(m[2], 10), format: c => `${prefix}-${xx}-${pad3(c)}` }
+  }
+  m = rest.match(/^(\d{3})$/)                    // prefix-YYY (root part)
+  if (m) return { scope: 'part:', counter: parseInt(m[1], 10), format: c => `${prefix}-${pad3(c)}` }
+  m = rest.match(/^(\d{2})$/)                    // prefix-XX (bare top-level assembly)
+  if (m) return { scope: 'asm:', counter: parseInt(m[1], 10), format: c => `${prefix}-${pad2(c)}` }
+  return null
+}
+
+/**
+ * Finalise part numbers that were assigned while the team server was
+ * unreachable (the `provisional` flag). For each, re-claim its number now:
+ *  - free → confirmed, the flag is cleared;
+ *  - already taken (a teammate grabbed it while we were offline) → reported as
+ *    a conflict with a suggested free number. We do NOT auto-rename the file
+ *    (renaming a file that's named by its number can break SolidWorks
+ *    references) — the user resolves it in SolidWorks and FrameCAD's normal
+ *    rename-tracking takes over.
+ * No-ops (and makes no network call) when there are no provisional entries.
+ */
+export function reconcilePartNumbers(): Promise<{
+  reconciled: number
+  conflicts: Array<{ path: string; current: string; suggested: string }>
+}> {
+  const p = manifestLock.then(async () => {
+    const empty = { reconciled: 0, conflicts: [] as Array<{ path: string; current: string; suggested: string }> }
+    const key = await projectKey()
+    if (!key) return empty
+    let manifest = await loadManifest()
+    const localProvisional = Object.entries(manifest.entries).filter(([, e]) => e.provisional)
+    if (localProvisional.length === 0) return empty
+    // Pull the team's latest so we reconcile against current numbers. The pull
+    // OVERWRITES local parts.json, so re-attach any provisional entry it drops:
+    // an offline-created part lives ONLY in our local copy until reconciled —
+    // losing it here would silently discard the user's offline work.
+    try {
+      await pullSharedFile(MANIFEST_FILE)
+      manifest = await loadManifest()
+    } catch { /* keep our local copy */ }
+    for (const [relPath, entry] of localProvisional) {
+      if (!manifest.entries[relPath]) manifest.entries[relPath] = entry
+    }
+
+    const team = await import('./teamServer')
+    let changed = false
+    let reconciled = 0
+    const conflicts: Array<{ path: string; current: string; suggested: string }> = []
+    for (const [relPath, entry] of Object.entries(manifest.entries)) {
+      if (!entry.provisional) continue
+      const coords = deriveClaimCoords(manifest, relPath, entry.partNumber)
+      if (!coords) { delete entry.provisional; changed = true; continue }
+      // A file literally NAMED by its number (a "+ Part" file) can't be
+      // renumbered without renaming the file — a ref-break risk — so a clash
+      // is surfaced for the user to fix in SolidWorks. A number that's only a
+      // metadata LABEL on an arbitrarily-named (auto-numbered) file can be
+      // safely re-labelled in place. That distinction drives clash handling.
+      const namedByNumber = path.basename(relPath, path.extname(relPath)) === entry.partNumber
+      // Skip any counter whose number is already used by ANOTHER local entry —
+      // the server registry can lag parts.json (mid-season adoption), so a
+      // suggested counter free in the registry may already be taken here.
+      const localFree = (n: number): number => {
+        let v = n
+        while (isNumberTaken(manifest, coords.format(v), relPath)) v++
+        return v
+      }
+      let candidate = entry.partNumber // claim its OWN number first
+      let c = coords.counter
+      let offline = false
+      for (let attempt = 0; attempt < 200; attempt++) {
+        let res: { ok: boolean; reassigned: boolean; nextCounter?: number }
+        try {
+          res = await team.claimPartNumber(key, { partNumber: candidate, scope: coords.scope, counter: c, filePath: relPath })
+        } catch {
+          offline = true
+          break
+        }
+        if (res.ok) {
+          if (candidate !== entry.partNumber) {
+            entry.partNumber = candidate // relabelled
+            // Drawings that inherited the old number by value follow the relabel.
+            for (const e of Object.values(manifest.entries)) {
+              if (e.type === 'drawing' && e.linkedTo === relPath) e.partNumber = candidate
+            }
+          }
+          delete entry.provisional
+          reconciled++
+          changed = true
+          break
+        }
+        // Collision.
+        if (namedByNumber) {
+          // Can't safely relabel a file named by its number — suggest the next
+          // number free both in the registry and locally, for a manual fix.
+          conflicts.push({ path: relPath, current: entry.partNumber, suggested: coords.format(localFree(res.nextCounter ?? c + 1)) })
+          break // keep provisional until the user resolves it
+        }
+        c = localFree(typeof res.nextCounter === 'number' && res.nextCounter > c ? res.nextCounter : c + 1)
+        candidate = coords.format(c)
+      }
+      if (offline) break // server went away — stop; we'll reconcile again later
+    }
+    if (changed) {
+      await saveManifest(manifest)
+      try { await pushSharedFile(MANIFEST_FILE, 'reconcile part numbers') } catch { /* best effort */ }
+    }
+    return { reconciled, conflicts }
+  })
+  manifestLock = p.then(() => {}, () => {})
+  return p
+}
+
+export function createNewPart(
+  folder: string,
+  description?: string
+): Promise<{ partNumber: string; filePath: string }> {
+  // Serialise against syncManifest / reconcile / the REST add-in path so two
+  // concurrent parts.json writers can't clobber each other.
+  return withManifestLock(() => createNewPartImpl(folder, description))
+}
+
+async function createNewPartImpl(
   folder: string,
   description?: string
 ): Promise<{ partNumber: string; filePath: string }> {
@@ -459,24 +723,37 @@ export async function createNewPart(
   await pullSharedFile(MANIFEST_FILE)
 
   const projectDir = getProjectPath()
-  const snapshot = await fs.readFile(path.join(projectDir, MANIFEST_FILE), 'utf-8').catch(() => null)
   const manifest = await loadManifest()
 
-  let partNumber: string
+  // Compute the next number locally, then CLAIM it from the team server so a
+  // teammate can't take the same one. `build(c)` formats the number + the file
+  // path it would own; claimNumber bumps the counter on a server collision and
+  // falls back to a provisional number when offline.
   const topLevel = topLevelSegment(folder)
+  let scope: string
+  let initialCounter: number
+  let build: (c: number) => { partNumber: string; filePath: string }
   if (topLevel === '') {
-    const counter = nextCounterFor(manifest, '', '')
-    partNumber = `${manifest.prefix}-${pad3(counter)}`
-    manifest.nextCounters[''] = counter + 1
+    scope = 'part:'
+    initialCounter = nextCounterFor(manifest, '', '')
+    build = c => {
+      const pn = `${manifest.prefix}-${pad3(c)}`
+      return { partNumber: pn, filePath: folder ? `${folder}/${pn}.sldprt` : `${pn}.sldprt` }
+    }
   } else {
     const topNumber = ensureTopLevelFolderNumber(manifest, topLevel)
-    const counter = nextCounterFor(manifest, topLevel, topNumber)
-    partNumber = `${manifest.prefix}-${topNumber}-${pad3(counter)}`
-    manifest.nextCounters[topLevel] = counter + 1
+    scope = `part:${topLevel}`
+    initialCounter = nextCounterFor(manifest, topLevel, topNumber)
+    build = c => {
+      const pn = `${manifest.prefix}-${topNumber}-${pad3(c)}`
+      return { partNumber: pn, filePath: `${folder}/${pn}.sldprt` }
+    }
   }
 
-  const fileName = `${partNumber}.sldprt`
-  const relPath = folder ? `${folder}/${fileName}` : fileName
+  const claimed = await claimNumber(scope, initialCounter, build, pn => isNumberTaken(manifest, pn))
+  const partNumber = claimed.partNumber
+  const relPath = claimed.filePath
+  manifest.nextCounters[topLevel] = claimed.counter + 1
   const fullPath = path.join(projectDir, relPath)
 
   // Ensure parent folder exists so the user can save there from SolidWorks.
@@ -488,24 +765,37 @@ export async function createNewPart(
     partNumber,
     assignedAt: new Date().toISOString(),
     type: 'part',
-    description
+    description,
+    ...(claimed.provisional ? { provisional: true } : {})
   }
 
   await saveManifest(manifest)
-  try {
-    await pushSharedFile(MANIFEST_FILE, partNumber)
-  } catch (err) {
-    // Push failed — restore the previous manifest so we don't leave a
-    // ghost reservation that other team members don't know about
-    if (snapshot !== null) {
-      await fs.writeFile(path.join(projectDir, MANIFEST_FILE), snapshot)
+  // A server-confirmed number is propagated to the team immediately. If that
+  // push fails — or the number is provisional because we were offline — keep
+  // the entry locally and mark it provisional so the reconcile pass re-claims
+  // and re-pushes it on reconnect. We DON'T roll back: the number is already
+  // claimed server-side (or will be on reconcile), so it's never a silent
+  // ghost reservation, and the user gets a usable part either way.
+  if (!claimed.provisional) {
+    try {
+      await pushSharedFile(MANIFEST_FILE, partNumber)
+    } catch {
+      manifest.entries[relPath].provisional = true
+      await saveManifest(manifest)
     }
-    throw err
   }
   return { partNumber, filePath: relPath }
 }
 
-export async function createNewAssembly(
+export function createNewAssembly(
+  parentFolder: string,
+  name: string,
+  description?: string
+): Promise<{ partNumber: string; filePath: string }> {
+  return withManifestLock(() => createNewAssemblyImpl(parentFolder, name, description))
+}
+
+async function createNewAssemblyImpl(
   parentFolder: string,
   name: string,
   description?: string
@@ -524,29 +814,53 @@ export async function createNewAssembly(
   await pullSharedFile(MANIFEST_FILE)
 
   const projectDir = getProjectPath()
-  const snapshot = await fs.readFile(path.join(projectDir, MANIFEST_FILE), 'utf-8').catch(() => null)
   const manifest = await loadManifest()
 
   const folderPath = parentFolder ? `${parentFolder}/${name}` : name
   const topLevel = topLevelSegment(folderPath)
 
+  // Compute the number locally, then CLAIM it from the team server (bump on a
+  // collision, provisional when offline) — see createNewPart.
   let partNumber: string
+  let relPath: string
+  let provisional = false
   if (parentFolder === '') {
-    // Creating a brand-new top-level subsystem folder — gets the bare
-    // `prefix-XX` assembly number
-    const topNumber = ensureTopLevelFolderNumber(manifest, folderPath)
-    partNumber = `${manifest.prefix}-${topNumber}`
+    const existing = manifest.assemblies[folderPath]
+    if (existing) {
+      // The top-level folder ALREADY has a number (its parts use it) — reuse it
+      // verbatim. We must NOT re-claim/bump it: a collision would reassign the
+      // folder's XX and desync every part already numbered under it.
+      partNumber = `${manifest.prefix}-${existing}`
+      relPath = `${folderPath}/${partNumber}.sldasm`
+    } else {
+      // Brand-new top-level subsystem folder → claim the bare `prefix-XX`
+      // number (scope "asm:") so two clients can't both grab the same XX.
+      const initialXX = manifest.nextAssemblyCounters[''] || 1
+      const claimed = await claimNumber('asm:', initialXX, c => {
+        const pn = `${manifest.prefix}-${pad2(c)}`
+        return { partNumber: pn, filePath: `${folderPath}/${pn}.sldasm` }
+      }, pn => isNumberTaken(manifest, pn))
+      partNumber = claimed.partNumber
+      relPath = claimed.filePath
+      provisional = claimed.provisional
+      manifest.assemblies[folderPath] = pad2(claimed.counter)
+      manifest.nextAssemblyCounters[''] = Math.max(manifest.nextAssemblyCounters[''] || 1, claimed.counter + 1)
+    }
   } else {
-    // Nested assembly: shares its top-level folder's number and gets a
-    // regular 3-digit counter, same as a part would
+    // Nested assembly: shares its top-level folder's number and gets a regular
+    // 3-digit counter, same as a part would.
     const topNumber = ensureTopLevelFolderNumber(manifest, topLevel)
-    const counter = nextCounterFor(manifest, topLevel, topNumber)
-    partNumber = `${manifest.prefix}-${topNumber}-${pad3(counter)}`
-    manifest.nextCounters[topLevel] = counter + 1
+    const initialCounter = nextCounterFor(manifest, topLevel, topNumber)
+    const claimed = await claimNumber(`part:${topLevel}`, initialCounter, c => {
+      const pn = `${manifest.prefix}-${topNumber}-${pad3(c)}`
+      return { partNumber: pn, filePath: `${folderPath}/${pn}.sldasm` }
+    }, pn => isNumberTaken(manifest, pn))
+    partNumber = claimed.partNumber
+    relPath = claimed.filePath
+    provisional = claimed.provisional
+    manifest.nextCounters[topLevel] = claimed.counter + 1
   }
 
-  const fileName = `${partNumber}.sldasm`
-  const relPath = `${folderPath}/${fileName}`
   const fullPath = path.join(projectDir, relPath)
   // Final guard: a `..`-laden parentFolder must not let the assembly escape
   // the project directory.
@@ -564,17 +878,20 @@ export async function createNewAssembly(
     partNumber,
     assignedAt: new Date().toISOString(),
     type: 'assembly',
-    description
+    description,
+    ...(provisional ? { provisional: true } : {})
   }
 
   await saveManifest(manifest)
-  try {
-    await pushSharedFile(MANIFEST_FILE, partNumber)
-  } catch (err) {
-    if (snapshot !== null) {
-      await fs.writeFile(path.join(projectDir, MANIFEST_FILE), snapshot)
+  // See createNewPart: confirmed → push now; provisional/push-failure → keep the
+  // entry marked provisional for the reconcile pass. No rollback.
+  if (!provisional) {
+    try {
+      await pushSharedFile(MANIFEST_FILE, partNumber)
+    } catch {
+      manifest.entries[relPath].provisional = true
+      await saveManifest(manifest)
     }
-    throw err
   }
   return { partNumber, filePath: relPath }
 }

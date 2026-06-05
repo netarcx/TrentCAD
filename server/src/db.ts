@@ -429,6 +429,33 @@ const MIGRATIONS: string[] = [
   ALTER TABLE pins    ADD COLUMN archiveMode INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE members ADD COLUMN archiveMode INTEGER NOT NULL DEFAULT 0;
   `,
+  // v20: server-coordinated part-number claim registry. Part numbers used to
+  // be computed purely client-side in parts.json, so two desktops could pick
+  // the same "next" number for two different files and collide — the loser's
+  // reservation was silently overwritten on publish. The desktop now CLAIMS
+  // each scheme number here; UNIQUE(projectKey, partNumber) makes allocation
+  // atomic the same way the locks table makes check-out atomic. The client
+  // keeps ALL number FORMATTING — the server is a pure uniqueness oracle. On a
+  // collision it answers with the next free `counter` in that `scope` (the
+  // client's namespace string, e.g. "part:Drivetrain" or "asm:") so the client
+  // can jump + re-claim instead of probing one at a time. `projectKey` = Drive
+  // folder id (same free-text key as locks/publish_log). ON DELETE SET NULL
+  // keeps a number claimed even if the claiming member is later removed — a
+  // number must never be reissued.
+  `
+  CREATE TABLE part_numbers (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    projectKey  TEXT NOT NULL,
+    partNumber  TEXT NOT NULL,
+    scope       TEXT NOT NULL DEFAULT '',
+    counter     INTEGER NOT NULL DEFAULT 0,
+    filePath    TEXT,
+    memberId    INTEGER REFERENCES members(id) ON DELETE SET NULL,
+    allocatedAt INTEGER NOT NULL,
+    UNIQUE(projectKey, partNumber)
+  );
+  CREATE INDEX part_numbers_scope_idx ON part_numbers(projectKey, scope);
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

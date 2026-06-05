@@ -44,8 +44,13 @@ export default function Wizard() {
   const [projectPrefix, setProjectPrefix] = useState('')
 
   const [projectName, setProjectName] = useState('')
-  const [projectRepoUrl, setProjectRepoUrl] = useState('')
+  const [projectDriveFolderId, setProjectDriveFolderId] = useState('')
+  const [projectSharedDriveId, setProjectSharedDriveId] = useState('')
   const [projectQuotaGb, setProjectQuotaGb] = useState('10')
+  // The team's current Shared-Drive allowlist. The project step appends the
+  // new project's Shared Drive to it so clients are actually permitted to
+  // reach it (the desktop refuses a Shared Drive that isn't allowlisted).
+  const [sharedDriveIds, setSharedDriveIds] = useState('')
 
   const [pinRole, setPinRole] = useState<'student' | 'mentor' | 'admin'>('student')
   const [pinDisplayName, setPinDisplayName] = useState('')
@@ -61,7 +66,7 @@ export default function Wizard() {
         // Prefill team fields from existing values so re-entering the
         // wizard doesn't wipe out what the admin already typed.
         // (Empty server defaults will just leave the inputs blank.)
-        return api<{ name: string; gitHubOrg: string; projectPrefix: string }>(
+        return api<{ name: string; gitHubOrg: string; projectPrefix: string; googleSharedDriveIds: string }>(
           'GET', '/api/team'
         )
       })
@@ -69,6 +74,7 @@ export default function Wizard() {
         setTeamName(t.name ?? '')
         setGitHubOrg(t.gitHubOrg ?? '')
         setProjectPrefix(t.projectPrefix ?? '')
+        setSharedDriveIds(t.googleSharedDriveIds ?? '')
       })
       .catch(err => setError((err as ApiError).message))
   }, [])
@@ -106,8 +112,8 @@ export default function Wizard() {
   }
 
   async function addProject(): Promise<void> {
-    if (!projectName.trim() || !projectRepoUrl.trim()) {
-      setError('Both fields are required')
+    if (!projectName.trim() || !projectDriveFolderId.trim()) {
+      setError('Project name and the Google Drive folder ID are required')
       return
     }
     setBusy(true)
@@ -117,9 +123,26 @@ export default function Wizard() {
       const quotaBytes = Number.isFinite(gb) && gb >= 0
         ? Math.round(gb * 1024 * 1024 * 1024)
         : null
+      const folderId = projectDriveFolderId.trim()
+      const driveId = projectSharedDriveId.trim()
+      // If the project lives in a Shared Drive, add that drive to the team's
+      // allowlist FIRST. The desktop refuses to touch a Shared Drive that
+      // isn't allowlisted, so registering the project without this would
+      // leave it un-joinable. Merge into the existing list (dedup), never
+      // replace — re-entering the wizard must not drop other drives.
+      if (driveId) {
+        const merged = Array.from(new Set(
+          sharedDriveIds.split(',').map(s => s.trim()).filter(Boolean).concat(driveId)
+        )).join(',')
+        if (merged !== sharedDriveIds) {
+          await api('PATCH', '/api/admin/team', { googleSharedDriveIds: merged })
+          setSharedDriveIds(merged)
+        }
+      }
       await api('POST', '/api/admin/projects', {
-        name: projectName,
-        repoUrl: projectRepoUrl,
+        name: projectName.trim(),
+        driveFolderId: folderId,
+        sharedDriveId: driveId || undefined,
         quotaBytes,
       })
       setStep('member')
@@ -205,9 +228,9 @@ export default function Wizard() {
           <>
             <h2>Tell us about your team</h2>
             <div className="hint">
-              The name and GitHub org show up everywhere a team member
-              looks — the desktop welcome screen, the admin web UI,
-              every project's clone URL.
+              The team name shows up everywhere a member looks — the desktop
+              welcome screen and the admin web UI. Storage is your team's
+              Google Shared Drive; you'll point at it in the next step.
             </div>
             <label>Team name</label>
             <input
@@ -216,12 +239,17 @@ export default function Wizard() {
               placeholder="FRC Team 2129"
               autoFocus
             />
-            <label>GitHub org</label>
+            <label>GitHub org (optional)</label>
             <input
               value={gitHubOrg}
               onChange={e => setGitHubOrg(e.target.value)}
               placeholder="netarcx"
             />
+            <div className="hint" style={{ marginTop: 4 }}>
+              Only used for the optional "create a repo on GitHub" helper on
+              the Projects page. Leave blank — FrameCAD stores CAD in Google
+              Drive, not GitHub.
+            </div>
             <label>Project prefix (optional)</label>
             <input
               value={projectPrefix}
@@ -247,9 +275,12 @@ export default function Wizard() {
           <>
             <h2>Add your first project</h2>
             <div className="hint">
-              Create the GitHub repo first, then paste its URL here. Team
-              members will see this project on the FrameCAD welcome screen
-              once they enroll.
+              In Google Drive, make a folder for this project inside your
+              team's Shared Drive, then paste its folder ID here. Team members
+              see this project on the FrameCAD welcome screen and join it
+              straight from Drive once they enroll. (The folder ID is the last
+              part of the folder's URL:
+              <code>drive.google.com/drive/folders/<strong>THIS_ID</strong></code>.)
             </div>
             <label>Project name</label>
             <input
@@ -258,12 +289,25 @@ export default function Wizard() {
               placeholder="2026 Robot"
               autoFocus
             />
-            <label>Repo URL</label>
+            <label>Google Drive folder ID</label>
             <input
-              value={projectRepoUrl}
-              onChange={e => setProjectRepoUrl(e.target.value)}
-              placeholder="https://github.com/org/repo.git"
+              value={projectDriveFolderId}
+              onChange={e => setProjectDriveFolderId(e.target.value)}
+              placeholder="the project folder's Drive ID"
+              spellCheck={false}
             />
+            <label>Shared Drive ID</label>
+            <input
+              value={projectSharedDriveId}
+              onChange={e => setProjectSharedDriveId(e.target.value)}
+              placeholder="the Shared Drive the folder lives in"
+              spellCheck={false}
+            />
+            <div className="hint" style={{ marginTop: 4 }}>
+              The Shared Drive ID is added to your team's allowlist so clients
+              are permitted to reach it — leave blank only if the folder lives
+              in a regular My Drive (not recommended for a team).
+            </div>
             <label>Storage quota (GB)</label>
             <input
               type="number"
@@ -285,7 +329,7 @@ export default function Wizard() {
               <button
                 className="primary"
                 onClick={addProject}
-                disabled={busy || !projectName.trim() || !projectRepoUrl.trim()}
+                disabled={busy || !projectName.trim() || !projectDriveFolderId.trim()}
               >
                 {busy ? 'Adding…' : 'Add & continue'}
               </button>

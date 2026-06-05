@@ -362,26 +362,43 @@ export async function downloadProject(
 
   const manifest = createEmptyManifest(folderId, sharedDriveId)
 
-  await mapPool(files, DRIVE_TRANSFER_CONCURRENCY, async file => {
-    const destPath = path.join(localPath, ...file.relativePath.split('/'))
-    const { hash, mtimeMs, size } = await downloadOne(drive, file.driveFileId, destPath)
+  // As in syncRemote/publishChanges: if a download worker throws, persist the
+  // manifest entries for files that DID download before re-throwing. Without
+  // this, a join interrupted partway (network drop, etc.) left a folder full
+  // of real CAD files but NO manifest — "Open Project" then rejected it as
+  // "not a FrameCAD project" and the only recovery was a full re-download.
+  // With a partial manifest written, the folder opens and a normal Sync pulls
+  // the remaining files (absent from the manifest → treated as new-remote).
+  let transferErr: unknown
+  try {
+    await mapPool(files, DRIVE_TRANSFER_CONCURRENCY, async file => {
+      const destPath = path.join(localPath, ...file.relativePath.split('/'))
+      const { hash, mtimeMs, size } = await downloadOne(drive, file.driveFileId, destPath)
 
-    manifest.files[file.relativePath] = {
-      driveFileId: file.driveFileId,
-      driveRevisionId: '',
-      driveModifiedTime: file.modifiedTime,
-      localContentHash: hash,
-      localModifiedTime: mtimeMs,
-      localSize: size
-    }
+      manifest.files[file.relativePath] = {
+        driveFileId: file.driveFileId,
+        driveRevisionId: '',
+        driveModifiedTime: file.modifiedTime,
+        localContentHash: hash,
+        localModifiedTime: mtimeMs,
+        localSize: size
+      }
 
-    downloadedBytes += file.size
-    onProgress?.({
-      phase: 'Downloading',
-      percent: totalBytes > 0 ? Math.round((downloadedBytes / totalBytes) * 100) : 0,
-      detail: file.relativePath
+      downloadedBytes += file.size
+      onProgress?.({
+        phase: 'Downloading',
+        percent: totalBytes > 0 ? Math.round((downloadedBytes / totalBytes) * 100) : 0,
+        detail: file.relativePath
+      })
     })
-  })
+  } catch (err) {
+    transferErr = err
+  }
+
+  if (transferErr) {
+    await saveManifest(localPath, manifest)
+    throw transferErr
+  }
 
   onProgress?.({ phase: 'Done', percent: 100 })
   await saveManifest(localPath, manifest)

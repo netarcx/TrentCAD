@@ -76,11 +76,11 @@ export default function ProjectSettings() {
           placeholder='e.g. "2026 Rebuilt"'
         />
         <p className="admin-hint">
-          When set, FrameCAD treats this subfolder of the repo as the
-          project root — the file tree only shows files inside it, and
-          new parts are created there by default. Leave blank if the
-          repo root is your project. Use forward slashes; no leading or
-          trailing slash. <strong>Empty = repo root (the default).</strong>
+          When set, FrameCAD treats this subfolder of the project folder as
+          the project root — the file tree only shows files inside it, and
+          new parts are created there by default. Leave blank if the whole
+          folder is your project. Use forward slashes; no leading or
+          trailing slash. <strong>Empty = the folder root (the default).</strong>
         </p>
         <label>COTS subfolder (optional)</label>
         <input

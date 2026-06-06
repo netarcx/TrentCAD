@@ -749,7 +749,7 @@ export default function App() {
   const repoDeletedBanner = openProjectEntry?.remoteStatus === 'missing' && (
     <div className="error-banner" style={{ background: 'rgba(251, 113, 133, 0.18)' }}>
       <span className="error-banner-message">
-        ⚠ Your admin has confirmed this project's GitHub repo no longer
+        ⚠ Your admin has confirmed this project's remote storage no longer
         exists. Your local files are still here — back up anything you need,
         then close this project and delete the local folder.
       </span>
@@ -781,8 +781,8 @@ export default function App() {
         ⚠ This device is locked to a team project that isn't available:
         {' '}<strong>{kioskAutoOpenEntry?.name}</strong>{' '}
         {kioskAutoOpenEntry?.remoteStatus === 'missing'
-          ? '— the repo has been deleted.'
-          : '— it hasn\'t been cloned locally yet.'}
+          ? '— its storage has been deleted.'
+          : '— it hasn\'t been downloaded locally yet.'}
         {' '}Press <span className="mono">Ctrl+Shift+Alt+R</span> to release this
         device from team management, or contact your admin.
       </span>
@@ -798,7 +798,7 @@ export default function App() {
       <div className="modal publish-progress-modal">
         <h2>
           {publishProgress.phase === 'preparing' && (progressKind === 'join' ? 'Preparing download…' : 'Preparing upload...')}
-          {publishProgress.phase === 'uploading' && (progressKind === 'join' ? 'Downloading from GitHub' : 'Uploading to GitHub')}
+          {publishProgress.phase === 'uploading' && (progressKind === 'join' ? 'Downloading from the Shared Drive' : 'Uploading to the Shared Drive')}
           {publishProgress.phase === 'done' && (progressKind === 'join' ? 'Download complete' : 'Upload complete')}
           {publishProgress.phase === 'error' && (progressKind === 'join' ? 'Download failed' : 'Upload failed')}
         </h2>
@@ -834,7 +834,7 @@ export default function App() {
           const isConfirmedDeleted = !!publishProgress.remoteGone
             && openProjectEntry?.remoteStatus === 'missing'
           const message = isConfirmedDeleted
-            ? "Your admin has confirmed this project's GitHub repo no "
+            ? "Your admin has confirmed this project's remote storage no "
               + 'longer exists. Your local files are still here — back '
               + 'up anything you need, then close this project and '
               + 'delete the local folder.'
@@ -1185,7 +1185,7 @@ export default function App() {
         >
           <span className="publish-mini-bar-title">
             {publishProgress.phase === 'preparing' && (progressKind === 'join' ? 'Preparing download…' : 'Preparing upload…')}
-            {publishProgress.phase === 'uploading' && (progressKind === 'join' ? 'Downloading from GitHub' : 'Uploading to GitHub')}
+            {publishProgress.phase === 'uploading' && (progressKind === 'join' ? 'Downloading from the Shared Drive' : 'Uploading to the Shared Drive')}
             {publishProgress.phase === 'done' && (progressKind === 'join' ? 'Download complete' : 'Upload complete')}
             {publishProgress.phase === 'error' && (progressKind === 'join' ? 'Download failed' : 'Upload failed')}
           </span>

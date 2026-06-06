@@ -296,6 +296,32 @@ export async function loginDevice(args: {
   }
 }
 
+/**
+ * Keep the team display name synced with the signed-in Google account, so all
+ * attribution (comments, releases, publishes, drawing title blocks, lock owner)
+ * reflects who's actually signed in — not a free-typed enroll-time nickname.
+ * Best-effort: runs after every refresh, only acts on a mismatch, and retries
+ * on the next refresh if the server is briefly unreachable. Lazy-imports
+ * google-auth to avoid a load-order cycle.
+ */
+async function syncDisplayNameFromGoogle(): Promise<void> {
+  try {
+    if (!state.token || !state.me) return
+    const ga = await import('./google-auth')
+    const status = await ga.googleAuthStatus()
+    if (!status.signedIn) return
+    const googleName = (status.name || status.email || '').trim()
+    if (!googleName || state.me.displayName === googleName) return
+    await fetchTeamApi('/api/me/display-name', {
+      method: 'PATCH',
+      body: { displayName: googleName },
+      timeoutMs: 6000,
+    })
+    state.me.displayName = googleName
+    broadcast()
+  } catch { /* best-effort; the next refresh retries */ }
+}
+
 export async function refresh(): Promise<TeamSnapshot> {
   if (!state.token) {
     state.error = 'Not enrolled'
@@ -340,6 +366,8 @@ export async function refresh(): Promise<TeamSnapshot> {
     state.revoked = false // a successful refresh means our token is good again
     void persistSnapshot()
     broadcast()
+    // Keep the team display name synced with the signed-in Google account.
+    void syncDisplayNameFromGoogle()
   } catch (err) {
     const e = err as Error & { status?: number }
     // 401 means our token's no good — the admin probably revoked our

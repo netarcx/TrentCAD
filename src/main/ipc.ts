@@ -838,7 +838,13 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   // Sign-in lives in the main process (loopback OAuth needs a localhost
   // server + the system browser). The renderer only ever sees status.
   ipcMain.handle('google-auth-status', () => googleAuth.googleAuthStatus())
-  ipcMain.handle('google-sign-in', () => googleAuth.googleSignIn())
+  ipcMain.handle('google-sign-in', async () => {
+    const status = await googleAuth.googleSignIn()
+    // Sync the team display name to the freshly signed-in Google account now,
+    // rather than waiting for the next periodic team refresh.
+    void teamServer.refresh()
+    return status
+  })
   ipcMain.handle('google-sign-out', () => googleAuth.googleSignOut())
 
   ipcMain.handle('drive-list-shared-drives', () => driveOps.listSharedDrives())

@@ -262,6 +262,27 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
   // show the "set password" prompt vs a regular change-password form.
   // Authed → only callable by the member themselves (no leaking of
   // other members' password state).
+  // Update the calling member's display name. The desktop pushes the signed-in
+  // Google account's profile name here so the team identity (and all
+  // attribution — comments, releases, publishes, title blocks) stays in lock-
+  // step with who's actually signed in, rather than a free-typed enroll nickname.
+  app.patch<{ Body: { displayName?: string } }>(
+    '/api/me/display-name',
+    async (req, reply) => {
+      const member = req.member!
+      const name = (req.body?.displayName ?? '').trim().slice(0, 100)
+      if (!name) return reply.code(400).send({ error: 'displayName is required' })
+      const db = getDb()
+      const row = db.prepare(`SELECT displayName FROM members WHERE id = ?`).get(member.id) as { displayName: string } | undefined
+      if (row && row.displayName !== name) {
+        db.prepare(`UPDATE members SET displayName = ? WHERE id = ?`).run(name, member.id)
+        const { logAudit } = await import('../db.js')
+        logAudit({ actorId: member.id, actorLabel: name, action: 'member.name-synced', target: `member:${member.id}`, detail: `Google → ${name}` })
+      }
+      return { ok: true, displayName: name }
+    },
+  )
+
   app.get('/api/me/has-password', async req => {
     const { getDb: getDbInner } = await import('../db.js')
     const row = getDbInner().prepare(

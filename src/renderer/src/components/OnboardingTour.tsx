@@ -27,7 +27,7 @@ const STEPS = [
   },
   {
     title: 'Need help?',
-    body: 'Full setup and workflow guide at github.com/netarcx/FrameCAD/blob/main/docs/STUDENT_SETUP.md. Ask your CAD lead if anything looks broken.'
+    body: 'There\'s a full setup and workflow guide in the FrameCAD docs (STUDENT_SETUP.md) — ask your CAD lead for it, or if anything looks broken.'
   }
 ]
 

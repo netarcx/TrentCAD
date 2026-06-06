@@ -46,6 +46,14 @@ function defaultPrefix(): string {
 
 let manifestLock: Promise<void> = Promise.resolve()
 
+/** The part-number conflicts surfaced by the most recent reconcile pass
+ *  (offline-created numbers a teammate had already taken). Exposed over the
+ *  local REST API so the SolidWorks add-in can show + guide the fix. */
+let lastNumberConflicts: Array<{ path: string; current: string; suggested: string }> = []
+export function getNumberConflicts(): Array<{ path: string; current: string; suggested: string }> {
+  return lastNumberConflicts
+}
+
 /**
  * Serialise a parts.json read-modify-write against every other one. ALL
  * mutators (create part/assembly, syncManifest, reconcile — from both the IPC
@@ -621,7 +629,7 @@ export function reconcilePartNumbers(): Promise<{
     if (!key) return empty
     let manifest = await loadManifest()
     const localProvisional = Object.entries(manifest.entries).filter(([, e]) => e.provisional)
-    if (localProvisional.length === 0) return empty
+    if (localProvisional.length === 0) { lastNumberConflicts = []; return empty }
     // Pull the team's latest so we reconcile against current numbers. The pull
     // OVERWRITES local parts.json, so re-attach any provisional entry it drops:
     // an offline-created part lives ONLY in our local copy until reconciled —
@@ -696,10 +704,54 @@ export function reconcilePartNumbers(): Promise<{
       await saveManifest(manifest)
       try { await pushSharedFile(MANIFEST_FILE, 'reconcile part numbers') } catch { /* best effort */ }
     }
+    lastNumberConflicts = conflicts
     return { reconciled, conflicts }
   })
   manifestLock = p.then(() => {}, () => {})
   return p
+}
+
+/**
+ * Move a manifest entry (and its metadata + linked drawings) from one path to
+ * another BY IDENTITY — used when the SolidWorks add-in reports a SW-native
+ * rename / Save-As. Deterministic, unlike the desktop's basename-guess rename
+ * tracking: the add-in tells us exactly which old path became which new path.
+ *
+ * If `oldRel` still exists on disk it was a Save-As COPY (both files present),
+ * not a rename — we leave the old entry alone and let the new file get
+ * auto-numbered on the next sync. We only MOVE the entry when the old file is
+ * gone. Paths are project-root-relative, POSIX-separated. Returns whether an
+ * entry was moved.
+ */
+export function renameEntry(oldRel: string, newRel: string): Promise<{ moved: boolean }> {
+  return withManifestLock(async () => {
+    if (!oldRel || !newRel || oldRel === newRel) return { moved: false }
+    if (await isCotsProject()) return { moved: false }
+    // Save-As copy (old file still on disk) → not a rename; don't move.
+    try {
+      await fs.access(path.join(getProjectPath(), ...oldRel.split('/')))
+      return { moved: false }
+    } catch { /* old file is gone → genuine rename, proceed */ }
+
+    await pullSharedFile(MANIFEST_FILE)
+    const manifest = await loadManifest()
+    const entry = manifest.entries[oldRel]
+    if (!entry) return { moved: false }                    // old path wasn't tracked
+    if (manifest.entries[newRel]) return { moved: false }  // target already tracked
+
+    manifest.entries[newRel] = entry
+    delete manifest.entries[oldRel]
+    // Drawings that pointed at the old path follow the rename.
+    for (const e of Object.values(manifest.entries)) {
+      if (e.linkedTo === oldRel) e.linkedTo = newRel
+    }
+    const meta = await import('./meta')
+    try { await meta.migrateMetaPath(oldRel, newRel) } catch { /* best effort */ }
+
+    await saveManifest(manifest)
+    try { await pushSharedFile(MANIFEST_FILE, `rename ${oldRel} → ${newRel}`) } catch { /* best effort */ }
+    return { moved: true }
+  })
 }
 
 export function createNewPart(

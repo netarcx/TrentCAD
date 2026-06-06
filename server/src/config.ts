@@ -32,6 +32,12 @@ export const config = {
   /** Log level — passed through to Fastify's pino. Quiet by default
    *  during dev so the setup-PIN banner stands out. */
   logLevel: process.env.LOG_LEVEL || 'info',
+
+  /** Optional Discord/Slack incoming-webhook URL. When set, each in-app
+   *  problem report (POST /api/issues) is best-effort forwarded here so a
+   *  mentor sees it in chat without opening the admin UI. Blank = disabled;
+   *  reports still land in the admin Reports page either way. */
+  issueWebhookUrl: process.env.FRAMECAD_ISSUE_WEBHOOK_URL || '',
 } as const
 
 export type AppConfig = typeof config

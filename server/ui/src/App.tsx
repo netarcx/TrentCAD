@@ -15,6 +15,7 @@ import Pins from './pages/Pins'
 import Projects from './pages/Projects'
 import TeamSettings from './pages/TeamSettings'
 import Logs from './pages/Logs'
+import Reports from './pages/Reports'
 import Wizard from './pages/Wizard'
 import { api, ApiError } from './api'
 import { clearSession, getMember, getToken } from './auth'
@@ -46,6 +47,7 @@ export default function App() {
           <Route path="pins" element={<Pins />} />
           <Route path="projects" element={<Projects />} />
           <Route path="logs" element={<Logs />} />
+          <Route path="reports" element={<Reports />} />
           <Route path="settings" element={<TeamSettings />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
@@ -141,6 +143,7 @@ function AdminShell() {
         <NavLink to="/pins" className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>PINs</NavLink>
         <NavLink to="/projects" className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>Projects</NavLink>
         <NavLink to="/logs" className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>Logs</NavLink>
+        <NavLink to="/reports" className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>Reports</NavLink>
         <NavLink to="/settings" className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>Settings</NavLink>
         <div className="sidebar-spacer" />
         <div className="sidebar-footer">

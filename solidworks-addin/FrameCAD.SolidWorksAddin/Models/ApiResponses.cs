@@ -37,7 +37,7 @@ namespace FrameCAD.SolidWorksAddin.Models
     /// Bundle of values the drawing title-block fill button writes to SW
     /// custom properties. Server-side composition pulls part number from
     /// the parts manifest, mass/material from the linked part's meta,
-    /// and designer from `git config user.name`.
+    /// and designer from the team-server member name.
     /// </summary>
     public class TitleBlockDataDto
     {
@@ -101,6 +101,9 @@ namespace FrameCAD.SolidWorksAddin.Models
         [JsonProperty("path")]
         public string Path { get; set; }
 
+        /// <summary>Vestigial: always empty on the Drive backend (projects key
+        /// on a Drive folder id, not a Git remote). Kept only so the DTO still
+        /// deserializes the field; do not consume it.</summary>
         [JsonProperty("remote")]
         public string Remote { get; set; }
     }
@@ -131,6 +134,8 @@ namespace FrameCAD.SolidWorksAddin.Models
         [JsonProperty("success")]
         public bool Success { get; set; }
 
+        /// <summary>Vestigial: the Drive backend has no commit hash, so the
+        /// server never emits this. Kept for back-compat; do not consume it.</summary>
         [JsonProperty("hash")]
         public string Hash { get; set; }
 
@@ -226,14 +231,14 @@ namespace FrameCAD.SolidWorksAddin.Models
     }
 
     /// <summary>
-    /// Minimal coordination-repo state for UI gating in the add-in.
-    /// Mirrors what /api/coord-state returns — intentionally NOT the
-    /// full members.json (we don't want to leak the team roster
-    /// through the local REST surface).
+    /// Minimal team-server state for UI gating in the add-in. Mirrors what
+    /// /api/coord-state returns — intentionally NOT the full team roster (we
+    /// don't want to leak it through the local REST surface). The shape is a
+    /// frozen contract (see CLAUDE.md): { configured, role, isMember }.
     /// </summary>
     public class CoordStateDto
     {
-        /// <summary>Whether a coordination repo is connected at all.</summary>
+        /// <summary>Whether the desktop is enrolled with a team server at all.</summary>
         [JsonProperty("configured")]
         public bool Configured { get; set; }
 
@@ -250,5 +255,28 @@ namespace FrameCAD.SolidWorksAddin.Models
 
         public bool IsAdmin =>
             !Configured || Role == "admin";
+    }
+
+    /// <summary>
+    /// A part number that was assigned offline and turned out to be taken by a
+    /// teammate. The add-in shows it and offers a references-preserving rename
+    /// from <see cref="Current"/> to <see cref="Suggested"/>.
+    /// </summary>
+    public class NumberConflict
+    {
+        [JsonProperty("path")]
+        public string Path { get; set; }
+
+        [JsonProperty("current")]
+        public string Current { get; set; }
+
+        [JsonProperty("suggested")]
+        public string Suggested { get; set; }
+    }
+
+    public class NumberConflictsResponse
+    {
+        [JsonProperty("conflicts")]
+        public List<NumberConflict> Conflicts { get; set; }
     }
 }

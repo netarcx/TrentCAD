@@ -456,6 +456,26 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX part_numbers_scope_idx ON part_numbers(projectKey, scope);
   `,
+  // v21: in-app problem reports. The desktop "Report" button used to shell out
+  // to the GitHub CLI (`gh issue create`) — dead since the Git/LFS rip-out (no
+  // gh installed, no GitHub auth in a Drive-only install). Reports now POST to
+  // the team server, land here, and surface in the admin UI (optionally
+  // forwarded to a Discord/Slack webhook). `memberId` ON DELETE SET NULL so a
+  // report outlives the reporter; `reporterName` denormalised so the list
+  // renders without a join.
+  `
+  CREATE TABLE issue_reports (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    memberId     INTEGER REFERENCES members(id) ON DELETE SET NULL,
+    reporterName TEXT NOT NULL,
+    message      TEXT NOT NULL,
+    appVersion   TEXT,
+    platform     TEXT,
+    status       TEXT NOT NULL DEFAULT 'open',
+    createdAt    INTEGER NOT NULL
+  );
+  CREATE INDEX issue_reports_status_idx ON issue_reports(status, createdAt DESC);
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

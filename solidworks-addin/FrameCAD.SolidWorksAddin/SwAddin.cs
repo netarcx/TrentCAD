@@ -78,25 +78,33 @@ namespace FrameCAD.SolidWorksAddin
             _swEvents = (SldWorks)ThisSW;
             _addinCookie = Cookie;
 
-            _swEvents.ActiveDocChangeNotify += OnActiveDocChange;
+            if (_swEvents != null)
+                _swEvents.ActiveDocChangeNotify += OnActiveDocChange;
 
-            CreateTaskPane();
+            // A task-pane creation failure (icon/state/p-invoke) must NOT abort
+            // the add-in load or leave a half-built state that DisconnectFromSW
+            // then NREs on during teardown.
+            try { CreateTaskPane(); } catch { /* pane optional; add-in still loads */ }
             _taskPaneControl?.StartHealthPolling();
 
-            OnActiveDocChange();
+            OnActiveDocChange();  // self-guarded (try/catch + null-check inside)
 
             return true;
         }
 
         public bool DisconnectFromSW()
         {
-            _swEvents.ActiveDocChangeNotify -= OnActiveDocChange;
+            // Null-guard every step: SW can call disconnect after a connect that
+            // partially failed, or twice on some crash/reload paths. An NRE here
+            // escapes across the COM boundary and can destabilize the unload.
+            if (_swEvents != null)
+                _swEvents.ActiveDocChangeNotify -= OnActiveDocChange;
             UnhookMassNotify();
 
-            _taskPaneControl?.StopHealthPolling();
-            _taskPaneHost?.ReleaseHandle();
-            _taskPaneView?.DeleteView();
-            _taskPaneControl?.Dispose();
+            try { _taskPaneControl?.StopHealthPolling(); } catch { /* teardown */ }
+            try { _taskPaneHost?.ReleaseHandle(); } catch { /* teardown */ }
+            try { _taskPaneView?.DeleteView(); } catch { /* teardown */ }
+            try { _taskPaneControl?.Dispose(); } catch { /* teardown */ }
 
             _swApp = null;
             _swEvents = null;
@@ -148,12 +156,40 @@ namespace FrameCAD.SolidWorksAddin
                 // a different model, making us compute mass for the wrong
                 // part.
                 var hookedPart = part;
+                // Capture the path we last saw this doc at, so a save to a
+                // DIFFERENT path (Save-As / rename) can be reported to FrameCAD.
+                // "" for a brand-new never-saved doc (a first save is not a
+                // rename — the IsNullOrEmpty guard below skips it).
+                var hookedPath = "";
+                try { hookedPath = (part as ModelDoc2)?.GetPathName() ?? ""; } catch { }
                 _massHookHandler = (int saveType, string fileName) =>
                 {
                     // Fire-and-forget; mass push must NOT block the SW save.
                     // Errors here would corrupt the save event chain, so
                     // swallow them and let the user retry manually if needed.
                     try { _ = OnPartSavedPushMassAsync(hookedPart, fileName); }
+                    catch { /* never throw from a SW event handler */ }
+
+                    // Rename / Save-As detection: the doc was saved to a path
+                    // different from where we last saw it. Tell FrameCAD so the
+                    // manifest + metadata move BY IDENTITY (the desktop decides
+                    // copy-vs-rename by whether the old file still exists), rather
+                    // than relying on the fragile basename-guess rename tracking.
+                    // Only react to SolidWorks files — a STEP/STL/PDF export also
+                    // fires this notify with the export path, which is NOT a rename.
+                    try
+                    {
+                        var newExt = System.IO.Path.GetExtension(fileName ?? "").ToLowerInvariant();
+                        var isSwFile = newExt == ".sldprt" || newExt == ".sldasm" || newExt == ".slddrw";
+                        if (isSwFile &&
+                            !string.IsNullOrEmpty(hookedPath) &&
+                            !string.Equals(hookedPath, fileName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            var oldPath = hookedPath;
+                            hookedPath = fileName;  // don't re-fire on the next save
+                            _ = ReportRenameAsync(oldPath, fileName);
+                        }
+                    }
                     catch { /* never throw from a SW event handler */ }
                     return 0;  // event handlers return HRESULT-like int
                 };
@@ -577,6 +613,22 @@ namespace FrameCAD.SolidWorksAddin
             {
                 return ex.Message;
             }
+        }
+
+        /// <summary>
+        /// Report a SolidWorks-native rename / Save-As to FrameCAD so the
+        /// manifest entry + metadata move deterministically (the desktop treats
+        /// it as a copy if the old file still exists). Best-effort — the
+        /// desktop's own rename tracking is the fallback.
+        /// </summary>
+        private async System.Threading.Tasks.Task ReportRenameAsync(string oldAbsPath, string newAbsPath)
+        {
+            try
+            {
+                var client = new FrameCadApiClient();
+                await client.RenameAsync(oldAbsPath, newAbsPath);
+            }
+            catch { /* best-effort */ }
         }
 
         private async System.Threading.Tasks.Task StageFileViaApi(string relativePath)

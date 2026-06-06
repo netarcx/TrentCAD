@@ -27,11 +27,12 @@ namespace FrameCAD.SolidWorksAddin.Models
         public string PartDescription { get; set; }
 
         /// <summary>
-        /// True when origin/&lt;branch&gt; has a commit newer than HEAD that
-        /// modified this file — i.e. a teammate has uploaded a change to
-        /// it that the user hasn't synced yet. Set by /api/file. The
-        /// task pane uses this to show a "newer version available"
-        /// banner so the user doesn't accidentally edit a stale copy.
+        /// VESTIGIAL — the Drive backend currently has no cheap per-file
+        /// freshness probe, so /api/file always returns false here and the
+        /// task pane's "newer version available" banner never fires. Kept as a
+        /// reserved hook for a future Drive modifiedTime/md5 check; do not rely
+        /// on it. (It once meant "origin has a commit newer than HEAD for this
+        /// file" on the old Git backend.)
         /// </summary>
         [JsonProperty("newerOnRemote")]
         public bool NewerOnRemote { get; set; }

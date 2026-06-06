@@ -158,7 +158,7 @@ export default function App() {
   }, [manufacturingView, project])
 
   const [reportState, setReportState] = useState<'idle' | 'confirm' | 'sending' | 'sent' | 'failed'>('idle')
-  const [reportResult, setReportResult] = useState<{ url?: string; number?: number; error?: string }>({})
+  const [reportResult, setReportResult] = useState<{ id?: number; error?: string }>({})
 
   useEffect(() => {
     setReportState('idle')
@@ -171,7 +171,7 @@ export default function App() {
     try {
       const r = await window.api.reportIssue(error)
       if (r.success) {
-        setReportResult({ url: r.url, number: r.number })
+        setReportResult({ id: r.id })
         setReportState('sent')
       } else {
         setReportResult({ error: r.error || 'Unknown error' })
@@ -653,14 +653,14 @@ export default function App() {
         {reportState === 'idle' && (
           <button
             onClick={() => setReportState('confirm')}
-            title="Open a GitHub issue with this error"
+            title="Send this error to your team's admin"
           >
             Report
           </button>
         )}
         {reportState === 'confirm' && (
           <>
-            <span className="error-banner-prompt">Report to GitHub?</span>
+            <span className="error-banner-prompt">Send to your team admin?</span>
             <button onClick={submitReport} className="primary">Yes</button>
             <button onClick={() => setReportState('idle')}>No</button>
           </>
@@ -669,14 +669,9 @@ export default function App() {
           <span className="error-banner-prompt">Reporting…</span>
         )}
         {reportState === 'sent' && (
-          reportResult.url
-            ? <button
-                onClick={() => reportResult.url && window.api.openExternal(reportResult.url)}
-                title={reportResult.url}
-              >
-                Issue #{reportResult.number ?? '?'}
-              </button>
-            : <span className="error-banner-prompt">Reported</span>
+          <span className="error-banner-prompt">
+            {reportResult.id ? `Reported #${reportResult.id}` : 'Reported'}
+          </span>
         )}
         {reportState === 'failed' && (
           <span

@@ -836,6 +836,38 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   )
 
+  // ── Problem reports ────────────────────────────────────────────────
+  // Reports submitted from the desktop "Report" button (POST /api/issues).
+  // Open ones float to the top; resolve/delete to triage.
+  app.get('/api/admin/issues', async () => {
+    const issues = getDb().prepare(
+      `SELECT id, memberId, reporterName, message, appVersion, platform, status, createdAt
+         FROM issue_reports
+        ORDER BY (status = 'open') DESC, createdAt DESC
+        LIMIT 500`
+    ).all()
+    return { issues }
+  })
+
+  app.patch<{ Params: { id: string }, Body: { status?: string } }>(
+    '/api/admin/issues/:id',
+    async (req, reply) => {
+      const id = Number.parseInt(req.params.id, 10)
+      if (!Number.isInteger(id)) return reply.code(400).send({ error: 'Invalid id' })
+      const status = req.body?.status === 'resolved' ? 'resolved' : 'open'
+      const r = getDb().prepare(`UPDATE issue_reports SET status = ? WHERE id = ?`).run(status, id)
+      if (r.changes === 0) return reply.code(404).send({ error: 'Report not found' })
+      return { ok: true }
+    },
+  )
+
+  app.delete<{ Params: { id: string } }>('/api/admin/issues/:id', async (req, reply) => {
+    const id = Number.parseInt(req.params.id, 10)
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: 'Invalid id' })
+    getDb().prepare(`DELETE FROM issue_reports WHERE id = ?`).run(id)
+    return { ok: true }
+  })
+
   // ── Container logs ─────────────────────────────────────────────────
   //
   // Admin-only snapshot endpoint that reads the last N lines of a

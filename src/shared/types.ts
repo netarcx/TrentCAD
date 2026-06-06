@@ -565,7 +565,7 @@ export interface IpcApi {
    *  name field. Returns '' on any failure. */
   getOsUsername(): Promise<string>
   openExternal(url: string): Promise<void>
-  reportIssue(errorMessage: string): Promise<{ success: boolean; url?: string; number?: number; error?: string }>
+  reportIssue(errorMessage: string): Promise<{ success: boolean; id?: number; error?: string }>
   generateDocument(type: 'bom' | 'manufacturing' | 'summary' | 'bom-by-subsystem'): Promise<{ success: boolean; filePath?: string; relPath?: string; pdfFilePath?: string; pdfRelPath?: string; pdfError?: string; error?: string }>
   openPath(absPath: string): Promise<{ success: boolean; error?: string }>
   revealInFolder(absPath: string): Promise<{ success: boolean; error?: string }>

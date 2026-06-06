@@ -13,8 +13,8 @@ namespace FrameCAD.SolidWorksAddin
     {
         // Global HttpClient timeout is disabled — each call sets its
         // own deadline via CancellationTokenSource. This is the only
-        // way to give long-running ops (publish, sync of big LFS
-        // pushes) more than the short timeout used for everything
+        // way to give long-running ops (publish, sync of big
+        // assemblies) more than the short timeout used for everything
         // else. Setting HttpClient.Timeout is global; HttpClient
         // applies min(globalTimeout, perCallTokenDeadline) so without
         // this you can't ever wait longer than the global.
@@ -29,10 +29,10 @@ namespace FrameCAD.SolidWorksAddin
         // rather than hang the task pane.
         private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
 
-        // Long-running ops that push/pull from GitHub LFS. Bigger
-        // robot assemblies routinely take >1 min on a slow uplink;
-        // 10 min is generous but bounded so a wedged server doesn't
-        // hang the UI forever.
+        // Long-running ops that upload/download from the team's Google
+        // Shared Drive. Bigger robot assemblies routinely take >1 min on
+        // a slow uplink; 10 min is generous but bounded so a wedged
+        // server doesn't hang the UI forever.
         private static readonly TimeSpan LongTimeout = TimeSpan.FromMinutes(10);
 
         private readonly string _baseUrl;
@@ -146,10 +146,11 @@ namespace FrameCAD.SolidWorksAddin
         }
 
         /// <summary>
-        /// Tell FrameCAD to `git add` a newly-created file so it's tracked
-        /// before the user's first publish. Best-effort — caller swallows
-        /// errors because the file will still surface as "untracked" in
-        /// the next status refresh.
+        /// Ask FrameCAD to start tracking a newly-created file before the user's
+        /// first publish. Best-effort — caller swallows errors because the file
+        /// will still surface as "untracked" in the next status refresh. (On the
+        /// Drive backend the server has no staging index, so this is a cheap
+        /// acknowledgement; kept for forward-compatibility.)
         /// </summary>
         public async Task<ApiResult> StageAsync(string relativePath)
         {
@@ -157,7 +158,46 @@ namespace FrameCAD.SolidWorksAddin
             if (!response.IsSuccessStatusCode)
                 return new ApiResult { Success = false, Error = $"HTTP {(int)response.StatusCode}" };
             var json = await response.Content.ReadAsStringAsync();
-            return JsonConvert.DeserializeObject<ApiResult>(json);
+            return JsonConvert.DeserializeObject<ApiResult>(json)
+                ?? new ApiResult { Success = false, Error = "Empty response" };
+        }
+
+        /// <summary>
+        /// Report a SolidWorks-native rename / Save-As (absolute paths) so the
+        /// FrameCAD manifest + metadata move BY IDENTITY. The desktop decides
+        /// copy-vs-rename (old file still on disk = copy → no move). Resolves the
+        /// project root via /api/health first if it isn't known yet, because this
+        /// client is often freshly constructed off a save-event with no prior call.
+        /// </summary>
+        public async Task<ApiResult> RenameAsync(string oldAbsolutePath, string newAbsolutePath)
+        {
+            if (string.IsNullOrEmpty(_projectRoot))
+            {
+                try { await GetHealthAsync(); } catch { /* fall back to abs paths */ }
+            }
+            var oldRel = ToRelativePath(oldAbsolutePath);
+            var newRel = ToRelativePath(newAbsolutePath);
+            var response = await PostJsonAsync("/api/rename", new { oldPath = oldRel, newPath = newRel });
+            if (!response.IsSuccessStatusCode)
+                return new ApiResult { Success = false, Error = $"HTTP {(int)response.StatusCode}" };
+            var json = await response.Content.ReadAsStringAsync();
+            return JsonConvert.DeserializeObject<ApiResult>(json)
+                ?? new ApiResult { Success = false, Error = "Empty response" };
+        }
+
+        /// <summary>
+        /// Part numbers assigned offline that a teammate had already taken (the
+        /// desktop's reconcile pass surfaces these). The add-in shows them and
+        /// guides a references-preserving SolidWorks rename to the suggested
+        /// number. Returns an empty list when unreachable.
+        /// </summary>
+        public async Task<List<NumberConflict>> GetNumberConflictsAsync()
+        {
+            var response = await GetAsync("/api/number-conflicts");
+            if (!response.IsSuccessStatusCode) return new List<NumberConflict>();
+            var json = await response.Content.ReadAsStringAsync();
+            var result = JsonConvert.DeserializeObject<NumberConflictsResponse>(json);
+            return result?.Conflicts ?? new List<NumberConflict>();
         }
 
         public async Task<SyncResult> SyncAsync()

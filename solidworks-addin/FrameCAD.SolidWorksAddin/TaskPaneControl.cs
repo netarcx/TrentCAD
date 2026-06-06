@@ -14,7 +14,9 @@ namespace FrameCAD.SolidWorksAddin
         private Timer _healthTimer;
         private Timer _messageClearTimer;
         private string _currentFilePath;
-        private bool _busy;
+        private string _currentFileState;   // last-known sync state of the active file
+        private bool _busy;                 // main action buttons (checkout/sync/publish)
+        private bool _metaBusy;             // metadata combos/sub-buttons (serialise writes)
         private bool _disposed;
 
         // Most-recently-fetched coordination-repo role for the current user.
@@ -136,11 +138,25 @@ namespace FrameCAD.SolidWorksAddin
         /// Failures are silently ignored; the user can still set mass
         /// manually if the auto-push misses.
         /// </summary>
+        // Paths with a mass-push currently in flight — so a rapid Ctrl-S burst
+        // doesn't fan out overlapping POSTs for the same file.
+        private readonly System.Collections.Generic.HashSet<string> _massPushInFlight =
+            new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         public async void NotifyPartMassFromSwAsync(string absolutePath, double massPounds)
         {
             if (string.IsNullOrEmpty(absolutePath) || massPounds <= 0) return;
+            // Coalesce: drop this push if one is already in flight for the file.
+            lock (_massPushInFlight)
+            {
+                if (!_massPushInFlight.Add(absolutePath)) return;
+            }
             try { await _api.SetPartMassAutoAsync(absolutePath, massPounds); }
             catch { /* silent — SW save must not be blocked by network issues */ }
+            finally
+            {
+                lock (_massPushInFlight) { _massPushInFlight.Remove(absolutePath); }
+            }
         }
 
         public TaskPaneControl()
@@ -255,15 +271,15 @@ namespace FrameCAD.SolidWorksAddin
             _btnSync = MakeButton("Download");
             _btnSync.Click += async (s, e) => await DoSync();
             _toolTip.SetToolTip(_btnSync,
-                "Pull the latest team changes from GitHub. Run this before " +
-                "starting work so you're not editing a stale version.");
+                "Download the team's latest from the Shared Drive. Run this " +
+                "before starting work so you're not editing a stale version.");
             Controls.Add(_btnSync);
 
             _btnPublish = MakeButton("Upload");
             _btnPublish.Click += async (s, e) => await DoPublish();
             _toolTip.SetToolTip(_btnPublish,
-                "Push your changes to GitHub so the team sees them. Asks " +
-                "you for a short note describing what changed.");
+                "Upload your changes to the Shared Drive so the team sees them. " +
+                "Asks you for a short note describing what changed.");
             Controls.Add(_btnPublish);
 
             _btnNewPart = MakeButton("New Part / Assembly");
@@ -1095,6 +1111,25 @@ namespace FrameCAD.SolidWorksAddin
                 if (_currentFilePath != absolutePath) return;
                 SafeInvoke(() => HideMetaPanel());
             }
+
+            // Surface an unresolved part-number conflict for THIS file — an
+            // offline-assigned number a teammate had already taken. The fix is a
+            // references-preserving SolidWorks rename, which the add-in's rename
+            // hook then reports back so FrameCAD updates the manifest.
+            try
+            {
+                var conflicts = await _api.GetNumberConflictsAsync();
+                if (_currentFilePath != absolutePath) return;
+                var rel = _api.ToRelativePath(absolutePath);
+                var hit = conflicts?.Find(c => string.Equals(c.Path, rel, StringComparison.OrdinalIgnoreCase));
+                if (hit != null)
+                {
+                    SafeInvoke(() => ShowMessage(
+                        $"⚠ Part number {hit.Current} was taken by a teammate. In SolidWorks, " +
+                        $"File ▸ Rename this file to {hit.Suggested} (it preserves references).", true));
+                }
+            }
+            catch { /* conflicts are best-effort */ }
         }
 
         private void UpdateNewerVersionBanner(bool newer)
@@ -1285,7 +1320,12 @@ namespace FrameCAD.SolidWorksAddin
 
         private async System.Threading.Tasks.Task DoSetReleaseState()
         {
-            if (string.IsNullOrEmpty(_currentFilePath)) return;
+            // Serialise metadata writes so two quick combo changes can't fire
+            // overlapping POSTs whose stale reverts clobber each other.
+            if (string.IsNullOrEmpty(_currentFilePath) || _metaBusy) return;
+            _metaBusy = true;
+            try
+            {
             var state = _cmbReleaseState.SelectedItem?.ToString();
             if (string.IsNullOrEmpty(state)) return;
 
@@ -1338,6 +1378,8 @@ namespace FrameCAD.SolidWorksAddin
             {
                 ShowMessage(result?.Error ?? "Could not set release state", true);
             }
+            }
+            finally { _metaBusy = false; }
         }
 
         /// <summary>
@@ -1477,7 +1519,10 @@ namespace FrameCAD.SolidWorksAddin
 
         private async System.Threading.Tasks.Task DoSetMfgMethod()
         {
-            if (string.IsNullOrEmpty(_currentFilePath)) return;
+            if (string.IsNullOrEmpty(_currentFilePath) || _metaBusy) return;
+            _metaBusy = true;
+            try
+            {
             var selected = _cmbMfgMethod.SelectedItem?.ToString();
             // "(not set)" — first item — clears the field via null payload.
             var method = (selected == "(not set)" || string.IsNullOrEmpty(selected)) ? null : selected;
@@ -1493,6 +1538,8 @@ namespace FrameCAD.SolidWorksAddin
             {
                 ShowMessage(result?.Error ?? "Could not set manufacturing method", true);
             }
+            }
+            finally { _metaBusy = false; }
         }
 
         private async System.Threading.Tasks.Task DoUseSwMaterial()
@@ -1592,11 +1639,37 @@ namespace FrameCAD.SolidWorksAddin
             LayoutAll();
         }
 
+        private bool IsUnderProject(string absolutePath)
+        {
+            if (string.IsNullOrEmpty(absolutePath) || string.IsNullOrEmpty(_currentProjectPath)) return true;
+            var norm = absolutePath.Replace("\\", "/");
+            var root = _currentProjectPath.Replace("\\", "/").TrimEnd('/') + "/";
+            return norm.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        }
+
         private void UpdateFileDisplay(FileStatus file, string path)
         {
+            _currentFileState = file?.State;
             if (file == null)
             {
-                ShowFileCard(System.IO.Path.GetFileName(path), "", "", "Not tracked", COverlay0, "");
+                // A 404 from /api/file = not in the project tree. Distinguish a
+                // file saved OUTSIDE the project (a real foot-gun — its edits
+                // never sync and its references may point at a stray copy) from
+                // a brand-new in-project part that just isn't tracked yet.
+                if (!IsUnderProject(path))
+                {
+                    ShowFileCard(System.IO.Path.GetFileName(path), "", "",
+                        "⚠ Outside the project — won't sync", CRed, "");
+                    if (_lblRenameWarning != null)
+                    {
+                        _lblRenameWarning.Text = "Save this file INSIDE your project folder so FrameCAD can track it.";
+                        _lblRenameWarning.Visible = true;
+                    }
+                }
+                else
+                {
+                    ShowFileCard(System.IO.Path.GetFileName(path), "", "", "Not tracked", COverlay0, "");
+                }
                 SetButtonStates(false, false);
                 return;
             }
@@ -1637,6 +1710,15 @@ namespace FrameCAD.SolidWorksAddin
             var canCheckOut = file.State != "locked-by-you" && file.State != "locked-by-other";
             var canCheckIn = file.State == "locked-by-you";
             SetButtonStates(canCheckOut, canCheckIn);
+
+            // Nudge: edited locally but NOT checked out — the user is editing
+            // without a lock, so a teammate could be touching the same file.
+            // Only show it if the rename warning isn't already claiming the slot.
+            if (_lblRenameWarning != null && !_lblRenameWarning.Visible && file.State == "modified")
+            {
+                _lblRenameWarning.Text = "⚠ Modified but not checked out — Check Out so teammates don't collide.";
+                _lblRenameWarning.Visible = true;
+            }
         }
 
         private void ShowMessage(string text, bool isError = false)
@@ -1726,7 +1808,10 @@ namespace FrameCAD.SolidWorksAddin
                     }
                     else
                     {
-                        ShowMessage($"Checked out {ok} of {targets.Count} (assembly + children)",
+                        // Surface WHY a child failed (the server's 409 carries
+                        // the holder's name) so the user knows who to ask.
+                        var detail = fail > 0 && !string.IsNullOrEmpty(lastError) ? " — " + lastError : "";
+                        ShowMessage($"Checked out {ok} of {targets.Count} (assembly + children)" + detail,
                             fail > 0);
                     }
                 });
@@ -1794,6 +1879,20 @@ namespace FrameCAD.SolidWorksAddin
         private async System.Threading.Tasks.Task DoSync()
         {
             if (_busy) return;
+            // The active file has local changes. Download keeps YOUR copy (the
+            // desktop's sync never clobbers a locally-modified file), but it's
+            // worth a heads-up that you may end up behind the team.
+            if (string.Equals(_currentFileState, "modified", StringComparison.OrdinalIgnoreCase))
+            {
+                var confirm = MessageBox.Show(this,
+                    "The active file has local changes. Downloading won't overwrite your copy, " +
+                    "but the team may have a newer version.\n\nDownload anyway?",
+                    "Download",
+                    MessageBoxButtons.OKCancel,
+                    MessageBoxIcon.Question,
+                    MessageBoxDefaultButton.Button1);
+                if (confirm != DialogResult.OK) return;
+            }
             _busy = true;
             SetButtonStates(false, false);
             ShowMessage("Downloading…");

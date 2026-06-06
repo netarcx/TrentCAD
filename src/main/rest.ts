@@ -682,6 +682,34 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         return
       }
 
+      case 'POST /api/rename': {
+        // The add-in reports a SolidWorks-native rename / Save-As so the
+        // manifest + metadata move BY IDENTITY (no fragile basename guess).
+        // The desktop decides copy-vs-rename (old file still on disk = copy).
+        if (!currentProject) { json(res, 503, { error: 'No project open' }); return }
+        const body = parseJson(await readBody(req)) as { oldPath?: string; newPath?: string } | null
+        const oldSafe = sanitizeProjectRelPath(body?.oldPath ?? null)
+        const newSafe = sanitizeProjectRelPath(body?.newPath ?? null)
+        if (!oldSafe || !newSafe) { json(res, 400, { error: 'Missing or invalid oldPath/newPath' }); return }
+        const result = await serialWrite(() => partsOps.renameEntry(toGitRel(oldSafe), toGitRel(newSafe)))
+        if (result.moved) broadcastStatus()
+        json(res, 200, { success: true, ...result })
+        return
+      }
+
+      case 'GET /api/number-conflicts': {
+        // Part numbers assigned offline that a teammate had already taken —
+        // the add-in surfaces these + guides a references-preserving rename.
+        // Paths translated to the add-in's (subpath-relative) view.
+        const conflicts = partsOps.getNumberConflicts().map(c => ({
+          path: toProjectRel(c.path) ?? c.path,
+          current: c.current,
+          suggested: c.suggested,
+        }))
+        json(res, 200, { conflicts })
+        return
+      }
+
       default:
         json(res, 404, { error: 'Not found' })
     }

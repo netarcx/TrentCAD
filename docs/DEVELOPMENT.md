@@ -297,11 +297,14 @@ The CI workflow consumes these GitHub Actions secrets / env vars to bake default
 - `GOOGLE_CLIENT_SECRET` — matching client secret (not confidential for desktop OAuth clients, per Google's docs)
 - `FRAMECAD_GOOGLE_SHARED_DRIVE_IDS` — comma-separated allowed Shared Drive IDs (the team server's value wins when set)
 - `FRAMECAD_DEFAULT_SERVER_URL` — default team-server URL pre-filled on the enroll screen
-- `FRAMECAD_DEFAULT_GITHUB_ORG` — team's GitHub org (used for the "report a problem" issue flow, not for storage)
+- `FRAMECAD_DEFAULT_GITHUB_ORG` — team's GitHub org (used only for the optional "create repo on GitHub" admin helper, not for storage)
 - `FRAMECAD_DEFAULT_PROJECT_PREFIX` — project name prefix for filtering Browse
 - `FRAMECAD_DEFAULT_TEAM_NAME` — team display name
 - `FRAMECAD_DEFAULT_WELCOME_MESSAGE` — optional welcome text on the setup screen
-- `FRAMECAD_DEFAULT_ISSUE_REPO` — repo the "report a problem" flow files issues against
+
+The desktop's "Report a problem" button now POSTs to the team server (it shows
+in the admin **Reports** page, and is optionally forwarded to a chat webhook via
+the server's `FRAMECAD_ISSUE_WEBHOOK_URL`). It no longer uses the GitHub CLI.
 
 See [google-workspace-setup.md](google-workspace-setup.md) for how to obtain the Google values.
 

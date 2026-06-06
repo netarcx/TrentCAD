@@ -512,6 +512,27 @@ export async function claimPartNumber(
   )
 }
 
+/**
+ * Submit an in-app problem report to the team server (it lands in the admin
+ * Reports page + optionally a chat webhook). Replaces the old GitHub-CLI issue
+ * flow. The app version rides along automatically as the X-Client-Version
+ * header. Throws on a network/server error; returns a friendly message when the
+ * device isn't enrolled (reporting needs a team server to send to).
+ */
+export async function reportIssue(
+  message: string,
+  platform: string,
+): Promise<{ success: boolean; id?: number; error?: string }> {
+  if (!state.token) {
+    return { success: false, error: 'Enroll with your team server first — then the Report button can send this to your admin.' }
+  }
+  const data = await fetchTeamApi<{ ok: boolean; id: number }>(
+    '/api/issues',
+    { method: 'POST', body: { message, platform }, timeoutMs: 8000 },
+  )
+  return { success: true, id: data.id }
+}
+
 // --- Drive publish history (replaces `git log` for Drive projects) ---
 
 /** One publish event from the team server, shaped like a HistoryEntry. */

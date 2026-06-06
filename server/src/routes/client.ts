@@ -10,6 +10,36 @@
 import type { FastifyInstance } from 'fastify'
 import { getDb, type Role, type MemberStatus } from '../db.js'
 import { requireDevice, hashPassword, isPasswordAcceptable } from '../auth.js'
+import { config } from '../config.js'
+
+/**
+ * Best-effort forward of a problem report to a Discord/Slack incoming webhook.
+ * No-op when FRAMECAD_ISSUE_WEBHOOK_URL is unset. Sends both `content` (Discord)
+ * and `text` (Slack) so one payload works for either. Never throws — the report
+ * is already persisted; chat delivery is a bonus.
+ */
+async function forwardIssueToWebhook(report: {
+  id: number; reporterName: string; message: string; appVersion: string | null; platform: string | null
+}): Promise<void> {
+  const url = config.issueWebhookUrl
+  if (!url) return
+  try {
+    const meta = [report.appVersion && `v${report.appVersion}`, report.platform].filter(Boolean).join(' · ')
+    const body = [
+      `🐞 **FrameCAD problem report #${report.id}** from **${report.reporterName}**`,
+      meta ? `_${meta}_` : '',
+      '```',
+      report.message.slice(0, 1500),
+      '```',
+    ].filter(Boolean).join('\n')
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: body, text: body }),
+      signal: AbortSignal.timeout(5000),
+    })
+  } catch { /* best effort */ }
+}
 
 interface TeamRow {
   name: string
@@ -91,6 +121,7 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     if (!req.url.startsWith('/api/me') &&
         !req.url.startsWith('/api/team') &&
         !req.url.startsWith('/api/members') &&
+        !req.url.startsWith('/api/issues') &&
         !req.url.startsWith('/api/projects')) return
     await requireDevice(req, reply)
   })
@@ -625,6 +656,35 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
         target: `${key}:${partNumber}`,
       })
       return { ok: true, reassigned: false, partNumber }
+    },
+  )
+
+  // ── In-app problem reports ──
+  // The desktop "Report" button POSTs the error here (authenticated, so the
+  // report is attributed to the enrolled member + their client version).
+  // Replaces the dead gh-CLI issue flow. Lands in `issue_reports` for the admin
+  // Reports page and is best-effort forwarded to a chat webhook if configured.
+  app.post<{ Body: { message?: string; platform?: string } }>(
+    '/api/issues',
+    async (req, reply) => {
+      const member = req.member!
+      const message = (req.body?.message ?? '').trim().slice(0, 8000)
+      if (!message) return reply.code(400).send({ error: 'A problem description is required.' })
+      const platform = ((req.body?.platform ?? '').trim().slice(0, 200)) || null
+      const appVersion = ((req.headers['x-client-version'] as string | undefined) ?? '').slice(0, 32) || null
+      const now = Date.now()
+
+      const result = getDb().prepare(
+        `INSERT INTO issue_reports (memberId, reporterName, message, appVersion, platform, status, createdAt)
+         VALUES (?, ?, ?, ?, ?, 'open', ?)`
+      ).run(member.id, member.displayName, message, appVersion, platform, now)
+      const id = result.lastInsertRowid as number
+
+      const { logAudit } = await import('../db.js')
+      logAudit({ actorId: member.id, actorLabel: member.displayName, action: 'issue.report', target: `issue:${id}` })
+      void forwardIssueToWebhook({ id, reporterName: member.displayName, message, appVersion, platform })
+
+      return { ok: true, id }
     },
   )
 

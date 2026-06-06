@@ -100,6 +100,7 @@ export default function DetailsPanel({ file, onCheckOut, onCheckIn, onClose, onN
       setMassText(typeof m?.mass === 'number' ? String(m.mass) : '')
       setCostText(typeof m?.cost === 'number' ? String(m.cost) : '')
     } catch {
+      if (metaReqRef.current !== path) return
       setMeta({})
       setMfgNotes('')
       setMfgMaterial('')
@@ -107,6 +108,7 @@ export default function DetailsPanel({ file, onCheckOut, onCheckIn, onClose, onN
       setMassText('')
       setCostText('')
     } finally {
+      if (metaReqRef.current !== path) return
       setLoading(false)
     }
   }, [])

@@ -161,6 +161,11 @@ describe('parts module (with temp project dir)', () => {
       expect(r.partNumber).toBe(`${yy}-2129-01-001`)
       expect(r.filePath).toBe(`Drivetrain/${r.partNumber}.sldprt`)
     })
+
+    it('rejects path traversal attempts', async () => {
+      await expect(parts.createNewPart('../outside', undefined)).rejects.toThrow('Part path escapes project directory')
+      await expect(parts.createNewPart('Drivetrain/../../outside', undefined)).rejects.toThrow('Part path escapes project directory')
+    })
   })
 
   describe('createNewAssembly', () => {

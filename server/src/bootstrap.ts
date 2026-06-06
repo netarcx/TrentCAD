@@ -41,6 +41,18 @@ export async function maybeBootstrapAdminPin(log: FastifyBaseLogger): Promise<Is
   ).get()
   if (existingAdminDevice) return null
 
+  // Password login is enough recovery for a claimed admin account. Do not
+  // re-open the weaker setup-PIN path just because all web/desktop sessions
+  // were revoked or expired.
+  const existingPasswordAdmin = db.prepare(
+    `SELECT 1
+       FROM members
+      WHERE role = 'admin' AND status = 'active'
+        AND passwordHash IS NOT NULL AND username IS NOT NULL
+      LIMIT 1`
+  ).get()
+  if (existingPasswordAdmin) return null
+
   // Maybe a setup PIN from a previous boot is still hanging around.
   // Reuse it so a restart doesn't constantly print new PINs at the operator.
   const pendingAdminPin = db.prepare(

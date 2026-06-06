@@ -476,6 +476,13 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX issue_reports_status_idx ON issue_reports(status, createdAt DESC);
   `,
+  // v22: first timestamp in the current failed-login window. The original
+  // lockout only stored a count, so four bad attempts could sit forever and
+  // a fifth days later still locked the account. This makes the documented
+  // "5 failures inside 15 minutes" policy enforceable.
+  `
+  ALTER TABLE members ADD COLUMN failedLoginFirstAt INTEGER;
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

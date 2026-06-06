@@ -59,8 +59,9 @@ export function close(): void {
 export async function open(dir: string): Promise<ProjectConfig | null> {
   const manifest = await loadManifest(dir)
   if (!manifest) return null
+  const serverProject = currentSnapshot().projects.find(p => p.driveFolderId === manifest.projectFolderId)
   const config: ProjectConfig = {
-    name: path.basename(dir),
+    name: serverProject?.name || path.basename(dir),
     path: dir,
     remote: '',
     backend: 'drive',

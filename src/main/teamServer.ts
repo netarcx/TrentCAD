@@ -63,6 +63,10 @@ const state: InMemoryState = {
   revoked: false,
 }
 
+// Bumped whenever enrollment identity changes. In-flight refreshes capture the
+// value and drop their result if sign-out/re-login happened before they finish.
+let stateGeneration = 0
+
 // Listeners notified whenever the snapshot changes — used by the
 // renderer (push subscription) and by REST so /api/coord-state can
 // just read from `state` without polling.
@@ -208,6 +212,7 @@ export async function enroll(args: {
 
   // Stash url first so fetchTeamApi can use it.
   const previous = { ...state }
+  stateGeneration += 1
   state.serverUrl = cleanUrl
   state.token = null
   try {
@@ -260,6 +265,7 @@ export async function loginDevice(args: {
   }
 
   const previous = { ...state }
+  stateGeneration += 1
   state.serverUrl = cleanUrl
   state.token = null
   try {
@@ -323,7 +329,9 @@ async function syncDisplayNameFromGoogle(): Promise<void> {
 }
 
 export async function refresh(): Promise<TeamSnapshot> {
-  if (!state.token) {
+  const tokenAtStart = state.token
+  const generationAtStart = stateGeneration
+  if (!tokenAtStart) {
     state.error = 'Not enrolled'
     return currentSnapshot()
   }
@@ -336,6 +344,9 @@ export async function refresh(): Promise<TeamSnapshot> {
       fetchTeamApi<{ members: TeamMember[] }>('/api/members').then(d => d.members),
       fetchTeamApi<{ projects: ProjectEntry[] }>('/api/projects').then(d => d.projects),
     ])
+    if (state.token !== tokenAtStart || stateGeneration !== generationAtStart) {
+      return currentSnapshot()
+    }
     // Legacy team servers (pre-caps) omit `capabilities`/`allowedProjectIds`/
     // `autoOpenProjectId`. Default to full access so existing deployments
     // keep working until the server is upgraded — fail-open is correct
@@ -369,6 +380,9 @@ export async function refresh(): Promise<TeamSnapshot> {
     // Keep the team display name synced with the signed-in Google account.
     void syncDisplayNameFromGoogle()
   } catch (err) {
+    if (state.token !== tokenAtStart || stateGeneration !== generationAtStart) {
+      return currentSnapshot()
+    }
     const e = err as Error & { status?: number }
     // 401 means our token's no good — the admin probably revoked our
     // device. Clear EVERY snapshot field so the welcome screen flips
@@ -407,6 +421,7 @@ export async function signOut(): Promise<void> {
       await fetchTeamApi('/api/me/device', { method: 'DELETE', timeoutMs: 3000 })
     } catch { /* nothing actionable */ }
   }
+  stateGeneration += 1
   state.serverUrl = null
   state.token = null
   state.me = null

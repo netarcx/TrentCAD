@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useCallback, useRef } from 'react'
+import { useMemo, useState, useEffect, useCallback, useRef, type JSX } from 'react'
 import { ChevronLeft, Sun, Moon, X } from 'lucide-react'
 import ErrorMsg from './components/ErrorMsg'
 import { useGit } from './hooks/useGit'
@@ -448,6 +448,7 @@ export default function App() {
   // "Trusted student" CAD-structure power (goal 7): mentors/admins always have
   // it; a student gets it via the server-granted manageCadStructure capability.
   const canManageCad = isMentor || !!teamSnapshot?.me?.capabilities?.manageCadStructure
+  const canForceCheckIn = isMentor || !!teamSnapshot?.me?.capabilities?.forceCheckIn
 
   // If a server-side demotion takes effect (e.g. admin changed our
   // role from mentor to student) while we're sitting on the Parts
@@ -925,6 +926,7 @@ export default function App() {
             hasProject={false}
             isAdmin={isAdmin}
             isMentor={isMentor}
+            canForceCheckIn={canForceCheckIn}
             appVersion={appVersion}
             gitName={gitName}
             onClose={() => {
@@ -1158,6 +1160,7 @@ export default function App() {
           hasProject={true}
           isAdmin={isAdmin}
           isMentor={isMentor}
+          canForceCheckIn={canForceCheckIn}
           appVersion={appVersion}
           gitName={gitName}
           onClose={() => {

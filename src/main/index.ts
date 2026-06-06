@@ -15,6 +15,11 @@ let mainWindow: BrowserWindow | null = null
 // receive it. Flushed by the renderer via `consume-pending-deep-link`
 // once it has mounted.
 let pendingDeepLink: string | null = null
+let deepLinkRendererReady = false
+
+function findFrameCADUrl(argv: string[]): string | undefined {
+  return argv.find(a => a.startsWith('framecad://') || a.startsWith('framecad:join'))
+}
 
 function parseFrameCADUrl(rawUrl: string): { action: 'join'; url: string } | null {
   try {
@@ -43,12 +48,11 @@ function handleDeepLink(rawUrl: string | undefined): void {
   if (!rawUrl) return
   const parsed = parseFrameCADUrl(rawUrl)
   if (!parsed) return
-  if (mainWindow && !mainWindow.isDestroyed()) {
+  if (mainWindow && !mainWindow.isDestroyed() && deepLinkRendererReady) {
     if (mainWindow.isMinimized()) mainWindow.restore()
     mainWindow.focus()
     mainWindow.webContents.send('deep-link', parsed)
   } else {
-    // Renderer not ready yet — stash and let it pull on mount.
     pendingDeepLink = rawUrl
   }
 }
@@ -77,7 +81,7 @@ if (!gotLock) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.focus()
     }
-    const url = argv.find(a => a.startsWith('framecad://'))
+    const url = findFrameCADUrl(argv)
     handleDeepLink(url)
   })
 }
@@ -89,6 +93,7 @@ app.on('open-url', (event, url) => {
 })
 
 function createWindow(): void {
+  deepLinkRendererReady = false
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -186,6 +191,7 @@ function createWindow(): void {
 setupIpc(() => mainWindow)
 
 ipcMain.handle('consume-pending-deep-link', () => {
+  deepLinkRendererReady = true
   if (!pendingDeepLink) return null
   const parsed = parseFrameCADUrl(pendingDeepLink)
   pendingDeepLink = null
@@ -197,7 +203,7 @@ app.whenReady().then(async () => {
   // Capture before createWindow so handleDeepLink can stash it for the
   // renderer to consume once mounted.
   if (process.platform !== 'darwin') {
-    const url = process.argv.find(a => a.startsWith('framecad://'))
+    const url = findFrameCADUrl(process.argv)
     if (url) pendingDeepLink = url
   }
   // Restore any previously-saved team-server enrollment from disk so

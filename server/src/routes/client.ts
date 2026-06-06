@@ -479,13 +479,12 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
   // default for students: a student may only touch a REGISTERED project that's
   // on their allowlist — an empty allowlist grants NO registered projects
   // (access is admin-granted, matching /api/projects above). Admins/mentors
-  // always pass. An UNREGISTERED Drive folder (no driveFolderId row) has no
-  // registry entry to gate against, so it stays open — teams that haven't
-  // adopted the registry yet aren't disrupted. Returns true when access is OK.
+  // always pass. Students may not touch unregistered project keys: once a
+  // team uses project allowlists, the server is the authoritative write gate.
   function keyAllowed(member: { role: string; allowedProjectIds: number[] }, key: string): boolean {
     if (member.role !== 'student') return true
     const proj = getDb().prepare(`SELECT id FROM projects WHERE driveFolderId = ?`).get(key) as { id: number } | undefined
-    if (!proj) return true // unregistered folder — not gated by the registry
+    if (!proj) return false
     return member.allowedProjectIds.includes(proj.id)
   }
   function denyKey(reply: import('fastify').FastifyReply): unknown {

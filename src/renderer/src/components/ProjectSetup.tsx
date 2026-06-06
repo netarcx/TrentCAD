@@ -111,6 +111,21 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
   // own transforms on top.
   const logoBounceRef = useRef<HTMLDivElement | null>(null)
   const logoSpacerRef = useRef<HTMLDivElement | null>(null)
+  const canJoinDrive =
+    !!teamSnapshot?.enrolled &&
+    !!teamSnapshot.me?.capabilities?.openProject &&
+    (
+      teamSnapshot.me.role !== 'student' ||
+      (teamSnapshot.projects?.some(p => !!p.driveFolderId && !!p.sharedDriveId) ?? false)
+    )
+  const serverProjectByDriveId = new Map(
+    (teamSnapshot?.projects ?? [])
+      .filter(p => !!p.driveFolderId)
+      .map(p => [p.driveFolderId!, p])
+  )
+  const localDriveProjects = recentProjects
+    .filter(p => p.backend === 'drive')
+    .filter(p => teamSnapshot?.me?.role !== 'student' || (!!p.driveFolderId && serverProjectByDriveId.has(p.driveFolderId)))
   const screensaverActiveRef = useRef(false)
   const bounceStateRef = useRef({
     x: 0, y: 0, vx: 0, vy: 0, naturalX: 0, naturalY: 0
@@ -585,11 +600,28 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
   }
 
   if (mode === 'drive') {
+    if (!canJoinDrive) {
+      return (
+        <div className="setup-screen">
+          <h1>Join from Google Drive</h1>
+          <div className="setup-form">
+            <p className="form-hint">
+              Your admin has not granted you access to join any Drive projects.
+            </p>
+            <div className="form-actions">
+              <button className="toolbar-btn" onClick={() => setMode('select')}>Back</button>
+            </div>
+          </div>
+        </div>
+      )
+    }
     return (
       <DriveJoin
         onBack={() => setMode('select')}
         onJoinDriveProject={onJoinDriveProject}
         isLoading={isLoading}
+        allowedProjects={teamSnapshot?.projects ?? []}
+        allowAllProjects={teamSnapshot?.me?.role !== 'student'}
       />
     )
   }
@@ -692,23 +724,35 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
           }
           return (
             <div className="project-list">
-              {projects.map(p => (
-                <div
+              {projects.map(p => {
+                const local = p.driveFolderId
+                  ? recentProjects.find(r => r.backend === 'drive' && r.driveFolderId === p.driveFolderId)
+                  : undefined
+                const RowTag = local ? 'button' : 'div'
+                return (
+                <RowTag
                   key={p.id}
-                  className="project-list-row project-list-row-static"
-                  title={p.name}
+                  type={local ? 'button' : undefined}
+                  className={'project-list-row' + (local ? '' : ' project-list-row-static')}
+                  title={local ? local.path : p.name}
+                  disabled={local ? isLoading : undefined}
+                  onClick={local ? () => onOpenProject(local.path) : undefined}
                 >
                   <div className="project-list-row-main">
                     <div className="project-list-row-name">{p.name}</div>
-                    {p.description && (
+                    {local ? (
+                      <div className="project-list-row-path" title={local.path}>{local.path}</div>
+                    ) : p.description && (
                       <div className="project-list-row-desc">{p.description}</div>
                     )}
                   </div>
                   <div className="project-list-row-status">
-                    <span className="pill pill-remote">Google Drive</span>
+                    <span className={'pill ' + (local ? 'pill-local' : 'pill-remote')}>
+                      {local ? '✓ Local' : 'Google Drive'}
+                    </span>
                   </div>
-                </div>
-              ))}
+                </RowTag>
+              )})}
             </div>
           )
         })()}
@@ -737,16 +781,14 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
           </div>
         )}
 
-        {/* Locally-downloaded Google Drive projects. These live only in
-            recentProjects (Drive projects aren't in teamSnapshot.projects,
-            which is keyed on a GitHub repo URL) and carry no `remote`, so
-            the team-projects list above never surfaces them. Without this
-            section a Drive project you joined once becomes unreachable —
-            you'd have to re-download it. Click a row to reopen it from its
-            local folder (the open-project handler detects the Drive
-            manifest and reopens it as a Drive project). */}
+        {/* Locally-downloaded Google Drive projects. Matched server projects
+            are opened from the Team Projects list above; this section catches
+            local Drive clones that are not in the current server snapshot
+            (for mentors/admins, old projects, or standalone/local recovery). */}
         {(() => {
-          const driveProjects = recentProjects.filter(p => p.backend === 'drive')
+          const driveProjects = localDriveProjects.filter(p =>
+            !p.driveFolderId || !serverProjectByDriveId.has(p.driveFolderId)
+          )
           if (driveProjects.length === 0) return null
           return (
             <div className="project-list" style={{ marginTop: 16 }}>
@@ -781,7 +823,7 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
         {/* Google Drive backend — the primary (and only) way to join a
             project. Requires team enrollment because Drive check-out /
             check-in locks use the team server identity. */}
-        {teamSnapshot?.enrolled && (
+        {canJoinDrive && (
           <div className="setup-cards" style={{ marginTop: 20 }}>
             <button
               className="setup-card"

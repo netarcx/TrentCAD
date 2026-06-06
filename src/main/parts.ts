@@ -806,7 +806,10 @@ async function createNewPartImpl(
   const partNumber = claimed.partNumber
   const relPath = claimed.filePath
   manifest.nextCounters[topLevel] = claimed.counter + 1
-  const fullPath = path.join(projectDir, relPath)
+  const fullPath = path.resolve(projectDir, relPath)
+  if (!fullPath.startsWith(projectDir + path.sep)) {
+    throw new Error('Part path escapes project directory')
+  }
 
   // Ensure parent folder exists so the user can save there from SolidWorks.
   // Do NOT create the .sldprt file — an empty file is not a valid SolidWorks

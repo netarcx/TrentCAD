@@ -328,6 +328,23 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         values.push(v === null ? null : (v as number))
       }
     }
+    const current = getDb().prepare(
+      `SELECT allowedProjectIds, autoOpenProjectId FROM members WHERE id = ?`
+    ).get(id) as { allowedProjectIds: string | null; autoOpenProjectId: number | null } | undefined
+    if (!current) return reply.code(404).send({ error: 'Member not found' })
+    const nextAllowed = 'allowedProjectIds' in (req.body ?? {})
+      ? (coerceProjectIdList(req.body!.allowedProjectIds) ?? parseAllowedProjectIds(current.allowedProjectIds))
+      : parseAllowedProjectIds(current.allowedProjectIds)
+    const nextAutoOpen = 'autoOpenProjectId' in (req.body ?? {})
+      ? (req.body!.autoOpenProjectId === null ? null : req.body!.autoOpenProjectId)
+      : current.autoOpenProjectId
+    if (
+      Number.isFinite(nextAutoOpen) &&
+      nextAllowed.length > 0 &&
+      !nextAllowed.includes(nextAutoOpen as number)
+    ) {
+      return reply.code(400).send({ error: 'The auto-open project must be one of the allowed projects.' })
+    }
     if ('kioskMode' in (req.body ?? {})) {
       // Coerce to 0/1 for SQLite. The trigger that ties kiosk to
       // autoOpenProjectId !== null lives at read time (findDeviceByToken
@@ -686,8 +703,17 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
   app.delete<{ Params: { id: string } }>('/api/admin/projects/:id', async (req, reply) => {
     const id = Number.parseInt(req.params.id, 10)
     if (!Number.isFinite(id)) return reply.code(400).send({ error: 'Invalid project id' })
+    const row = getDb().prepare(
+      `SELECT driveFolderId FROM projects WHERE id = ?`
+    ).get(id) as { driveFolderId: string | null } | undefined
+    if (!row) return reply.code(404).send({ error: 'Project not found' })
     const result = getDb().prepare(`DELETE FROM projects WHERE id = ?`).run(id)
     if (result.changes === 0) return reply.code(404).send({ error: 'Project not found' })
+    if (row.driveFolderId) {
+      getDb().prepare(`DELETE FROM locks WHERE projectKey = ?`).run(row.driveFolderId)
+      getDb().prepare(`DELETE FROM publish_log WHERE projectKey = ?`).run(row.driveFolderId)
+      getDb().prepare(`DELETE FROM part_numbers WHERE projectKey = ?`).run(row.driveFolderId)
+    }
     logAudit({
       actorId: req.member!.id,
       actorLabel: req.member!.displayName,

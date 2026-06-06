@@ -1,4 +1,5 @@
 import { useApiBusy } from '../hooks/useApiBusy'
+import type { JSX } from 'react'
 
 /**
  * Persistent activity indicator that sits at the very top of the

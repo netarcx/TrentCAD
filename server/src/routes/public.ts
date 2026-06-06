@@ -350,15 +350,17 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
         status: 'active' | 'inactive'
         passwordHash: string | null
         failedLoginCount: number
+        failedLoginFirstAt: number | null
         lockedUntil: number | null
         capabilities: string | null
         allowedProjectIds: string | null
         autoOpenProjectId: number | null
         kioskMode: number
+        archiveMode: number
       }
       const SELECT_FIELDS = `id, displayName, githubUsername, role, status, passwordHash,
-                             failedLoginCount, lockedUntil, capabilities, allowedProjectIds,
-                             autoOpenProjectId, kioskMode`
+                             failedLoginCount, failedLoginFirstAt, lockedUntil, capabilities,
+                             allowedProjectIds, autoOpenProjectId, kioskMode, archiveMode`
       let member = db.prepare(
         `SELECT ${SELECT_FIELDS}
            FROM members
@@ -406,28 +408,30 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
       // the count-increment branch below sees the reset value.
       if (member.lockedUntil !== null && member.failedLoginCount > 0) {
         db.prepare(
-          `UPDATE members SET failedLoginCount = 0, lockedUntil = NULL WHERE id = ?`
+          `UPDATE members SET failedLoginCount = 0, failedLoginFirstAt = NULL, lockedUntil = NULL WHERE id = ?`
         ).run(member.id)
         member.failedLoginCount = 0
+        member.failedLoginFirstAt = null
         member.lockedUntil = null
       }
 
       const ok = await verifyPassword(member.passwordHash, password)
       if (!ok) {
-        const newCount = member.failedLoginCount + 1
-        // Five strikes within rolling 15-minute window locks the
-        // account. The "rolling" part is implicit — we never reset
-        // the count except on successful login, but the lockedUntil
-        // timestamp is what actually gates access. Simpler than
-        // tracking a true sliding window.
         const LOCK_THRESHOLD = 5
+        const LOCK_WINDOW_MS = 15 * 60 * 1000
         const LOCK_DURATION_MS = 15 * 60 * 1000
+        const windowStart =
+          member.failedLoginFirstAt && now - member.failedLoginFirstAt <= LOCK_WINDOW_MS
+            ? member.failedLoginFirstAt
+            : now
+        const baseCount = windowStart === member.failedLoginFirstAt ? member.failedLoginCount : 0
+        const newCount = baseCount + 1
         const newLockedUntil = newCount >= LOCK_THRESHOLD
           ? now + LOCK_DURATION_MS
           : null
         db.prepare(
-          `UPDATE members SET failedLoginCount = ?, lockedUntil = ? WHERE id = ?`
-        ).run(newCount, newLockedUntil, member.id)
+          `UPDATE members SET failedLoginCount = ?, failedLoginFirstAt = ?, lockedUntil = ? WHERE id = ?`
+        ).run(newCount, windowStart, newLockedUntil, member.id)
         logAudit({
           actorId: member.id,
           actorLabel: member.displayName,
@@ -443,6 +447,7 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
       db.prepare(
         `UPDATE members
             SET failedLoginCount = 0,
+                failedLoginFirstAt = NULL,
                 lockedUntil = NULL,
                 lastLoginAt = ?
           WHERE id = ?`
@@ -482,6 +487,7 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
           allowedProjectIds: parseAllowedProjectIds(member.allowedProjectIds),
           autoOpenProjectId: member.autoOpenProjectId,
           kioskMode: member.kioskMode === 1 && member.autoOpenProjectId !== null,
+          archiveMode: member.archiveMode === 1,
         },
         team: {
           name: teamRow.name,

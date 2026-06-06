@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { HardDrive, FolderOpen, LogOut, RefreshCw } from 'lucide-react'
-import type { GoogleAuthStatus, DriveSharedDrive, DriveFolder } from '@shared/types'
+import type { GoogleAuthStatus, DriveSharedDrive, DriveFolder, ProjectEntry } from '@shared/types'
 
 interface Props {
   /** Back to the welcome screen. */
@@ -16,6 +16,8 @@ interface Props {
   /** True while a join (download) is in flight — disables the form so the
    *  user can't fire a second join over the first. */
   isLoading: boolean
+  allowedProjects: ProjectEntry[]
+  allowAllProjects?: boolean
 }
 
 /**
@@ -30,7 +32,7 @@ interface Props {
  * (the same one the git clone flow uses), so this component only owns
  * the picker UI up to the moment `onJoinDriveProject` is called.
  */
-export default function DriveJoin({ onBack, onJoinDriveProject, isLoading }: Props) {
+export default function DriveJoin({ onBack, onJoinDriveProject, isLoading, allowedProjects, allowAllProjects = false }: Props) {
   const [auth, setAuth] = useState<GoogleAuthStatus | null>(null)
   const [signingIn, setSigningIn] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -44,6 +46,11 @@ export default function DriveJoin({ onBack, onJoinDriveProject, isLoading }: Pro
   const [selectedFolder, setSelectedFolder] = useState<DriveFolder | null>(null)
 
   const [savePath, setSavePath] = useState('')
+  const allowedDriveIds = useMemo(() => new Set(
+    allowedProjects
+      .filter(p => p.driveFolderId && p.sharedDriveId)
+      .map(p => `${p.sharedDriveId}:${p.driveFolderId}`)
+  ), [allowedProjects])
 
   // Initial auth probe — cached, no network. If already signed in we
   // jump straight to the Shared Drive picker.
@@ -94,20 +101,21 @@ export default function DriveJoin({ onBack, onJoinDriveProject, isLoading }: Pro
     setSelectedFolder(null)
   }
 
-  const pickDrive = async (drive: DriveSharedDrive) => {
+  const pickDrive = useCallback(async (drive: DriveSharedDrive) => {
     setSelectedDrive(drive)
     setSelectedFolder(null)
     setFolders(null)
     setLoadingFolders(true)
     setError(null)
     try {
-      setFolders(await window.api.driveListFolders(drive.id))
+      const listed = await window.api.driveListFolders(drive.id)
+      setFolders(allowAllProjects ? listed : listed.filter(f => allowedDriveIds.has(`${drive.id}:${f.id}`)))
     } catch (err) {
       setError((err as Error).message)
     } finally {
       setLoadingFolders(false)
     }
-  }
+  }, [allowAllProjects, allowedDriveIds])
 
   const handleBrowse = async () => {
     const dir = await window.api.selectDirectory()
@@ -116,6 +124,10 @@ export default function DriveJoin({ onBack, onJoinDriveProject, isLoading }: Pro
 
   const handleJoin = async () => {
     if (!selectedDrive || !selectedFolder || !savePath) return
+    if (!allowAllProjects && !allowedDriveIds.has(`${selectedDrive.id}:${selectedFolder.id}`)) {
+      setError('Your admin has not granted you access to join that project.')
+      return
+    }
     setError(null)
     try {
       await onJoinDriveProject({
@@ -235,7 +247,7 @@ export default function DriveJoin({ onBack, onJoinDriveProject, isLoading }: Pro
                 ))}
               </div>
             ) : (
-              <div className="form-hint">This Shared Drive has no top-level folders.</div>
+              <div className="form-hint">This Shared Drive has no projects you can join.</div>
             )}
           </div>
         )}

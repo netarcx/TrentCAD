@@ -17,6 +17,9 @@ directories:
   output: dist
 files:
   - out/**/*
+  - "!out/**/*.test.js"
+  - "!out/**/*.test.d.ts"
+  - "!out/**/*.test.js.map"
   - node_modules/**/*
   - "!node_modules/**/*.md"
   - "!node_modules/**/*.map"

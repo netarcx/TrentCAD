@@ -33,6 +33,7 @@ interface Props {
    *  Documents, Export Queue, Locks, Health, Tools, Project Registry).
    *  isAdmin implies isMentor. */
   isMentor: boolean
+  canForceCheckIn?: boolean
   onClose: () => void
   appVersion: string
   gitName: string
@@ -43,13 +44,14 @@ interface SidebarGroup {
   items: { id: AdminTab; label: string }[]
 }
 
-export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appVersion, gitName }: Props) {
+export default function AdminPage({ hasProject, isAdmin, isMentor, canForceCheckIn = false, onClose, appVersion, gitName }: Props) {
+  const canUseLocks = isMentor || canForceCheckIn
   // Team-wide settings (name / members / projects) live in the team
   // server's browser UI now, not this tab list. What remains here is
   // project-scoped (Parts Manager, Approvals, etc.) plus Profile/About.
   const initialTab: AdminTab = isMentor
     ? (hasProject ? 'parts' : 'profile')
-    : 'profile'
+    : (canUseLocks && hasProject ? 'locks' : 'profile')
   const [tab, setTab] = useState<AdminTab>(initialTab)
 
   // If the user's role changes mid-session (e.g. team-server demoted
@@ -57,15 +59,17 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
   // tab they can actually see so they aren't staring at a blank panel.
   useEffect(() => {
     const adminOnly: AdminTab[] = ['project-settings']
-    const mentorOrAbove: AdminTab[] = ['parts', 'approvals', 'documents', 'export-queue', 'locks', 'tools']
+    const mentorOrAbove: AdminTab[] = ['parts', 'approvals', 'documents', 'export-queue', 'tools']
     if (adminOnly.includes(tab) && !isAdmin) {
+      setTab(initialTab)
+    } else if (tab === 'locks' && !canUseLocks) {
       setTab(initialTab)
     } else if (mentorOrAbove.includes(tab) && !isMentor) {
       setTab('profile')
     } else if ((tab === 'project-settings' || tab === 'parts' || tab === 'approvals' || tab === 'documents' || tab === 'export-queue' || tab === 'locks' || tab === 'tools') && !hasProject) {
       setTab('profile')
     }
-  }, [tab, isAdmin, isMentor, hasProject, initialTab])
+  }, [tab, isAdmin, isMentor, canUseLocks, hasProject, initialTab])
 
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
@@ -395,7 +399,7 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
   // on the team server's browser UI. The About tab carries a button
   // that opens it in the system browser.
   const sidebarGroups: SidebarGroup[] = useMemo(() => {
-    if (!isMentor) {
+    if (!isMentor && !canUseLocks) {
       return [{
         label: '',
         items: [
@@ -406,7 +410,7 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
     }
     const groups: SidebarGroup[] = []
 
-    if (hasProject) {
+    if (hasProject && isMentor) {
       const projectItems: { id: AdminTab; label: string }[] = []
       if (isAdmin) projectItems.push({ id: 'project-settings', label: 'Settings' })
       projectItems.push(
@@ -416,13 +420,11 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
         { id: 'export-queue', label: 'Export Queue' },
       )
       groups.push({ label: 'Project', items: projectItems })
-      groups.push({
-        label: 'Maintenance',
-        items: [
-          { id: 'locks', label: 'Locks' },
-          { id: 'tools', label: 'Tools' },
-        ]
-      })
+    }
+    if (hasProject && canUseLocks) {
+      const items: { id: AdminTab; label: string }[] = [{ id: 'locks', label: 'Locks' }]
+      if (isMentor) items.push({ id: 'tools', label: 'Tools' })
+      groups.push({ label: 'Maintenance', items })
     }
     groups.push({
       label: '',
@@ -432,7 +434,7 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, onClose, appV
       ]
     })
     return groups
-  }, [hasProject, isAdmin, isMentor])
+  }, [hasProject, isAdmin, isMentor, canUseLocks])
 
   return (
     <div className="admin-fullscreen">

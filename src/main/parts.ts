@@ -389,7 +389,9 @@ async function collectSolidWorksFiles(dirPath: string, relativeTo: string): Prom
       if (item.startsWith('.') || item === 'COTS') continue
       const fullPath = path.join(dir, item)
       let isDir = entry.isDirectory()
-      let isFileLike = entry.isFile()
+      // Any non-directory is a file candidate — matches the old stat-based
+      // walk (its `else` caught every non-dir, not just regular files).
+      let isFileLike = !isDir
       if (entry.isSymbolicLink()) {
         // Resolve the link target the way the previous stat-based walk did.
         const stat = await fs.stat(fullPath).catch(() => null)

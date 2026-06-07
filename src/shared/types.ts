@@ -614,6 +614,7 @@ export interface IpcApi {
   onUpdateDownloadProgress(callback: (progress: { percent: number }) => void): () => void
   onUpdateDownloaded(callback: () => void): () => void
   onUpdateRetryStatus(callback: (data: UpdateRetryStatus) => void): () => void
+  onUpdateError(callback: (data: { message: string }) => void): () => void
   onPublishProgress(callback: (progress: PublishProgress) => void): () => void
   onJoinProgress(callback: (progress: PublishProgress) => void): () => void
 

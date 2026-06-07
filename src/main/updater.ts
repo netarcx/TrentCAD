@@ -26,23 +26,61 @@ export function initAutoUpdater(getMainWindow: () => BrowserWindow | null): void
 
   let retryTimer: ReturnType<typeof setTimeout> | null = null
 
+  // Watchdog for a download that emits neither progress, completion, nor a
+  // surfaced error (e.g. a platform that can't self-update, or a stalled
+  // network). Without it the banner sits on "downloading…" forever.
+  let stallTimer: ReturnType<typeof setTimeout> | null = null
+  let downloading = false
+  const DOWNLOAD_STALL_MS = 90_000
+
+  function cancelStall(): void {
+    if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+  }
+  function armStall(): void {
+    cancelStall()
+    stallTimer = setTimeout(() => {
+      stallTimer = null
+      downloading = false
+      send(getMainWindow(), 'update-error', {
+        message: 'The download didn’t make any progress. This platform or network may not support in-app updates — use Download manually below.'
+      })
+    }, DOWNLOAD_STALL_MS)
+  }
+
   autoUpdater.on('update-available', (info) => {
+    // autoDownload is on, so the download starts right after this fires.
+    downloading = true
+    armStall()
     send(getMainWindow(), 'update-available', { version: info.version })
   })
 
   autoUpdater.on('download-progress', (progress) => {
+    armStall() // progress means the download is alive — extend the watchdog
     send(getMainWindow(), 'update-download-progress', {
       percent: Math.round(progress.percent)
     })
   })
 
   autoUpdater.on('update-downloaded', () => {
+    downloading = false
+    cancelStall()
     cancelRetry()
     send(getMainWindow(), 'update-downloaded')
   })
 
+  // Surface DOWNLOAD-phase failures to the UI — previously these were only
+  // console.error'd, so the banner stayed stuck on "downloading…". Check-phase
+  // errors (no release yet, installer still building, offline) are already
+  // handled by checkOnce()'s return value, so only forward once a download has
+  // actually started — otherwise those benign cases would show an error.
   autoUpdater.on('error', (err) => {
-    console.error('Auto-update error:', err?.message || err)
+    const message = (err as Error)?.message || String(err)
+    console.error('Auto-update error:', message)
+    if (downloading) {
+      downloading = false
+      cancelStall()
+      send(getMainWindow(), 'update-error', { message })
+    }
   })
 
   ipcMain.handle('restart-to-update', () => {

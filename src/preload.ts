@@ -276,6 +276,13 @@ const api: IpcApi = {
     return () => ipcRenderer.removeListener('update-retry-status', handler)
   },
 
+  onUpdateError: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
+      callback(data as Parameters<typeof callback>[0])
+    ipcRenderer.on('update-error', handler)
+    return () => ipcRenderer.removeListener('update-error', handler)
+  },
+
   onPublishProgress: (callback) => {
     const handler = (_event: Electron.IpcRendererEvent, progress: unknown) =>
       callback(progress as Parameters<typeof callback>[0])

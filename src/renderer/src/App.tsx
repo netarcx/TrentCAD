@@ -82,6 +82,7 @@ export default function App() {
   const [updateProgress, setUpdateProgress] = useState<number | null>(null)
   const [updateReady, setUpdateReady] = useState(false)
   const [updateRetry, setUpdateRetry] = useState<UpdateRetryStatus | null>(null)
+  const [updateError, setUpdateError] = useState<string | null>(null)
   const [appVersion, setAppVersion] = useState<string>('')
   const [adminConfig, setAdminConfig] = useState<AdminConfig>({})
   const [globalAdmin, setGlobalAdmin] = useState<GlobalAdminConfig>({})
@@ -564,15 +565,24 @@ export default function App() {
       window.api.onUpdateAvailable((info) => {
         setUpdateInfo(info)
         setUpdateRetry(null)
+        setUpdateError(null)
       }),
-      window.api.onUpdateDownloadProgress(({ percent }) => setUpdateProgress(percent)),
+      window.api.onUpdateDownloadProgress(({ percent }) => {
+        setUpdateProgress(percent)
+        setUpdateError(null)
+      }),
       window.api.onUpdateDownloaded(() => {
         setUpdateProgress(null)
         setUpdateReady(true)
         setUpdateRetry(null)
+        setUpdateError(null)
       }),
       window.api.onUpdateRetryStatus((data) => {
         setUpdateRetry(data.status === 'found' || data.status === 'none' || data.status === 'cancelled' ? null : data)
+      }),
+      window.api.onUpdateError(({ message }) => {
+        setUpdateProgress(null)
+        setUpdateError(message)
       })
     ]
     // Guard against a preload that ever returns undefined for one of
@@ -710,7 +720,13 @@ export default function App() {
 
   const updateBanner = updateInfo ? (
     <div className="update-banner">
-      {updateReady ? (
+      {updateError ? (
+        <>
+          <span>Update v{updateInfo.version} couldn’t download automatically. {updateError}</span>
+          <button onClick={() => window.api.openExternal('https://github.com/netarcx/FrameCAD/releases/latest')}>Download manually</button>
+          <button onClick={() => { setUpdateInfo(null); setUpdateError(null) }}>Dismiss</button>
+        </>
+      ) : updateReady ? (
         <>
           <span>Update v{updateInfo.version} ready to install</span>
           <button onClick={() => window.api.restartToUpdate()}>Restart Now</button>

@@ -251,7 +251,10 @@ function nextCounterFor(manifest: PartsManifest, topLevel: string, topNumber: st
   return max + 1
 }
 
-function findLinkedPart(manifest: PartsManifest, drawingPath: string): PartEntry | null {
+function findLinkedPart(
+  manifest: PartsManifest,
+  drawingPath: string
+): { path: string; entry: PartEntry } | null {
   const baseName = path.basename(drawingPath, path.extname(drawingPath))
   const dir = getScope(drawingPath)
 
@@ -260,7 +263,7 @@ function findLinkedPart(manifest: PartsManifest, drawingPath: string): PartEntry
     const entryBase = path.basename(entryPath, path.extname(entryPath))
     const entryDir = getScope(entryPath)
     if (entryBase === baseName && entryDir === dir) {
-      return entry
+      return { path: entryPath, entry }
     }
   }
   return null
@@ -306,10 +309,10 @@ export function assignPartNumber(manifest: PartsManifest, relPath: string): Part
     const linked = findLinkedPart(manifest, relPath)
     if (linked) {
       const entry: PartEntry = {
-        partNumber: linked.partNumber,
+        partNumber: linked.entry.partNumber,
         assignedAt: new Date().toISOString(),
         type: 'drawing',
-        linkedTo: Object.entries(manifest.entries).find(([, e]) => e === linked)?.[0]
+        linkedTo: linked.path
       }
       manifest.entries[relPath] = entry
       return entry
@@ -369,26 +372,39 @@ async function collectSolidWorksFiles(dirPath: string, relativeTo: string): Prom
   const results: string[] = []
 
   async function walk(dir: string): Promise<void> {
-    let items: string[]
+    let entries
     try {
-      items = await fs.readdir(dir)
+      // withFileTypes lets readdir report file-vs-directory directly, so the
+      // common case skips the per-entry fs.stat round-trip. Symlinks still need
+      // a stat to resolve their target type — matching the original (which
+      // stat'd every entry, thereby following symlinks).
+      entries = await fs.readdir(dir, { withFileTypes: true })
     } catch {
       return
     }
 
-    for (const item of items) {
+    const subdirs: string[] = []
+    for (const entry of entries) {
+      const item = entry.name
       if (item.startsWith('.') || item === 'COTS') continue
       const fullPath = path.join(dir, item)
-      const stat = await fs.stat(fullPath).catch(() => null)
-      if (!stat) continue
-
-      if (stat.isDirectory()) {
-        await walk(fullPath)
-      } else if (classifyFile(item)) {
+      let isDir = entry.isDirectory()
+      let isFileLike = entry.isFile()
+      if (entry.isSymbolicLink()) {
+        // Resolve the link target the way the previous stat-based walk did.
+        const stat = await fs.stat(fullPath).catch(() => null)
+        if (!stat) continue
+        isDir = stat.isDirectory()
+        isFileLike = !isDir
+      }
+      if (isDir) {
+        subdirs.push(fullPath)
+      } else if (isFileLike && classifyFile(item)) {
         const relPath = path.relative(relativeTo, fullPath).replace(/\\/g, '/')
         results.push(relPath)
       }
     }
+    for (const sub of subdirs) await walk(sub)
   }
 
   await walk(dirPath)

@@ -136,21 +136,24 @@ async function assertPublishAllowed(dir: string): Promise<void> {
   const pending = collectFiles(await getLocalStatus(dir), new Set(['modified', 'untracked']))
   const maxBytes = policies.maxFileSizeMb * 1024 * 1024
   const blocked = new Set(policies.blockedExtensions.map(e => e.toLowerCase()))
-  const violations: string[] = []
-  for (const rel of pending) {
+  // Probe each pending file CONCURRENTLY (the size check is an independent
+  // fs.stat). Results are gathered back in `pending` order so the violation
+  // list — which the user sees verbatim — is byte-identical to the serial pass.
+  const perFile = await Promise.all(pending.map(async rel => {
     const dot = rel.lastIndexOf('.')
     const ext = dot >= 0 ? rel.slice(dot + 1).toLowerCase() : ''
     if (ext && blocked.has(ext)) {
-      violations.push(`${rel} — .${ext} files are blocked by your team's settings`)
-      continue
+      return `${rel} — .${ext} files are blocked by your team's settings`
     }
     try {
       const st = await fs.stat(path.join(dir, ...rel.split('/')))
       if (st.size > maxBytes) {
-        violations.push(`${rel} — ${(st.size / 1024 / 1024).toFixed(1)} MB exceeds the ${policies.maxFileSizeMb} MB limit`)
+        return `${rel} — ${(st.size / 1024 / 1024).toFixed(1)} MB exceeds the ${policies.maxFileSizeMb} MB limit`
       }
     } catch { /* file vanished between status and stat — skip */ }
-  }
+    return null
+  }))
+  const violations = perFile.filter((v): v is string => v !== null)
   if (violations.length) {
     throw new Error(`Publish blocked by your team's settings:\n${violations.map(v => `  • ${v}`).join('\n')}`)
   }

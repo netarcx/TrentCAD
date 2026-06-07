@@ -770,12 +770,14 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
         }
       }
 
-      // Tombstones: manifest entries whose file no longer exists on disk
-      const tombstones: string[] = []
-      for (const p of Object.keys(manifest.entries)) {
-        const abs = path.join(projectDir, p)
-        try { await fs.stat(abs) } catch { tombstones.push(p) }
-      }
+      // Tombstones: manifest entries whose file no longer exists on disk.
+      // Probe every entry CONCURRENTLY — serial fs.stat over a large manifest
+      // made this scan scale with one disk round-trip per part.
+      const entryPaths = Object.keys(manifest.entries)
+      const present = await Promise.all(entryPaths.map(p =>
+        fs.stat(path.join(projectDir, p)).then(() => true, () => false)
+      ))
+      const tombstones: string[] = entryPaths.filter((_, i) => !present[i])
 
       // Orphaned meta: parts-meta.json keys with no corresponding entry
       // in parts.json (rename history from before the migration fix, or
@@ -789,7 +791,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     }
   })
 
-  // ── Team server (replaces the old coordination repo) ──
+  // ── Team server ──
   // Every team-config / member / project mutation now lives in the
   // browser admin UI hosted by the team server. The desktop's job is
   // only to (a) enroll once with a PIN and (b) read snapshots.

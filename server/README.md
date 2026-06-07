@@ -1,7 +1,7 @@
 # FrameCAD Team Server
 
-Self-hosted coordination server for FrameCAD desktop clients. Replaces
-the old GitHub coordination-repo with a small Node + SQLite service.
+Self-hosted coordination server for FrameCAD desktop clients. A small
+Node + SQLite service.
 
 It is the team's **identity and coordination** brain: it issues enrollment
 PINs, tracks members and devices, coordinates check-out / check-in **locks**,
@@ -220,7 +220,7 @@ SQLite at `${DATA_DIR}/framecad.db`. Tables:
 - `projects` — registry: name + description (+ optional metadata for the
   admin UI).
 - `locks` — active check-out / check-in locks, keyed by project + file path,
-  with owner and timestamp. Replaces the old `git lfs lock` mechanism.
+  with owner and timestamp.
 - `audit_events` — append-only log of admin actions.
 
 WAL journal mode, `synchronous=NORMAL`, foreign keys on. Migrations

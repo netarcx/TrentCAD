@@ -349,9 +349,8 @@ const MIGRATIONS: string[] = [
   UPDATE pins SET useCount = 1 WHERE consumedAt IS NOT NULL;
   `,
   // v15: server-side check-out/check-in locks for the Google Drive
-  // storage backend. The git/LFS backend uses `git lfs lock`, which
-  // Drive has no equivalent for — so locks move to the team server,
-  // the one component every client already talks to.
+  // storage backend. Drive has no native lock, so locks live on the
+  // team server — the one component every client already talks to.
   //
   // `projectKey` is free-text, NOT a foreign key to `projects`. Drive
   // projects are never registered in the `projects` table (that table
@@ -383,11 +382,10 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE team ADD COLUMN googleSharedDriveIds TEXT NOT NULL DEFAULT '';
   `,
-  // v17: publish history for the Google Drive backend. The git/LFS
-  // backend gets its history from `git log`; Drive has no commit graph
-  // (promote-by-move even changes a file's Drive id on each publish), so
-  // the team server records one row per publish — the one component
-  // every client already talks to. Same free-text `projectKey` = Drive
+  // v17: publish history for the Google Drive backend. Drive has no
+  // commit graph (promote-by-move even changes a file's Drive id on each
+  // publish), so the team server records one row per publish — the one
+  // component every client already talks to. Same free-text `projectKey` = Drive
   // folder id rationale as the locks table (v15): Drive projects aren't
   // in the GitHub-keyed `projects` table. `filesJson` is a JSON array of
   // the changed project-relative paths, denormalised so the History view
@@ -456,10 +454,8 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX part_numbers_scope_idx ON part_numbers(projectKey, scope);
   `,
-  // v21: in-app problem reports. The desktop "Report" button used to shell out
-  // to the GitHub CLI (`gh issue create`) — dead since the Git/LFS rip-out (no
-  // gh installed, no GitHub auth in a Drive-only install). Reports now POST to
-  // the team server, land here, and surface in the admin UI (optionally
+  // v21: in-app problem reports. The desktop "Report" button POSTs to
+  // the team server, lands here, and surfaces in the admin UI (optionally
   // forwarded to a Discord/Slack webhook). `memberId` ON DELETE SET NULL so a
   // report outlives the reporter; `reporterName` denormalised so the list
   // renders without a join.
@@ -482,6 +478,16 @@ const MIGRATIONS: string[] = [
   // "5 failures inside 15 minutes" policy enforceable.
   `
   ALTER TABLE members ADD COLUMN failedLoginFirstAt INTEGER;
+  `,
+  // v23: index the per-project Drive-folder key. `keyAllowed` (the
+  // student access gate on the hot lock / history / part-number routes)
+  // looks projects up by `driveFolderId` on every such request:
+  // `SELECT id FROM projects WHERE driveFolderId = ?`. Without an index
+  // that's a full table scan of `projects` each time; the index makes it
+  // a point lookup, matching how locks/publish_log/part_numbers already
+  // index their hot lookup columns. Idempotent so re-running is a no-op.
+  `
+  CREATE INDEX IF NOT EXISTS projects_driveFolderId_idx ON projects(driveFolderId);
   `,
 ]
 

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import type { ManufacturingMethod, ManufacturingQueueItem } from '@shared/types'
 import ErrorMsg from './ErrorMsg'
 
@@ -38,8 +38,8 @@ function relativeTime(iso?: string): string {
 // Persisted across sessions so a single operator working through a
 // long queue doesn't keep re-typing — but kept prominently visible so
 // the next person at the kiosk can spot and change it before pressing
-// Done. localStorage key is intentionally distinct from any git config
-// (these are shop-floor initials, not the GitHub identity).
+// Done. localStorage key is intentionally distinct from any other config
+// (these are shop-floor initials, not the team identity).
 const OPERATOR_KEY = 'framecad-mfg-operator-initials'
 const LOCATION_KEY = 'framecad-mfg-location'
 
@@ -90,19 +90,29 @@ export default function ManufacturingQueue({ onClose, embedded = false }: Props)
     }
   }, [refresh])
 
-  const counts = METHODS.reduce<Record<string, number>>((acc, m) => {
-    acc[m] = items.filter(i => i.method === m).length
-    return acc
-  }, {})
+  // Per-method tallies in a single pass over `items` (instead of the
+  // previous 11 separate .filter() scans), memoized so typing in the
+  // operator / location inputs doesn't re-walk the whole queue each
+  // keystroke. `visible` stays its own memo since it also depends on `tab`.
+  const { counts, needsExportCounts, totalNeedsExport } = useMemo(() => {
+    const counts: Record<string, number> = {}
+    const needsExportCounts: Record<string, number> = {}
+    let totalNeedsExport = 0
+    for (const m of METHODS) {
+      counts[m] = 0
+      needsExportCounts[m] = 0
+    }
+    for (const i of items) {
+      if (i.method in counts) {
+        counts[i.method]++
+        if (i.needsExport) needsExportCounts[i.method]++
+      }
+      if (i.needsExport) totalNeedsExport++
+    }
+    return { counts, needsExportCounts, totalNeedsExport }
+  }, [items])
 
-  const needsExportCounts = METHODS.reduce<Record<string, number>>((acc, m) => {
-    acc[m] = items.filter(i => i.method === m && !!i.needsExport).length
-    return acc
-  }, {})
-
-  const totalNeedsExport = items.filter(i => !!i.needsExport).length
-
-  const visible = items.filter(i => i.method === tab)
+  const visible = useMemo(() => items.filter(i => i.method === tab), [items, tab])
 
   const handleMarkManufactured = async (path: string) => {
     const initials = normalizeInitials(operator)

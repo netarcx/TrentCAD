@@ -10,8 +10,7 @@
  * happened to be selected. The project subpath fixes that:
  *
  * - `gitRoot` is the directory containing `.git/` (what simple-git is
- *   pointed at, what `git lfs lock` paths are relative to, where
- *   `parts.json` lives).
+ *   pointed at, where `parts.json` lives).
  *
  * - `projectSubpath` is a posix-style relative path INSIDE the repo
  *   that the user wants to treat as the project root. Empty when the

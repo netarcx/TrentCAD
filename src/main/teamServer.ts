@@ -1,8 +1,7 @@
 /**
  * Desktop-side client for the self-hosted team server (see `/server/`).
  *
- * Replaces the old `coordination.ts` (which cloned a GitHub repo and
- * managed members.json there). The team server speaks HTTP + JSON; we
+ * The team server speaks HTTP + JSON; we
  * keep a stale-while-revalidate snapshot of what it told us so the UI
  * works offline and so a quick role check doesn't pay a network
  * round-trip.
@@ -494,7 +493,7 @@ export async function pingTeamServer(): Promise<'reachable' | 'unreachable' | 'n
 
 // ── Drive-backend locks ─────────────────────────────────────────────
 // Check-out/check-in for Google Drive projects lives on the team
-// server (Drive has no `git lfs lock` equivalent). `projectKey` is the
+// server. `projectKey` is the
 // Drive folder id; the desktop reads it from the project's
 // drive-manifest.json. See server migration v15 + client.ts.
 
@@ -557,8 +556,8 @@ export async function claimPartNumber(
 
 /**
  * Submit an in-app problem report to the team server (it lands in the admin
- * Reports page + optionally a chat webhook). Replaces the old GitHub-CLI issue
- * flow. The app version rides along automatically as the X-Client-Version
+ * Reports page + optionally a chat webhook). The app version rides along
+ * automatically as the X-Client-Version
  * header. Throws on a network/server error; returns a friendly message when the
  * device isn't enrolled (reporting needs a team server to send to).
  */

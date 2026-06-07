@@ -558,11 +558,15 @@ async function exportExistsOnDisk(srcRelPath: string, format: 'step' | 'stl'): P
  */
 export async function getManufacturingQueue(): Promise<ManufacturingQueueItem[]> {
   const all = await loadAllMeta()
+  // Build the items first, then resolve every paired-export disk probe
+  // CONCURRENTLY. The probes are independent fs.access calls; doing them
+  // serially made the queue scale with O(released parts) round-trips to disk.
+  // The final sort makes construction order irrelevant, so the output is
+  // byte-identical to the serial version.
   const items: ManufacturingQueueItem[] = []
   for (const [filePath, entry] of Object.entries(all)) {
     if (entry.release?.state !== 'released') continue
     const method = entry.manufacturingMethod || 'other'
-    const format = exportFormatFor(method)
     const item: ManufacturingQueueItem = {
       path: filePath,
       method,
@@ -572,12 +576,15 @@ export async function getManufacturingQueue(): Promise<ManufacturingQueueItem[]>
       releasedBy: entry.release.by,
       releasedAt: entry.release.at
     }
-    if (format && !(await exportExistsOnDisk(filePath, format))) {
-      item.needsExport = format
-      item.expectedExportPath = expectedExportRelPath(filePath, format)
-    }
     items.push(item)
   }
+  await Promise.all(items.map(async item => {
+    const format = exportFormatFor(item.method)
+    if (format && !(await exportExistsOnDisk(item.path, format))) {
+      item.needsExport = format
+      item.expectedExportPath = expectedExportRelPath(item.path, format)
+    }
+  }))
   items.sort((a, b) => (a.releasedAt || '').localeCompare(b.releasedAt || ''))
   return items
 }

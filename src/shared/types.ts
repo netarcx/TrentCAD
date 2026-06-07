@@ -314,9 +314,8 @@ export interface GlobalAdminState {
 // ── Team Server (self-hosted coordination) ──
 //
 // The desktop client talks to a small Node + SQLite server (see
-// `/server/`) instead of a coordination GitHub repo. The mental
-// model is the same — a roster, a team config, a project registry,
-// roles — but the wire protocol is HTTP + JSON and admin lives in
+// `/server/`): a roster, a team config, a project registry,
+// roles — the wire protocol is HTTP + JSON and admin lives in
 // the server's browser UI, not in this app.
 
 export type MemberRole = 'admin' | 'mentor' | 'student'
@@ -618,7 +617,7 @@ export interface IpcApi {
   onPublishProgress(callback: (progress: PublishProgress) => void): () => void
   onJoinProgress(callback: (progress: PublishProgress) => void): () => void
 
-  // Team server (replaces coordination repo).
+  // Team server.
   /** Cached snapshot — never hits the network. Returns enrolled=false if no team is wired. */
   teamGetSnapshot(): Promise<TeamSnapshot>
   /** Force a fresh fetch from the team server. Updates the cache. */

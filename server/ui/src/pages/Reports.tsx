@@ -15,8 +15,8 @@ interface IssueReport {
 /**
  * Problem reports submitted from the desktop's error-banner "Report" button
  * (POST /api/issues). Open reports float to the top; resolve to triage,
- * delete to clear. Replaces the old gh-CLI GitHub-issue flow — reports now
- * live here (and optionally a chat webhook, if FRAMECAD_ISSUE_WEBHOOK_URL set).
+ * delete to clear. Reports live here (and optionally a chat webhook, if
+ * FRAMECAD_ISSUE_WEBHOOK_URL set).
  */
 export default function Reports() {
   const [issues, setIssues] = useState<IssueReport[]>([])

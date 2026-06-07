@@ -463,8 +463,8 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
   })
 
   // ── Drive-backend check-out / check-in locks ──
-  // These replace `git lfs lock` for projects on the Google Drive
-  // backend. `:key` is the Drive folder id (see migration v15 for why
+  // These coordinate locks for projects on the Google Drive backend.
+  // `:key` is the Drive folder id (see migration v15 for why
   // it's free-text and not a project FK). All three routes are already
   // behind requireDevice via the /api/projects preHandler above.
 
@@ -682,8 +682,8 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
   // ── In-app problem reports ──
   // The desktop "Report" button POSTs the error here (authenticated, so the
   // report is attributed to the enrolled member + their client version).
-  // Replaces the dead gh-CLI issue flow. Lands in `issue_reports` for the admin
-  // Reports page and is best-effort forwarded to a chat webhook if configured.
+  // Lands in `issue_reports` for the admin Reports page and is best-effort
+  // forwarded to a chat webhook if configured.
   app.post<{ Body: { message?: string; platform?: string } }>(
     '/api/issues',
     async (req, reply) => {

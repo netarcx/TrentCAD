@@ -26,8 +26,8 @@ type Step = 'paste' | 'profile' | 'submit'
  *
  *  2. **Your name** — display name is prefilled with the OS username
  *     (best-effort) so the average case is a single Enter keypress.
- *     The Google Drive backend authenticates against Google directly,
- *     so no GitHub sign-in step is needed here.
+ *     Identity lives on the team server, so there's no separate
+ *     sign-in step here.
  *
  *  3. **Submit** — spinner while `teamEnroll` runs, success → caller.
  */
@@ -315,10 +315,9 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
               >
                 Back
               </button>
-              {/* Enrollment needs only a display name — the Google Drive
-                  backend authenticates against Google directly, and locks
-                  live on the team server, so there's no GitHub sign-in
-                  gate here. */}
+              {/* Enrollment needs only a display name — identity and
+                  locks live on the team server, so there's no separate
+                  sign-in gate here. */}
               <button
                 className="toolbar-btn primary"
                 onClick={() => void submitEnroll()}

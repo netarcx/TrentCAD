@@ -86,9 +86,9 @@ export default function App() {
   const [adminConfig, setAdminConfig] = useState<AdminConfig>({})
   const [globalAdmin, setGlobalAdmin] = useState<GlobalAdminConfig>({})
 
-  // Team-server snapshot, push-subscribed from main. Replaces the old
-  // coord-repo state. `snapshot` is null until the first IPC primes the
-  // cache (sub-50ms); subsequent updates arrive via push from main.
+  // Team-server snapshot, push-subscribed from main. `snapshot` is null
+  // until the first IPC primes the cache (sub-50ms); subsequent updates
+  // arrive via push from main.
   const team = useTeam()
   const teamSnapshot = team.snapshot
 

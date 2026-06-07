@@ -7,12 +7,6 @@ import * as teamServer from './teamServer'
  * The "Report" button on the error banner sends the error text to the TEAM
  * SERVER, which stores it for the admin web UI's Reports page and optionally
  * forwards it to a Discord/Slack webhook. It is then triaged by a mentor.
- *
- * This replaces the original flow, which shelled out to the GitHub CLI
- * (`gh issue create`). That died with the Git/LFS rip-out: a Drive-only
- * FrameCAD install ships no `gh` and no GitHub sign-in, so the old path failed
- * with "GitHub CLI not found" for every user. There is intentionally no
- * GitHub dependency here anymore.
  */
 
 export interface ReportIssueResult {

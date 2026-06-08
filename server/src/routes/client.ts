@@ -449,11 +449,11 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     // that haven't adopted the registry yet aren't disrupted).
     const member = req.member!
     const rows = getDb().prepare(
-      `SELECT id, name, repoUrl, driveFolderId, sharedDriveId, description, createdAt, remoteStatus
+      `SELECT id, name, repoUrl, driveFolderId, sharedDriveId, description, createdAt
          FROM projects
         WHERE archived = 0
         ORDER BY createdAt DESC`
-    ).all() as Array<Omit<ProjectRow, 'archived'> & { remoteStatus: string }>
+    ).all() as Array<Omit<ProjectRow, 'archived'>>
 
     if (member.role === 'student') {
       const allowed = new Set(member.allowedProjectIds)

@@ -186,26 +186,11 @@ export default function TeamSettings() {
       <div className="card">
         <h3>Your GitHub account</h3>
         <div className="hint">
-          Link a personal access token from <strong>your</strong>{' '}
-          GitHub account. FrameCAD uses it when YOU initiate a GitHub
-          API call from the admin UI (checking a project's remote,
-          creating a new repo) so the call runs with your own access
-          — picking up SSO-protected and per-repo private repos that
-          a shared team token can't see. The token never reaches
-          browsers or desktop clients; it's stored on this server
-          and only used server-side.
-          {' '}
-          <a
-            href="https://github.com/settings/tokens?type=beta"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Create a fine-grained token
-          </a>{' '}
-          with <span className="mono">contents:read</span> +{' '}
-          <span className="mono">metadata:read</span> on the repos you
-          care about (and <span className="mono">administration:write</span>{' '}
-          if you'll create new repos from FrameCAD).
+          <strong>Legacy / optional — currently unused.</strong> FrameCAD
+          stores all project files in your team's Google Shared Drive, so no
+          current feature calls GitHub on your behalf. This personal token is
+          kept only for older deployments and can be left blank. If set, it's
+          stored on this server and never reaches browsers or desktop clients.
         </div>
         <label>
           Personal token: {hasMyGhPat ? (
@@ -275,16 +260,11 @@ export default function TeamSettings() {
       <div className="card">
         <h3>GitHub (team)</h3>
         <div className="hint">
-          Organization, project-name prefix, and a <strong>shared</strong>{' '}
-          fallback Personal Access Token. The team token is used when
-          the calling admin hasn't linked their own (see the card above);
-          for org-wide operations like check-remote on every project
-          where no specific admin's token has been linked yet. Scopes
-          needed: classic <span className="mono">repo</span> (full) OR a
-          fine-grained token with <span className="mono">contents:write</span>,{' '}
-          <span className="mono">metadata:read</span>, and{' '}
-          <span className="mono">administration:write</span> on the
-          org's repos.
+          <strong>Legacy / optional — currently unused.</strong> These
+          GitHub settings (organization and a shared fallback token) backed the
+          old repo-create / repo-reachability features, which were removed when
+          FrameCAD moved to a Google-Drive-only backend. Nothing reads them
+          today; they're safe to leave blank.
         </div>
 
         <label>GitHub organization</label>
@@ -293,9 +273,8 @@ export default function TeamSettings() {
         <label>Project name prefix</label>
         <input value={team.projectPrefix} onChange={e => setTeam({ ...team, projectPrefix: e.target.value })} placeholder="framecad-" />
         <div className="hint" style={{ marginTop: 4 }}>
-          Members see a "Browse Projects" button on the welcome screen
-          listing repos in this org that match the prefix. New repos
-          created from the admin Projects page are auto-prefixed too.
+          Legacy naming prefix from the GitHub era. Not used by the
+          Drive backend; safe to leave blank.
         </div>
 
         <label style={{ marginTop: 12 }}>

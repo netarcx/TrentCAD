@@ -778,8 +778,75 @@ interface ToolsTabProps {
 
 function ToolsTab(props: ToolsTabProps) {
   const { integrity, integrityRunning, onIntegrityCheck } = props
+  const [backupState, setBackupState] = useState<'idle' | 'running' | 'done' | 'failed'>('idle')
+  const [backupResult, setBackupResult] = useState<{ path?: string; error?: string; skipped?: string[] }>({})
+
+  const runBackup = useCallback(async () => {
+    setBackupState('running')
+    setBackupResult({})
+    try {
+      const r = await window.api.backupProject()
+      if (r.success) {
+        setBackupResult({ path: r.path, skipped: r.skipped })
+        setBackupState('done')
+      } else {
+        setBackupResult({ error: r.error || 'Backup failed' })
+        setBackupState('failed')
+      }
+    } catch (err) {
+      setBackupResult({ error: (err as Error).message })
+      setBackupState('failed')
+    }
+  }, [])
+
   return (
     <>
+      <div className="admin-section">
+        <h3>Local Backup</h3>
+        <p className="admin-hint">
+          Make a full copy of this project in a timestamped folder next to it
+          (e.g. <span className="mono">…-backup-2026-06-07_193045</span>). The
+          copy is detached from Google Drive — it won't sync or publish — so
+          it's a safe rollback point if a sync, publish, or edit goes wrong.
+          Your live project is untouched; keep working in it as normal.
+        </p>
+        <div className="admin-section-actions" style={{ justifyContent: 'flex-start' }}>
+          <button className="toolbar-btn primary" onClick={runBackup} disabled={backupState === 'running'}>
+            {backupState === 'running' ? 'Backing up…' : 'Create local backup'}
+          </button>
+          {backupState === 'done' && backupResult.path && (
+            <button
+              className="toolbar-btn"
+              onClick={() => window.api.revealInFolder(backupResult.path!)}
+              title={backupResult.path}
+            >
+              Show backup
+            </button>
+          )}
+        </div>
+        {backupState === 'done' && (
+          <div className="admin-status" style={{ marginTop: 8 }}>
+            ✓ Backed up to <span className="mono">{backupResult.path}</span>
+            {backupResult.skipped && backupResult.skipped.length > 0 && (
+              <div className="admin-hint" style={{ marginTop: 6, color: 'var(--amber, #d97706)' }}>
+                Skipped {backupResult.skipped.length} file{backupResult.skipped.length === 1 ? '' : 's'} that
+                {backupResult.skipped.length === 1 ? ' was' : ' were'} open or locked (close them in SolidWorks
+                and re-run to include them):
+                <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                  {backupResult.skipped.slice(0, 8).map(f => <li key={f} className="mono">{f}</li>)}
+                  {backupResult.skipped.length > 8 && <li>…and {backupResult.skipped.length - 8} more</li>}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+        {backupState === 'failed' && (
+          <div className="admin-status" style={{ marginTop: 8, color: 'var(--red, #ef4444)' }}>
+            Backup failed: {backupResult.error}
+          </div>
+        )}
+      </div>
+
       <div className="admin-section">
         <h3>Manifest Integrity Check</h3>
         <p className="admin-hint">

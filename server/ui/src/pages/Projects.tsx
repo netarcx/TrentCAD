@@ -1,24 +1,17 @@
 import { useEffect, useState } from 'react'
 import { api, ApiError } from '../api'
-import { copyToClipboard } from '../lib/copyToClipboard'
 
 interface Project {
   id: number
   name: string
-  repoUrl: string
-  /** Google Drive folder id when this is a Drive project; null for
-   *  legacy GitHub-only rows. The canonical per-project key. */
-  driveFolderId?: string | null
+  /** Google Drive folder id — the canonical per-project key. */
+  driveFolderId: string | null
   description: string
   createdAt: number
   quotaBytes: number | null
   storageBytes: number
   storageScannedAt: number
-  remoteStatus: 'unknown' | 'ok' | 'missing'
-  remoteCheckedAt: number | null
 }
-
-type RemoteCheckResult = { status: 'ok' | 'missing' | 'error'; detail: string | null; checkedAt: number }
 
 /** 10 GiB — matches DEFAULT_PROJECT_QUOTA_BYTES on the server. Kept
  *  in sync by convention; if the server default changes, bump this
@@ -47,60 +40,6 @@ export default function Projects() {
   // being edited and what the staged value is). Only one row can be
   // editing at a time.
   const [editing, setEditing] = useState<{ id: number; value: string } | null>(null)
-  // Which project's remote-check is in flight (we disable the button
-  // and show "Checking…" so the admin doesn't think the click did
-  // nothing on a slow GitHub).
-  const [checkingId, setCheckingId] = useState<number | null>(null)
-  // "Create on GitHub" modal state. Distinct from the registration
-  // flow above because this one ALSO calls GitHub's repo-create API
-  // before inserting locally. Closed when null.
-  const [createOnGh, setCreateOnGh] = useState<{
-    name: string
-    description: string
-    private: boolean
-    quotaGb: string
-  } | null>(null)
-  const [creatingOnGh, setCreatingOnGh] = useState(false)
-  const [createGhError, setCreateGhError] = useState<string | null>(null)
-  const [createGhResult, setCreateGhResult] = useState<{ repoUrl: string; name: string } | null>(null)
-  const [ghUrlCopied, setGhUrlCopied] = useState<boolean | null>(null)
-
-  async function submitCreateOnGitHub(): Promise<void> {
-    if (!createOnGh) return
-    setCreateGhError(null)
-    if (!createOnGh.name.trim()) {
-      setCreateGhError('Repo name is required.')
-      return
-    }
-    const parsedGb = createOnGh.quotaGb.trim() === '' ? null : Number.parseFloat(createOnGh.quotaGb)
-    if (parsedGb !== null && (!Number.isFinite(parsedGb) || parsedGb < 0)) {
-      setCreateGhError('Quota must be a non-negative number or blank.')
-      return
-    }
-    setCreatingOnGh(true)
-    try {
-      const quotaBytes = parsedGb === null ? null : Math.round(parsedGb * 1024 * 1024 * 1024)
-      const res = await api<{ name: string; repoUrl: string; private: boolean }>(
-        'POST',
-        '/api/admin/projects/create-on-github',
-        {
-          name: createOnGh.name.trim(),
-          description: createOnGh.description.trim(),
-          private: createOnGh.private,
-          quotaBytes,
-        },
-      )
-      // Stash the result so the modal can show the new clone URL
-      // (which is what the admin needs to hand to clients). Don't
-      // close the modal yet — let the user copy the URL first.
-      setCreateGhResult({ repoUrl: res.repoUrl, name: res.name })
-      await load()
-    } catch (err) {
-      setCreateGhError((err as ApiError).message)
-    } finally {
-      setCreatingOnGh(false)
-    }
-  }
 
   async function load(): Promise<void> {
     try {
@@ -149,12 +88,7 @@ export default function Projects() {
   }
 
   async function remove(p: Project): Promise<void> {
-    // Sterner warning when the remote is known-missing — the admin is
-    // probably here BECAUSE the repo was deleted, but still worth
-    // reminding them that local clones won't be auto-cleaned.
-    const msg = p.remoteStatus === 'missing'
-      ? `Remove "${p.name}" from the team registry?\n\nThis only removes the server-side record. Team members still have local clones in their FrameCAD folder — remind them to back up anything they want and delete the local folder themselves.`
-      : `Remove "${p.name}" from the project registry?`
+    const msg = `Remove "${p.name}" from the project registry?\n\nThis only removes the server-side record. Team members still have local copies in their FrameCAD folder — remind them to back up anything they want and delete the local folder themselves.`
     if (!confirm(msg)) return
     setError(null)
     try {
@@ -162,28 +96,6 @@ export default function Projects() {
       await load()
     } catch (err) {
       setError((err as ApiError).message)
-    }
-  }
-
-
-  async function checkRemote(p: Project): Promise<void> {
-    setCheckingId(p.id)
-    setError(null)
-    try {
-      const res = await api<RemoteCheckResult>(
-        'POST', `/api/admin/projects/${p.id}/check-remote`,
-      )
-      // Re-fetch the projects list so the row reflects the latest
-      // remoteStatus + remoteCheckedAt without having to merge
-      // partial state ourselves. Cheap query.
-      await load()
-      if (res.status === 'error') {
-        setError(`Couldn't reach GitHub to check "${p.name}": ${res.detail}`)
-      }
-    } catch (err) {
-      setError((err as ApiError).message)
-    } finally {
-      setCheckingId(null)
     }
   }
 
@@ -215,10 +127,10 @@ export default function Projects() {
       <div className="card">
         <h3>Register a project</h3>
         <div className="hint">
-          Listed projects appear on the FrameCAD welcome screen so team
-          members can find and join them. The storage quota caps how much
-          CAD data this project can store in Google Drive — leave blank
-          for unlimited.
+          Point the team at a folder in your Google Shared Drive. Listed
+          projects appear on the FrameCAD welcome screen so team members can
+          find and join them. The storage quota caps how much CAD data this
+          project can store in Google Drive — leave blank for unlimited.
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 12 }}>
           <div>
@@ -257,122 +169,8 @@ export default function Projects() {
           <button className="primary" onClick={add} disabled={busy || !name.trim() || !driveFolderId.trim()}>
             {busy ? 'Adding…' : 'Add Drive project'}
           </button>
-          <button
-            className="secondary"
-            onClick={() => setCreateOnGh({
-              name: '',
-              description: '',
-              private: true,
-              quotaGb: String(DEFAULT_QUOTA_GB),
-            })}
-          >
-            Create new repo on GitHub…
-          </button>
         </div>
       </div>
-
-      {createOnGh && (
-        <div className="modal-backdrop" onClick={() => { if (!creatingOnGh) { setCreateOnGh(null); setCreateGhError(null); setCreateGhResult(null) } }}>
-          <div className="modal" onClick={e => e.stopPropagation()} style={{ minWidth: 480 }}>
-            {createGhResult ? (
-              <>
-                <h2>Repo created</h2>
-                <div className="hint" style={{ marginBottom: 10 }}>
-                  GitHub created <strong>{createGhResult.name}</strong>. The
-                  clone URL below is also registered as a FrameCAD project,
-                  so it'll show up on the welcome screen for everyone.
-                </div>
-                <input
-                  readOnly
-                  className="mono"
-                  value={createGhResult.repoUrl}
-                  onFocus={e => e.currentTarget.select()}
-                  onClick={e => (e.currentTarget as HTMLInputElement).select()}
-                  style={{ width: '100%' }}
-                />
-                <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
-                  <button
-                    className="secondary"
-                    onClick={async () => {
-                      const ok = await copyToClipboard(createGhResult.repoUrl)
-                      setGhUrlCopied(ok)
-                      setTimeout(() => setGhUrlCopied(null), 2000)
-                    }}
-                  >
-                    {ghUrlCopied == null ? 'Copy URL' : ghUrlCopied ? '✓ Copied!' : '✗ Copy failed — select & copy manually'}
-                  </button>
-                  <button
-                    className="primary"
-                    onClick={() => { setCreateOnGh(null); setCreateGhError(null); setCreateGhResult(null) }}
-                  >
-                    Done
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <h2>Create new repo on GitHub</h2>
-                <div className="hint" style={{ marginBottom: 10 }}>
-                  Creates a new repo in your team's GitHub org using the
-                  stored PAT and registers it as a FrameCAD project. Repo
-                  is created empty — desktop clients push the initial
-                  commit on first publish.
-                </div>
-                {createGhError && <div className="error">{createGhError}</div>}
-                <label>Repo name</label>
-                <input
-                  value={createOnGh.name}
-                  onChange={e => setCreateOnGh({ ...createOnGh, name: e.target.value })}
-                  placeholder="2026-robot"
-                  autoFocus
-                  spellCheck={false}
-                />
-                <label>Description (optional)</label>
-                <input
-                  value={createOnGh.description}
-                  onChange={e => setCreateOnGh({ ...createOnGh, description: e.target.value })}
-                  placeholder="Main competition robot"
-                />
-                <label
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={createOnGh.private}
-                    onChange={e => setCreateOnGh({ ...createOnGh, private: e.target.checked })}
-                  />
-                  Private (recommended for team CAD)
-                </label>
-                <label style={{ marginTop: 10 }}>Storage quota (GB)</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.5"
-                  value={createOnGh.quotaGb}
-                  onChange={e => setCreateOnGh({ ...createOnGh, quotaGb: e.target.value })}
-                  placeholder="blank = unlimited"
-                />
-                <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
-                  <button
-                    className="secondary"
-                    onClick={() => { setCreateOnGh(null); setCreateGhError(null) }}
-                    disabled={creatingOnGh}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    className="primary"
-                    onClick={submitCreateOnGitHub}
-                    disabled={creatingOnGh || !createOnGh.name.trim()}
-                  >
-                    {creatingOnGh ? 'Creating…' : 'Create repo'}
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
 
       <div className="card">
         <h3>Registered projects</h3>
@@ -383,8 +181,7 @@ export default function Projects() {
             <thead>
               <tr>
                 <th>Name</th>
-                <th>Repo</th>
-                <th>Remote</th>
+                <th>Drive folder</th>
                 <th>Storage</th>
                 <th></th>
               </tr>
@@ -411,49 +208,7 @@ export default function Projects() {
                     <td className="mono" style={{ wordBreak: 'break-all' }}>
                       {p.driveFolderId
                         ? `Drive · ${p.driveFolderId}`
-                        : p.repoUrl.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '')}
-                    </td>
-                    <td style={{ minWidth: 130 }}>
-                      {p.driveFolderId ? (
-                        <span className="hint" style={{ fontSize: 11 }}>n/a — Drive project</span>
-                      ) : (<>
-                      {p.remoteStatus === 'missing' ? (
-                        <div>
-                          <span
-                            className="pill"
-                            style={{ color: 'var(--red)', background: 'var(--red-tint)' }}
-                            title="GitHub returned 404 — repo is deleted or private"
-                          >
-                            DELETED
-                          </span>
-                          <div className="hint" style={{ marginTop: 4, fontSize: 11 }}>
-                            Ask the team to back up + delete their local folders.
-                          </div>
-                        </div>
-                      ) : p.remoteStatus === 'ok' ? (
-                        <span
-                          className="pill"
-                          style={{ color: 'var(--green)', background: 'rgba(134, 239, 172, 0.15)' }}
-                          title={p.remoteCheckedAt
-                            ? `Last checked ${new Date(p.remoteCheckedAt).toLocaleString()}`
-                            : 'Reachable'}
-                        >
-                          OK
-                        </span>
-                      ) : (
-                        <span className="hint" style={{ fontSize: 11 }}>not checked</span>
-                      )}
-                      <div style={{ marginTop: 4 }}>
-                        <button
-                          className="link"
-                          style={{ fontSize: 11 }}
-                          onClick={() => checkRemote(p)}
-                          disabled={checkingId === p.id}
-                        >
-                          {checkingId === p.id ? 'Checking…' : 'Check now'}
-                        </button>
-                      </div>
-                      </>)}
+                        : <span className="hint">—</span>}
                     </td>
                     <td style={{ minWidth: 220 }}>
                       {isEditing ? (

@@ -49,32 +49,6 @@ function coerceProjectIdList(input: unknown): number[] | null {
   return input.filter((n): n is number => Number.isFinite(n))
 }
 
-/**
- * Return the list of PATs the server should try when calling the
- * GitHub API on behalf of `memberId`, in preference order:
- *   1. The member's personal PAT (added via /api/me/github-pat).
- *      Preferred because it has the member's own access scope —
- *      private repos visible to them but not to the team token.
- *   2. The team-level PAT (set on Team Settings).
- *
- * Returns at most 2 entries; empty array when neither is set.
- * Callers iterate in order and short-circuit on the first 200.
- */
-function effectiveGitHubPats(memberId: number): string[] {
-  const memberRow = getDb().prepare(
-    `SELECT gitHubPat FROM members WHERE id = ?`
-  ).get(memberId) as { gitHubPat: string | null } | undefined
-  const teamRow = getDb().prepare(
-    `SELECT gitHubPat FROM team WHERE id = 1`
-  ).get() as { gitHubPat: string | null } | undefined
-  const pats: string[] = []
-  if (memberRow?.gitHubPat) pats.push(memberRow.gitHubPat)
-  if (teamRow?.gitHubPat && teamRow.gitHubPat !== memberRow?.gitHubPat) {
-    pats.push(teamRow.gitHubPat)
-  }
-  return pats
-}
-
 export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', async (req, reply) => {
     if (!req.url.startsWith('/api/admin/')) return
@@ -412,9 +386,8 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     // don't need it); this admin variant returns the full row so
     // the Projects page can render usage indicators and quota inputs.
     const rows = getDb().prepare(
-      `SELECT id, name, repoUrl, driveFolderId, sharedDriveId, description, archived, createdAt,
-              quotaBytes, storageBytes, storageScannedAt,
-              remoteStatus, remoteCheckedAt
+      `SELECT id, name, driveFolderId, sharedDriveId, description, archived, createdAt,
+              quotaBytes, storageBytes, storageScannedAt
          FROM projects
         ORDER BY archived ASC, createdAt DESC`
     ).all()
@@ -423,7 +396,6 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
   app.post<{ Body: {
     name?: string
-    repoUrl?: string
     driveFolderId?: string
     sharedDriveId?: string
     description?: string
@@ -432,21 +404,19 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     '/api/admin/projects',
     async (req, reply) => {
       const name = (req.body?.name ?? '').trim()
-      const repoUrlIn = (req.body?.repoUrl ?? '').trim()
       const driveFolderId = (req.body?.driveFolderId ?? '').trim()
       const sharedDriveId = (req.body?.sharedDriveId ?? '').trim()
       if (!name) {
         return reply.code(400).send({ error: 'name is required' })
       }
-      // A project is identified EITHER by a Google Drive folder (the current
-      // backend) OR by a legacy GitHub repo URL. Drive projects use a synthetic
-      // `drive:<folderId>` repoUrl so the existing NOT NULL UNIQUE repoUrl
-      // constraint holds without a schema rebuild; `driveFolderId` is the
-      // canonical key the locks / history / allowlist routes match on.
-      if (!driveFolderId && !repoUrlIn) {
-        return reply.code(400).send({ error: 'A Google Drive folder id or a repo URL is required' })
+      // A project is identified by its Google Drive folder. We still write a
+      // synthetic `drive:<folderId>` into the legacy NOT NULL UNIQUE `repoUrl`
+      // column so the constraint holds without a schema rebuild; `driveFolderId`
+      // is the canonical key the locks / history / allowlist routes match on.
+      if (!driveFolderId) {
+        return reply.code(400).send({ error: 'A Google Drive folder id is required' })
       }
-      const repoUrl = driveFolderId ? `drive:${driveFolderId}` : repoUrlIn
+      const repoUrl = `drive:${driveFolderId}`
       // Quota: explicit number wins; explicit null means "unlimited";
       // missing means "use the default" (admin didn't have to think).
       const quota =
@@ -459,196 +429,22 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         const result = getDb().prepare(
           `INSERT INTO projects (name, repoUrl, driveFolderId, sharedDriveId, description, createdAt, quotaBytes)
            VALUES (?, ?, ?, ?, ?, ?, ?)`
-        ).run(name, repoUrl, driveFolderId || null, sharedDriveId || null, (req.body?.description ?? '').trim(), Date.now(), quota)
+        ).run(name, repoUrl, driveFolderId, sharedDriveId || null, (req.body?.description ?? '').trim(), Date.now(), quota)
         logAudit({
           actorId: req.member!.id,
           actorLabel: req.member!.displayName,
           action: 'project.create',
           target: `project:${result.lastInsertRowid}`,
-          detail: driveFolderId ? `drive:${driveFolderId}` : repoUrl,
+          detail: `drive:${driveFolderId}`,
         })
         return { id: result.lastInsertRowid, success: true }
       } catch (err) {
         if ((err as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE') {
           return reply.code(409).send({
-            error: driveFolderId
-              ? 'That Google Drive folder is already registered as a project'
-              : 'A project with that repoUrl is already registered',
+            error: 'That Google Drive folder is already registered as a project',
           })
         }
         throw err
-      }
-    },
-  )
-
-  // Create a brand-new GitHub repo under the team's configured org
-  // AND register it as a FrameCAD project in one shot. Saves the
-  // admin from bouncing to github.com / New repo / copy URL / paste
-  // back. Requires a `gitHubPat` to be stored on the team row (see
-  // Settings → GitHub) and a non-empty `gitHubOrg`. Repo visibility
-  // defaults to private — most team CAD shouldn't be public — but
-  // the admin can flip it via the `private` flag.
-  //
-  // We don't initialize the repo with a README on GitHub's side
-  // because FrameCAD's `createProject` flow on the desktop expects
-  // an empty repo to push the initial commit into. The new repo URL
-  // can be handed straight to the desktop's Join Project / Create
-  // Project flow.
-  app.post<{ Body: {
-    name: string
-    description?: string
-    private?: boolean
-    quotaBytes?: number | null
-  } }>(
-    '/api/admin/projects/create-on-github',
-    async (req, reply) => {
-      const name = (req.body?.name ?? '').trim()
-      if (!name) {
-        return reply.code(400).send({ error: 'Project name is required.' })
-      }
-      // GitHub's repo-name rules: alphanumerics, hyphens, underscores,
-      // dots. Strict-validate so a typo doesn't get a 422 from GitHub
-      // mid-create with a worse error message.
-      if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) {
-        return reply.code(400).send({
-          error: 'Repo name must be 1-100 characters, letters/digits/dot/hyphen/underscore only.',
-        })
-      }
-      const teamRow = getDb().prepare(
-        `SELECT gitHubOrg, gitHubPat, projectPrefix FROM team WHERE id = 1`
-      ).get() as { gitHubOrg: string; gitHubPat: string | null; projectPrefix: string }
-      if (!teamRow.gitHubOrg) {
-        return reply.code(412).send({
-          error: 'Set a GitHub organization in Team Settings before creating repos.',
-        })
-      }
-      // Use the calling admin's personal PAT first if they've linked
-      // one — their token is more likely to have org-create scope on
-      // their own behalf, and the audit trail on github.com attributes
-      // the repo creation to them rather than to a shared bot account.
-      // Falls back to the team PAT.
-      const callerPats = effectiveGitHubPats(req.member!.id)
-      if (callerPats.length === 0) {
-        return reply.code(412).send({
-          error: 'No GitHub token available. Link your personal GitHub PAT in your account settings, or have an admin set the team-level PAT in Team Settings → GitHub.',
-        })
-      }
-      const githubPat = callerPats[0]
-
-      // Auto-prefix the repo name with the team's project prefix when
-      // it isn't already present. Keeps the org tidy — every team
-      // project ends up named `framecad-<thing>` instead of having
-      // some prefixed + some not.
-      const finalName = (teamRow.projectPrefix && !name.toLowerCase().startsWith(teamRow.projectPrefix.toLowerCase()))
-        ? teamRow.projectPrefix + name
-        : name
-
-      const isPrivate = req.body?.private !== false   // default true (private)
-      let createdRepoUrl: string
-      try {
-        const ghRes = await fetch(`https://api.github.com/orgs/${encodeURIComponent(teamRow.gitHubOrg)}/repos`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${githubPat}`,
-            'Accept': 'application/vnd.github+json',
-            'X-GitHub-Api-Version': '2022-11-28',
-            'Content-Type': 'application/json',
-            'User-Agent': 'framecad-server',
-          },
-          body: JSON.stringify({
-            name: finalName,
-            description: (req.body?.description ?? '').trim() || undefined,
-            private: isPrivate,
-            // No auto-init — desktop createProject pushes the first
-            // commit. An auto-init README would conflict.
-            auto_init: false,
-            has_issues: true,
-            has_projects: false,
-            has_wiki: false,
-          }),
-        })
-        if (!ghRes.ok) {
-          const body = await ghRes.json().catch(() => ({})) as {
-            message?: string
-            errors?: Array<{ message?: string }>
-          }
-          // Surface GitHub's reason back to the admin so they can act
-          // on it (PAT expired, name already taken, no permission, etc).
-          // Don't leak the PAT in the response — GitHub doesn't echo
-          // it, but be defensive anyway.
-          const detail = body.errors?.[0]?.message || body.message || `HTTP ${ghRes.status}`
-          return reply.code(ghRes.status === 401 || ghRes.status === 403 ? 412 : 502).send({
-            error: `GitHub refused to create the repo: ${detail}`,
-          })
-        }
-        const created = await ghRes.json() as { clone_url: string; html_url: string }
-        createdRepoUrl = created.clone_url
-      } catch (err) {
-        return reply.code(502).send({
-          error: `Couldn't reach github.com: ${(err as Error).message}`,
-        })
-      }
-
-      // Register in our projects table so the desktop sees it via
-      // the team snapshot. Quota uses the same default-or-explicit
-      // logic as the regular create endpoint.
-      const quota =
-        req.body?.quotaBytes === null
-          ? null
-          : typeof req.body?.quotaBytes === 'number' && Number.isFinite(req.body.quotaBytes)
-            ? Math.max(0, Math.floor(req.body.quotaBytes))
-            : DEFAULT_PROJECT_QUOTA_BYTES
-      let insert
-      try {
-        insert = getDb().prepare(
-          `INSERT INTO projects (name, repoUrl, description, createdAt, quotaBytes)
-           VALUES (?, ?, ?, ?, ?)`
-        ).run(finalName, createdRepoUrl, (req.body?.description ?? '').trim(), Date.now(), quota)
-      } catch (insertErr) {
-        // The repo was created on GitHub successfully but the local
-        // INSERT failed (usually UNIQUE on repoUrl — admin double-
-        // clicked, or a parallel registration won the race). Delete
-        // the GitHub repo so we don't strand it; the admin's intent
-        // was "this should not exist if we couldn't track it".
-        await fetch(`https://api.github.com/repos/${encodeURIComponent(teamRow.gitHubOrg)}/${encodeURIComponent(finalName)}`, {
-          method: 'DELETE',
-          headers: {
-            // Same PAT we used to create the repo — anything else
-            // wouldn't have authority to delete it.
-            'Authorization': `Bearer ${githubPat}`,
-            'Accept': 'application/vnd.github+json',
-            'X-GitHub-Api-Version': '2022-11-28',
-            'User-Agent': 'framecad-server',
-          },
-        }).catch(() => { /* best-effort — log audit notes the orphan */ })
-        const code = (insertErr as { code?: string }).code
-        if (code === 'SQLITE_CONSTRAINT_UNIQUE') {
-          return reply.code(409).send({
-            error: `A FrameCAD project with that repo URL already exists. The GitHub repo was deleted to avoid duplication.`,
-          })
-        }
-        logAudit({
-          actorId: req.member!.id,
-          actorLabel: req.member!.displayName,
-          action: 'project.create-on-github.rollback',
-          target: createdRepoUrl,
-          detail: `Local INSERT failed (${(insertErr as Error).message}); GitHub repo deletion attempted.`,
-        })
-        throw insertErr
-      }
-      logAudit({
-        actorId: req.member!.id,
-        actorLabel: req.member!.displayName,
-        action: 'project.create-on-github',
-        target: `project:${insert.lastInsertRowid}`,
-        detail: `${createdRepoUrl} (private=${isPrivate})`,
-      })
-      return {
-        success: true,
-        id: insert.lastInsertRowid,
-        name: finalName,
-        repoUrl: createdRepoUrl,
-        private: isPrivate,
       }
     },
   )
@@ -722,145 +518,6 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     })
     return { success: true }
   })
-
-  // Check whether a project's GitHub repo still exists. HEAD against
-  // `https://github.com/<org>/<repo>` returns 200 when the repo is
-  // public and reachable, 404 when deleted or made private (we treat
-  // both the same — from the team's perspective, "can't reach it"
-  // means "needs cleanup"). Caches the result on the project row so
-  // subsequent admin-page renders don't re-hit GitHub.
-  //
-  // Doesn't try to authenticate — public 200 vs 404 is enough signal
-  // and avoids needing GitHub credentials on the server. If the repo
-  // is private and someone hits this endpoint, it'll show "missing"
-  // even though it exists; that's a known limitation and the admin
-  // can ignore it for private repos.
-  app.post<{ Params: { id: string } }>(
-    '/api/admin/projects/:id/check-remote',
-    async (req, reply) => {
-      const id = Number.parseInt(req.params.id, 10)
-      if (!Number.isFinite(id)) return reply.code(400).send({ error: 'Invalid project id' })
-      const row = getDb().prepare(
-        `SELECT id, repoUrl FROM projects WHERE id = ?`
-      ).get(id) as { id: number; repoUrl: string } | undefined
-      if (!row) return reply.code(404).send({ error: 'Project not found' })
-
-      // Normalise the URL to its github.com/owner/repo form. We strip
-      // the trailing .git, any trailing slash, and any auth prefix
-      // (https://user:token@github.com/...) so the HEAD request goes
-      // through the public, cache-friendly path.
-      const url = row.repoUrl
-        .trim()
-        .replace(/\.git$/i, '')
-        .replace(/\/+$/, '')
-        .replace(/https?:\/\/[^/]*@/, 'https://')
-
-      // SSRF defence: only probe URLs that resolve to github.com.
-      // An admin could in principle set repoUrl to an internal URL
-      // (intentionally or by typo); fetching with default redirect-
-      // follow would then let an attacker who controls a repoUrl
-      // probe the server's internal network. We don't need to
-      // support arbitrary git hosts here — the entire FrameCAD
-      // workflow is GitHub-based.
-      let parsed: URL
-      try {
-        parsed = new URL(url)
-      } catch {
-        return reply.code(400).send({ error: 'Project repoUrl is not a valid URL.' })
-      }
-      if (parsed.hostname.toLowerCase() !== 'github.com') {
-        return reply.code(400).send({
-          error: 'check-remote only supports github.com URLs. If you need self-hosted git support, file a feature request.',
-        })
-      }
-
-      // Pull the stored PAT so we can authenticate against private
-      // repos in the team's org. Without it, GitHub returns 404 to
-      // Pull the calling admin's personal PAT + the team PAT and
-      // try each in turn. Without auth, GitHub returns 404 to
-      // anonymous probes of private repos — indistinguishable from
-      // "repo doesn't exist," which was incorrectly marking
-      // freshly-created or SSO-protected private repos as missing
-      // for admins whose own credentials would have found them.
-      // We try the calling admin's PAT first since they're most
-      // likely to have access to repos they care about.
-      const pats = effectiveGitHubPats(req.member!.id)
-
-      let status: 'ok' | 'missing' | 'error' = 'error'
-      let detail: string | null = null
-      try {
-        const parsedPath = parsed.pathname.replace(/^\//, '').replace(/\.git$/i, '')
-        const apiUrl = `https://api.github.com/repos/${parsedPath}`
-        const baseHeaders: Record<string, string> = {
-          'Accept': 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-          'User-Agent': 'framecad-server',
-        }
-        // Build the candidate list: each PAT, plus a final
-        // anonymous attempt for public repos when no PAT is set.
-        const attempts = pats.length > 0
-          ? pats.map(p => ({ ...baseHeaders, Authorization: `Bearer ${p}` }))
-          : [baseHeaders]
-        for (let i = 0; i < attempts.length; i++) {
-          const controller = new AbortController()
-          const timer = setTimeout(() => controller.abort(), 5000)
-          try {
-            // `redirect: 'manual'` so a malicious 30x can't redirect us
-            // off github.com to an internal host.
-            const res = await fetch(apiUrl, {
-              method: 'GET',
-              headers: attempts[i],
-              signal: controller.signal,
-              redirect: 'manual',
-            })
-            if (res.status === 200) {
-              status = 'ok'
-              detail = null
-              break
-            }
-            // 404 / 401 → try the next PAT before declaring missing.
-            // The LAST attempt's verdict is what we record.
-            if (res.status === 404 || res.status === 401) {
-              status = 'missing'
-              detail = null
-            } else {
-              status = 'error'
-              detail = `HTTP ${res.status}`
-            }
-          } finally {
-            clearTimeout(timer)
-          }
-        }
-      } catch (err) {
-        status = 'error'
-        detail = (err as Error).message || 'network error'
-      }
-
-      // Only persist the 'ok' / 'missing' verdicts; 'error' (network
-      // hiccup, GitHub down, etc.) shouldn't overwrite a previously-
-      // confirmed 'ok' state. Refresh the timestamp regardless so the
-      // admin sees when we last looked.
-      if (status === 'ok' || status === 'missing') {
-        getDb().prepare(
-          `UPDATE projects SET remoteStatus = ?, remoteCheckedAt = ? WHERE id = ?`
-        ).run(status, Date.now(), id)
-      } else {
-        getDb().prepare(
-          `UPDATE projects SET remoteCheckedAt = ? WHERE id = ?`
-        ).run(Date.now(), id)
-      }
-
-      logAudit({
-        actorId: req.member!.id,
-        actorLabel: req.member!.displayName,
-        action: 'project.check-remote',
-        target: `project:${id}`,
-        detail: `status=${status}${detail ? ` (${detail})` : ''}`,
-      })
-
-      return { status, detail, checkedAt: Date.now() }
-    },
-  )
 
   // ── Problem reports ────────────────────────────────────────────────
   // Reports submitted from the desktop "Report" button (POST /api/issues).

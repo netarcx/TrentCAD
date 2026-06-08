@@ -15,6 +15,12 @@ export interface DriveFileEntry {
 export interface DriveManifest {
   projectFolderId: string
   sharedDriveId: string
+  /** The Drive folder's own name, captured at join and refreshed on sync.
+   *  This is the AUTHORITATIVE project name the GUI shows — the local folder
+   *  name (which the user controls) is never used for display. Optional only
+   *  for legacy manifests written before this field existed; those are
+   *  back-filled from Drive on the next open/sync. */
+  projectFolderName?: string
   lastSyncedAt: number
   files: Record<string, DriveFileEntry>
 }
@@ -68,10 +74,15 @@ export async function saveManifest(projectDir: string, manifest: DriveManifest):
   await fs.rename(tmp, dest)
 }
 
-export function createEmptyManifest(projectFolderId: string, sharedDriveId: string): DriveManifest {
+export function createEmptyManifest(
+  projectFolderId: string,
+  sharedDriveId: string,
+  projectFolderName?: string
+): DriveManifest {
   return {
     projectFolderId,
     sharedDriveId,
+    projectFolderName,
     lastSyncedAt: Date.now(),
     files: {}
   }

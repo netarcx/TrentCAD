@@ -482,6 +482,10 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     return reportIssue(errorMessage || '')
   })
 
+  ipcMain.handle('backup-project', async () => {
+    return driveProject.backup()
+  })
+
   ipcMain.handle('generate-document', async (_e, type: DocType) => {
     try {
       const generatedBy = (teamServer.currentSnapshot().me?.displayName ?? '').trim() || 'FrameCAD'

@@ -105,6 +105,11 @@ export function useGit() {
         setError(result.error || 'Download failed')
       }
       await fetchAll()
+      // Sync may refresh the project name from Drive (folder renamed there).
+      // Re-read the config so the GUI stays consistent with Drive. Cheap —
+      // reads the in-memory config, no network.
+      const cfg = await window.api.getProjectConfig()
+      if (cfg) setProject(cfg)
       return result
     } catch (err) {
       setError((err as Error).message)

@@ -92,6 +92,9 @@ const api: IpcApi = {
   reportIssue: (errorMessage) =>
     ipcRenderer.invoke('report-issue', errorMessage),
 
+  backupProject: () =>
+    ipcRenderer.invoke('backup-project'),
+
   generateDocument: (type) =>
     ipcRenderer.invoke('generate-document', type),
 

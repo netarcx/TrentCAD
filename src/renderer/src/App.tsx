@@ -758,52 +758,27 @@ export default function App() {
     </div>
   )
 
-  // When the team server has CONFIRMED that this project's GitHub
-  // repo no longer exists (admin clicked "Check now" and got 404),
-  // show a persistent banner so the user knows their local clone
-  // is orphaned. Authoritative server signal — never derived from
-  // the client's own git errors, since those usually mean offline.
-  const openProjectEntry = project && teamSnapshot?.projects
-    ? teamSnapshot.projects.find(p => p.repoUrl
-        .replace(/\.git$/i, '').toLowerCase() === project.remote?.replace(/\.git$/i, '').toLowerCase())
-    : null
-  const repoDeletedBanner = openProjectEntry?.remoteStatus === 'missing' && (
-    <div className="error-banner" style={{ background: 'rgba(251, 113, 133, 0.18)' }}>
-      <span className="error-banner-message">
-        ⚠ Your admin has confirmed this project's remote storage no longer
-        exists. Your local files are still here — back up anything you need,
-        then close this project and delete the local folder.
-      </span>
-    </div>
-  )
-
   // Kiosk + auto-open dead-end recovery. When a kiosk-locked device's
-  // assigned project is unreachable (deleted on GitHub OR never
-  // cloned and the user can't navigate to clone it), the welcome
-  // screen renders without ANY actionable path forward. Surface a
-  // banner that explicitly names the trap + tells the user about the
-  // release hotkey so a coach can rescue them in person.
+  // assigned project can't be opened (never cloned and the user can't
+  // navigate to clone it in kiosk mode), the welcome screen renders
+  // without ANY actionable path forward. Surface a banner that names
+  // the trap + tells the user about the release hotkey so a coach can
+  // rescue them in person.
   const kioskAutoOpenEntry = kioskMode && teamSnapshot?.me?.autoOpenProjectId
     ? teamSnapshot?.projects?.find(p => p.id === teamSnapshot.me!.autoOpenProjectId)
     : null
   const kioskStuck = kioskMode
     && !project
     && !!kioskAutoOpenEntry
-    // Two ways to land in the stuck state:
-    //   - Project is deleted on the server (remoteStatus 'missing').
-    //   - Project isn't deleted but our auto-open effect already
-    //     attempted and gave up (no local clone, can't navigate to
-    //     other projects in kiosk mode).
-    && (kioskAutoOpenEntry.remoteStatus === 'missing'
-        || autoOpenAttempted === teamSnapshot.me!.autoOpenProjectId)
+    // Stuck = the auto-open effect already attempted and gave up: no local
+    // clone, and kiosk mode blocks navigating to other projects to clone it.
+    && autoOpenAttempted === teamSnapshot.me!.autoOpenProjectId
   const kioskStuckBanner = kioskStuck && (
     <div className="error-banner" style={{ background: 'rgba(252, 211, 77, 0.18)' }}>
       <span className="error-banner-message">
         ⚠ This device is locked to a team project that isn't available:
         {' '}<strong>{kioskAutoOpenEntry?.name}</strong>{' '}
-        {kioskAutoOpenEntry?.remoteStatus === 'missing'
-          ? '— its storage has been deleted.'
-          : '— it hasn\'t been downloaded locally yet.'}
+        — it hasn't been downloaded locally yet.
         {' '}Press <span className="mono">Ctrl+Shift+Alt+R</span> to release this
         device from team management, or contact your admin.
       </span>
@@ -845,23 +820,9 @@ export default function App() {
             </ul>
           </div>
         )}
-        {publishProgress.phase === 'error' && (() => {
-          // When the publish failed AND the server has already
-          // confirmed this project's repo is gone, upgrade the
-          // generic offline-vs-deleted message to the authoritative
-          // "deleted, back up your files" copy. The publish-side
-          // detectRemoteGoneError() can't tell the difference;
-          // the team server's snapshot can.
-          const isConfirmedDeleted = !!publishProgress.remoteGone
-            && openProjectEntry?.remoteStatus === 'missing'
-          const message = isConfirmedDeleted
-            ? "Your admin has confirmed this project's remote storage no "
-              + 'longer exists. Your local files are still here — back '
-              + 'up anything you need, then close this project and '
-              + 'delete the local folder.'
-            : publishProgress.error || 'Unknown error'
-          return <ErrorMsg text={message} />
-        })()}
+        {publishProgress.phase === 'error' && (
+          <ErrorMsg text={publishProgress.error || 'Unknown error'} />
+        )}
         <div className="actions">
           {publishProgress.phase === 'error' || publishProgress.phase === 'done' ? (
             <button
@@ -1196,7 +1157,6 @@ export default function App() {
       )}
 
       {offlineBanner}
-      {repoDeletedBanner}
       {kioskStuckBanner}
       {onboardingModal}
 

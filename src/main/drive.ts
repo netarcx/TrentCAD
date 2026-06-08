@@ -240,6 +240,26 @@ async function downloadOne(
   return { hash, mtimeMs: stat.mtimeMs, size: stat.size }
 }
 
+/**
+ * Fetch a Drive folder's own name by id. Used to keep the GUI project name
+ * locked to the authoritative Drive name (back-filling legacy manifests and
+ * catching folder renames on sync). Returns null on any failure so callers
+ * can fall back to whatever name they already have — never throws.
+ */
+export async function getFolderName(folderId: string): Promise<string | null> {
+  try {
+    const drive = await getDrive()
+    const res = await drive.files.get({
+      fileId: folderId,
+      fields: 'name',
+      supportsAllDrives: true
+    })
+    return res.data.name ?? null
+  } catch {
+    return null
+  }
+}
+
 export async function listSharedDrives(): Promise<{ id: string; name: string }[]> {
   const drive = await getDrive()
   const results: { id: string; name: string }[] = []
@@ -349,7 +369,8 @@ export async function downloadProject(
   folderId: string,
   sharedDriveId: string,
   localPath: string,
-  onProgress?: (progress: DownloadProgress) => void
+  onProgress?: (progress: DownloadProgress) => void,
+  projectFolderName?: string
 ): Promise<DriveManifest> {
   assertSharedDriveAllowed(sharedDriveId)
   const drive = await getDrive()
@@ -360,7 +381,11 @@ export async function downloadProject(
   const totalBytes = files.reduce((sum, f) => sum + f.size, 0)
   let downloadedBytes = 0
 
-  const manifest = createEmptyManifest(folderId, sharedDriveId)
+  // Persist the Drive folder name so the GUI shows it (never the local
+  // folder basename, which the user controls). Fall back to a live lookup
+  // if the caller didn't already know it (e.g. some re-download paths).
+  const folderName = projectFolderName ?? (await getFolderName(folderId)) ?? undefined
+  const manifest = createEmptyManifest(folderId, sharedDriveId, folderName)
 
   // As in syncRemote/publishChanges: if a download worker throws, persist the
   // manifest entries for files that DID download before re-throwing. Without
@@ -823,6 +848,24 @@ async function pullMetadataFileImpl(projectDir: string, relPath: string): Promis
     }
     await saveManifest(projectDir, manifest)
   } catch { /* keep local copy on any failure */ }
+}
+
+/**
+ * Persist the project's Drive folder name into the manifest, serialized through
+ * the SAME per-project queue as every other manifest mutator. Doing this with a
+ * bare loadManifest/saveManifest would race a concurrent metadata push/pull or
+ * publish and clobber its manifest.files entries (see withManifestLock above).
+ * Fetch the live name (getFolderName) OUTSIDE the lock and pass it in so the
+ * network round-trip doesn't hold the queue. Best effort: no-ops when the
+ * manifest is gone or the name is already current.
+ */
+export function setManifestFolderName(projectDir: string, name: string): Promise<void> {
+  return withManifestLock(projectDir, async () => {
+    const manifest = await loadManifest(projectDir)
+    if (!manifest || manifest.projectFolderName === name) return
+    manifest.projectFolderName = name
+    await saveManifest(projectDir, manifest)
+  })
 }
 
 /**

@@ -428,13 +428,6 @@ export interface ProjectEntry {
   repoUrl: string
   description?: string
   createdAt: number
-  /** Server-confirmed reachability of the GitHub repo. 'missing' is
-   *  the authoritative "this repo is gone — back up local files"
-   *  signal the desktop reacts to. Clients should NOT downgrade a
-   *  project based on their own failed git operations (those usually
-   *  mean offline, not deleted). Optional so a legacy server that
-   *  doesn't track remoteStatus still parses cleanly. */
-  remoteStatus?: 'unknown' | 'ok' | 'missing'
   /** Google Drive folder id for a Drive-backed project, when the server
    *  records one. Lets the desktop match an auto-open/kiosk target to a
    *  downloaded Drive project by folder id (Drive recents have no GitHub
@@ -565,6 +558,10 @@ export interface IpcApi {
   getOsUsername(): Promise<string>
   openExternal(url: string): Promise<void>
   reportIssue(errorMessage: string): Promise<{ success: boolean; id?: number; error?: string }>
+  /** Snapshot the open project to a timestamped sibling folder, detached
+   *  from Drive (can't sync/publish). A local rollback point. `skipped` lists
+   *  files that couldn't be copied (e.g. open/locked in SolidWorks). */
+  backupProject(): Promise<{ success: boolean; path?: string; error?: string; skipped?: string[] }>
   generateDocument(type: 'bom' | 'manufacturing' | 'summary' | 'bom-by-subsystem'): Promise<{ success: boolean; filePath?: string; relPath?: string; pdfFilePath?: string; pdfRelPath?: string; pdfError?: string; error?: string }>
   openPath(absPath: string): Promise<{ success: boolean; error?: string }>
   revealInFolder(absPath: string): Promise<{ success: boolean; error?: string }>

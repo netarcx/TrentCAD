@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Factory, Settings, UserPlus, HardDrive } from 'lucide-react'
+import { Factory, Settings, UserPlus, HardDrive, Bug } from 'lucide-react'
 import logoUrl from '../assets/logo.png'
 import TeamEnroll from './TeamEnroll'
 import DriveJoin from './DriveJoin'
@@ -101,6 +101,34 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
   useEffect(() => {
     window.api.getRecentProjects().then(setRecentProjects).catch(() => {})
   }, [])
+
+  // Welcome-screen "report an issue" reminder + inline form. Reports go to the
+  // team server's admin Reports page (same pipe as the error-banner Report
+  // button), so the admin sees problems fast instead of hearing them in person.
+  const [reportOpen, setReportOpen] = useState(false)
+  const [reportText, setReportText] = useState('')
+  const [reportState, setReportState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle')
+  const [reportResult, setReportResult] = useState<{ id?: number; error?: string }>({})
+
+  const submitReport = useCallback(async () => {
+    const text = reportText.trim()
+    if (!text) return
+    setReportState('sending')
+    try {
+      const r = await window.api.reportIssue(text)
+      if (r.success) {
+        setReportResult({ id: r.id })
+        setReportState('sent')
+        setReportText('')
+      } else {
+        setReportResult({ error: r.error || 'Could not send' })
+        setReportState('failed')
+      }
+    } catch (err) {
+      setReportResult({ error: (err as Error).message })
+      setReportState('failed')
+    }
+  }, [reportText])
 
   // Logo double-click easter egg
   const logoRef = useRef<HTMLDivElement | null>(null)
@@ -855,6 +883,68 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
                 Pick a project from your<br />team's Shared Drive
               </span>
             </button>
+          </div>
+        )}
+
+        {/* Issue-report reminder. Only meaningful once enrolled — reports go to
+            the team server's admin Reports page. Collapsed to a one-line nudge;
+            expands to a small form so a report is two clicks away from anywhere
+            on the home screen. */}
+        {teamSnapshot?.enrolled && (
+          <div className="setup-report-note" style={{ marginTop: 28, textAlign: 'center', fontSize: 13 }}>
+            {!reportOpen ? (
+              <span style={{ opacity: 0.85 }}>
+                <Bug size={13} strokeWidth={1.75} style={{ verticalAlign: '-2px', marginRight: 6 }} />
+                Something broken or not working right?{' '}
+                <button
+                  type="button"
+                  onClick={() => { setReportOpen(true); setReportState('idle'); setReportResult({}) }}
+                  style={{ background: 'none', border: 'none', color: 'var(--accent, #7c5cff)', cursor: 'pointer', textDecoration: 'underline', font: 'inherit', padding: 0 }}
+                >
+                  Report an issue
+                </button>{' '}
+                so we can fix it fast.
+              </span>
+            ) : (
+              <div style={{ maxWidth: 460, margin: '0 auto', textAlign: 'left' }}>
+                <label style={{ fontSize: 12, fontWeight: 600, opacity: 0.8 }}>Describe the issue</label>
+                <textarea
+                  value={reportText}
+                  onChange={e => setReportText(e.target.value)}
+                  rows={3}
+                  autoFocus
+                  placeholder="What happened, and what were you doing when it broke?"
+                  style={{ width: '100%', marginTop: 4, resize: 'vertical' }}
+                />
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="toolbar-btn primary"
+                    onClick={submitReport}
+                    disabled={reportState === 'sending' || !reportText.trim()}
+                  >
+                    {reportState === 'sending' ? 'Sending…' : 'Send to admin'}
+                  </button>
+                  <button
+                    type="button"
+                    className="toolbar-btn"
+                    onClick={() => { setReportOpen(false); setReportState('idle') }}
+                  >
+                    {reportState === 'sent' ? 'Close' : 'Cancel'}
+                  </button>
+                  {reportState === 'sent' && (
+                    <span style={{ color: 'var(--green, #16a34a)' }}>
+                      {reportResult.id ? `✓ Sent — report #${reportResult.id}` : '✓ Sent'}
+                    </span>
+                  )}
+                  {reportState === 'failed' && (
+                    <span style={{ color: 'var(--red, #ef4444)' }} title={reportResult.error}>
+                      Couldn't send — {reportResult.error}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

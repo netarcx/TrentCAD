@@ -20,6 +20,8 @@ import {
   publishChanges,
   syncRemote,
   getLocalStatus,
+  getFolderName,
+  setManifestFolderName,
   stageFile as driveStageFile,
   gcStaging as driveGcStaging
 } from './drive'
@@ -59,9 +61,23 @@ export function close(): void {
 export async function open(dir: string): Promise<ProjectConfig | null> {
   const manifest = await loadManifest(dir)
   if (!manifest) return null
+  // The GUI name is locked to the Drive folder name. Legacy manifests (joined
+  // before that field existed) have no name stored — back-fill it from Drive
+  // once and persist, so later opens are fast and offline-safe. The registry
+  // name / local basename are last-resort fallbacks only (offline + legacy).
+  let driveName = manifest.projectFolderName
+  if (!driveName) {
+    const fetched = await getFolderName(manifest.projectFolderId)
+    if (fetched) {
+      driveName = fetched
+      // Persist through the serialized manifest queue (never a bare save) so
+      // the back-fill can't clobber a concurrent metadata/publish write.
+      await setManifestFolderName(dir, fetched).catch(() => { /* best effort */ })
+    }
+  }
   const serverProject = currentSnapshot().projects.find(p => p.driveFolderId === manifest.projectFolderId)
   const config: ProjectConfig = {
-    name: serverProject?.name || path.basename(dir),
+    name: driveName || serverProject?.name || path.basename(dir),
     path: dir,
     remote: '',
     backend: 'drive',
@@ -94,8 +110,10 @@ export async function join(
       percent: prog.percent,
       detail: prog.detail
     })
-  })
+  }, name)
   const config: ProjectConfig = {
+    // `name` is the Drive folder name from the picker — the authoritative
+    // display name, now also persisted in the manifest by downloadProject.
     name: name || path.basename(localPath),
     path: localPath,
     remote: '',
@@ -111,6 +129,71 @@ export async function join(
 export async function status(): Promise<FileEntry[]> {
   if (!current) return []
   return getLocalStatus(current.dir)
+}
+
+/**
+ * Recursively copy `src` → `dest`, SKIPPING (not aborting on) any file that
+ * can't be read — e.g. a .sldprt/.sldasm the user has open in SolidWorks, which
+ * holds an exclusive lock and makes a copy throw EBUSY/EPERM. Skipped files are
+ * collected as project-relative paths so the caller can tell the user exactly
+ * what was left out. A single locked file must not sink the whole snapshot — the
+ * backup is most useful precisely while files are open.
+ */
+async function copyTreeResilient(src: string, dest: string, root: string, skipped: string[]): Promise<void> {
+  await fs.mkdir(dest, { recursive: true })
+  const entries = await fs.readdir(src, { withFileTypes: true })
+  for (const entry of entries) {
+    const from = path.join(src, entry.name)
+    const to = path.join(dest, entry.name)
+    if (entry.isDirectory()) {
+      await copyTreeResilient(from, to, root, skipped)
+    } else if (entry.isFile()) {
+      try {
+        await fs.copyFile(from, to)
+      } catch {
+        skipped.push(path.relative(root, from).split(path.sep).join('/'))
+      }
+    }
+    // Symlinks / sockets / fifos are ignored — projects are plain files + dirs.
+  }
+}
+
+/**
+ * Make a one-click local snapshot of the open project: a copy in a timestamped
+ * sibling folder, DETACHED from Drive (the Drive manifest + staging state are
+ * removed from the copy) so it can't sync or publish and won't be mistaken for
+ * the live project. A pure rollback point the user can fall back on if a sync,
+ * publish, or edit goes wrong. Files locked by another app (SolidWorks) are
+ * skipped and reported rather than failing the whole backup. CAD files,
+ * parts.json, and per-part metadata (parts-meta.json/admin.json) are preserved.
+ */
+export async function backup(): Promise<{ success: boolean; path?: string; error?: string; skipped?: string[] }> {
+  if (!current) return { success: false, error: 'Open a project first, then back it up.' }
+  try {
+    // YYYY-MM-DD_HHMMSS — sorts chronologically and is filesystem-safe.
+    const d = new Date()
+    const p2 = (n: number) => String(n).padStart(2, '0')
+    const stamp = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`
+    const dest = path.join(path.dirname(current.dir), `${path.basename(current.dir)}-backup-${stamp}`)
+    const skipped: string[] = []
+    await copyTreeResilient(current.dir, dest, current.dir, skipped)
+    // Detach the COPY from Drive by removing only the Drive-coupling files
+    // (the manifest makes open() treat a folder as the live project; staging
+    // state references Drive ids). Everything else under `.framecad` —
+    // parts-meta.json, admin.json — is real project metadata and is kept, so
+    // the snapshot is genuinely restorable. (Names per drive-manifest.ts.)
+    await fs.rm(path.join(dest, '.framecad', 'drive-manifest.json'), { force: true }).catch(() => { /* none to remove */ })
+    await fs.rm(path.join(dest, '.framecad', 'drive-staging.json'), { force: true }).catch(() => { /* none to remove */ })
+    return { success: true, path: dest, skipped }
+  } catch (err) {
+    // A whole-operation failure now means something structural (can't create
+    // the dest dir, out of disk) rather than one locked file.
+    const code = (err as NodeJS.ErrnoException).code
+    const msg = code === 'ENOSPC'
+      ? 'Not enough disk space to create the backup.'
+      : (err as Error).message
+    return { success: false, error: msg }
+  }
 }
 
 /** Flatten a status tree to the non-directory entries in the given states. */
@@ -239,6 +322,21 @@ export async function sync(onProgress?: (p: PublishProgress) => void): Promise<{
         detail: prog.detail
       })
     }, lockedByMe)
+    // Keep the GUI name in step with Drive: if the folder was renamed on
+    // Drive, pick that up here and persist it. Best effort — a failed lookup
+    // (offline mid-sync, perms) just leaves the existing name untouched. The
+    // getFolderName fetch is done OUTSIDE the manifest lock; the persist goes
+    // through the serialized queue so it can't clobber a concurrent write.
+    if (current) {
+      const liveName = await getFolderName(current.config.driveFolderId ?? '')
+      if (liveName && liveName !== current.config.name) {
+        current.config.name = liveName
+        await setManifestFolderName(current.dir, liveName).catch(() => { /* best effort */ })
+        // Also refresh the persisted recents entry so the welcome-screen name
+        // matches the renamed folder without waiting for a reopen.
+        await addRecentProject(current.config).catch(() => { /* best effort */ })
+      }
+    }
     return { success: true, filesUpdated: res.filesUpdated }
   } catch (err) {
     return { success: false, filesUpdated: 0, error: (err as Error).message }

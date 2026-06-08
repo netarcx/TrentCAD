@@ -18,6 +18,11 @@ interface Props {
   isLoading: boolean
   allowedProjects: ProjectEntry[]
   allowAllProjects?: boolean
+  /** When set, pre-walk the picker to this Shared Drive + folder so the
+   *  user only has to choose a save path (used when joining a specific
+   *  team project straight from the welcome list). Falls back to the
+   *  manual picker if either isn't visible to this Google account. */
+  initialTarget?: { sharedDriveId: string; folderId: string; name: string } | null
 }
 
 /**
@@ -32,7 +37,7 @@ interface Props {
  * (the same one the git clone flow uses), so this component only owns
  * the picker UI up to the moment `onJoinDriveProject` is called.
  */
-export default function DriveJoin({ onBack, onJoinDriveProject, isLoading, allowedProjects, allowAllProjects = false }: Props) {
+export default function DriveJoin({ onBack, onJoinDriveProject, isLoading, allowedProjects, allowAllProjects = false, initialTarget }: Props) {
   const [auth, setAuth] = useState<GoogleAuthStatus | null>(null)
   const [signingIn, setSigningIn] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -116,6 +121,25 @@ export default function DriveJoin({ onBack, onJoinDriveProject, isLoading, allow
       setLoadingFolders(false)
     }
   }, [allowAllProjects, allowedDriveIds])
+
+  // Pre-target: when opened for a specific team project, auto-advance the
+  // picker to its Shared Drive, then its folder, landing the user on the
+  // save-path step. Each guard (`!selected*`) lets the user still override
+  // manually; if the drive/folder isn't visible to this account the picker
+  // just stays put. Declared after pickDrive so the dep ref isn't in its TDZ.
+  useEffect(() => {
+    if (!initialTarget || !drives || selectedDrive) return
+    const target = drives.find(d => d.id === initialTarget.sharedDriveId)
+    if (target) pickDrive(target)
+    else setError(`Couldn’t find “${initialTarget.name}” on this Google account. Pick it manually below, or sign out and use the account with access to your team’s Shared Drive.`)
+  }, [initialTarget, drives, selectedDrive, pickDrive])
+
+  useEffect(() => {
+    if (!initialTarget || !folders || selectedFolder) return
+    const target = folders.find(f => f.id === initialTarget.folderId)
+    if (target) setSelectedFolder(target)
+    else setError(`“${initialTarget.name}” isn’t visible in this Shared Drive for your account. Pick the project folder manually below.`)
+  }, [initialTarget, folders, selectedFolder])
 
   const handleBrowse = async () => {
     const dir = await window.api.selectDirectory()

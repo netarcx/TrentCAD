@@ -215,6 +215,7 @@ export function useGit() {
     createNewPart,
     createNewAssembly,
     createSubsystem,
-    dismissError
+    dismissError,
+    setError
   }
 }

@@ -89,6 +89,10 @@ function installClickWaves(): void {
 
 export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnterManufacturingView, onOpenAdmin, isLoading, globalAdmin, teamSnapshot, onTeamRefresh }: Props) {
   const [mode, setMode] = useState<Mode>('select')
+  // When the user clicks a not-yet-downloaded team project, jump into the
+  // Drive join flow pre-targeted at that project's Shared Drive + folder
+  // (they only pick a save path). Null = generic "Join from Google Drive".
+  const [joinTarget, setJoinTarget] = useState<{ sharedDriveId: string; folderId: string; name: string } | null>(null)
   // Local clones — used to enable the Manufacturing View button (which
   // needs at least one local project) and to surface already-downloaded
   // Google Drive projects so they can be reopened.
@@ -609,7 +613,7 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
               Your admin has not granted you access to join any Drive projects.
             </p>
             <div className="form-actions">
-              <button className="toolbar-btn" onClick={() => setMode('select')}>Back</button>
+              <button className="toolbar-btn" onClick={() => { setMode('select'); setJoinTarget(null) }}>Back</button>
             </div>
           </div>
         </div>
@@ -617,11 +621,12 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
     }
     return (
       <DriveJoin
-        onBack={() => setMode('select')}
+        onBack={() => { setMode('select'); setJoinTarget(null) }}
         onJoinDriveProject={onJoinDriveProject}
         isLoading={isLoading}
         allowedProjects={teamSnapshot?.projects ?? []}
         allowAllProjects={teamSnapshot?.me?.role !== 'student'}
+        initialTarget={joinTarget}
       />
     )
   }
@@ -728,15 +733,29 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
                 const local = p.driveFolderId
                   ? recentProjects.find(r => r.backend === 'drive' && r.driveFolderId === p.driveFolderId)
                   : undefined
-                const RowTag = local ? 'button' : 'div'
+                // A not-yet-downloaded project is joinable when the server
+                // recorded its Drive coordinates — clicking it starts a
+                // pre-targeted download instead of being a dead row.
+                const joinable = !local && !!p.driveFolderId && !!p.sharedDriveId
+                const interactive = !!local || joinable
+                const RowTag = interactive ? 'button' : 'div'
                 return (
                 <RowTag
                   key={p.id}
-                  type={local ? 'button' : undefined}
-                  className={'project-list-row' + (local ? '' : ' project-list-row-static')}
-                  title={local ? local.path : p.name}
-                  disabled={local ? isLoading : undefined}
-                  onClick={local ? () => onOpenProject(local.path) : undefined}
+                  type={interactive ? 'button' : undefined}
+                  className={'project-list-row' + (interactive ? '' : ' project-list-row-static')}
+                  title={local ? local.path : joinable ? `Download “${p.name}” from Google Drive` : 'Not available to join yet — your admin hasn’t linked this project to a Google Drive folder.'}
+                  disabled={interactive ? isLoading : undefined}
+                  onClick={
+                    local
+                      ? () => onOpenProject(local.path)
+                      : joinable
+                        ? () => {
+                            setJoinTarget({ sharedDriveId: p.sharedDriveId!, folderId: p.driveFolderId!, name: p.name })
+                            setMode('drive')
+                          }
+                        : undefined
+                  }
                 >
                   <div className="project-list-row-main">
                     <div className="project-list-row-name">{p.name}</div>
@@ -748,7 +767,7 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
                   </div>
                   <div className="project-list-row-status">
                     <span className={'pill ' + (local ? 'pill-local' : 'pill-remote')}>
-                      {local ? '✓ Local' : 'Google Drive'}
+                      {local ? '✓ Local' : joinable ? '↓ Download' : 'Google Drive'}
                     </span>
                   </div>
                 </RowTag>

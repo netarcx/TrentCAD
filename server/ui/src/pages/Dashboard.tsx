@@ -20,17 +20,24 @@ export default function Dashboard() {
   const [members, setMembers] = useState<Member[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [devices, setDevices] = useState<Device[]>([])
+  const [loadError, setLoadError] = useState(false)
 
   useEffect(() => {
-    api<Team>('GET', '/api/team').then(setTeam).catch(() => {})
-    api<{ members: Member[] }>('GET', '/api/members').then(r => setMembers(r.members)).catch(() => {})
-    api<{ projects: Project[] }>('GET', '/api/projects').then(r => setProjects(r.projects)).catch(() => {})
-    api<{ devices: Device[] }>('GET', '/api/admin/devices').then(r => setDevices(r.devices)).catch(() => {})
+    const fail = () => setLoadError(true)
+    api<Team>('GET', '/api/team').then(setTeam).catch(fail)
+    api<{ members: Member[] }>('GET', '/api/members').then(r => setMembers(r.members)).catch(fail)
+    api<{ projects: Project[] }>('GET', '/api/projects').then(r => setProjects(r.projects)).catch(fail)
+    api<{ devices: Device[] }>('GET', '/api/admin/devices').then(r => setDevices(r.devices)).catch(fail)
   }, [])
 
   return (
     <>
       <UpdateBanner />
+      {loadError && (
+        <div style={{ margin: '0 0 12px', padding: '8px 12px', borderRadius: 6, background: 'rgba(251,191,36,0.15)', fontSize: 13 }}>
+          Couldn’t reach the server — some stats below may be missing or out of date.
+        </div>
+      )}
       <h1>{team?.name ?? 'Loading…'}</h1>
       <div className="sub">
         {team?.gitHubOrg

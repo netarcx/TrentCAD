@@ -1,6 +1,7 @@
 import { ipcMain, dialog, shell, app, BrowserWindow, Notification } from 'electron'
 import os from 'os'
 import path from 'path'
+import { existsSync } from 'node:fs'
 import { watch } from 'chokidar'
 import * as partsOps from './parts'
 import * as adminOps from './admin'
@@ -374,7 +375,17 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('open-file-explorer', async (_e, filePath: string) => {
     const projectDir = driveProject.currentDir() ?? projectPaths.getProjectPath()
-    shell.showItemInFolder(path.join(projectDir, filePath))
+    if (!projectDir) return
+    const target = path.join(projectDir, filePath)
+    // showItemInFolder silently no-ops on a missing path (e.g. a part number
+    // reserved before its file was saved). Fall back to revealing the parent
+    // directory so the click always opens *something*.
+    if (existsSync(target)) {
+      shell.showItemInFolder(target)
+    } else {
+      const parent = path.dirname(target)
+      if (existsSync(parent)) await shell.openPath(parent)
+    }
   })
 
   ipcMain.handle('get-project-config', () => {

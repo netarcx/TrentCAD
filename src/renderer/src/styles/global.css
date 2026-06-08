@@ -2806,6 +2806,15 @@ body.slam-shake {
   cursor: not-allowed;
 }
 
+/* Inert team-project row (rendered as a <div> with no click handler) —
+   neutralize the clickable affordance so it doesn't read as a dead button. */
+.project-list-row-static,
+.project-list-row-static:hover {
+  cursor: default;
+  border-color: var(--border);
+  background: var(--bg-surface);
+}
+
 .project-list-row-main {
   flex: 1 1 auto;
   min-width: 0;

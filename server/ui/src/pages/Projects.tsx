@@ -63,6 +63,7 @@ export default function Projects() {
   const [creatingOnGh, setCreatingOnGh] = useState(false)
   const [createGhError, setCreateGhError] = useState<string | null>(null)
   const [createGhResult, setCreateGhResult] = useState<{ repoUrl: string; name: string } | null>(null)
+  const [ghUrlCopied, setGhUrlCopied] = useState<boolean | null>(null)
 
   async function submitCreateOnGitHub(): Promise<void> {
     if (!createOnGh) return
@@ -293,10 +294,12 @@ export default function Projects() {
                   <button
                     className="secondary"
                     onClick={async () => {
-                      await copyToClipboard(createGhResult.repoUrl)
+                      const ok = await copyToClipboard(createGhResult.repoUrl)
+                      setGhUrlCopied(ok)
+                      setTimeout(() => setGhUrlCopied(null), 2000)
                     }}
                   >
-                    Copy URL
+                    {ghUrlCopied == null ? 'Copy URL' : ghUrlCopied ? '✓ Copied!' : '✗ Copy failed — select & copy manually'}
                   </button>
                   <button
                     className="primary"

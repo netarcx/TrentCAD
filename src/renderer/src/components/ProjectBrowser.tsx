@@ -500,6 +500,17 @@ export default function ProjectBrowser({ files, selectedFile, onSelect, onCheckO
 
   const canCheckIn = contextMenu?.file && contextMenu.file.state === 'locked-by-you'
 
+  // Explain why a lock action is unavailable instead of showing a dead,
+  // greyed menu item with no reason.
+  const lockHolder = contextMenu?.file?.lockedBy || 'someone else'
+  const checkOutTitle = canCheckOut ? undefined
+    : contextMenu?.file?.state === 'locked-by-other' ? `Locked by ${lockHolder}`
+    : contextMenu?.file?.state === 'locked-by-you' ? 'You already have this checked out'
+    : undefined
+  const checkInTitle = canCheckIn ? undefined
+    : contextMenu?.file?.state === 'locked-by-other' ? `Locked by ${lockHolder} — only they can check it in`
+    : 'This file isn’t checked out'
+
   const sortArrow = (key: SortKey) =>
     sortKey === key ? (sortDir === 'asc' ? ' ▴' : ' ▾') : ''
 
@@ -641,27 +652,33 @@ export default function ProjectBrowser({ files, selectedFile, onSelect, onCheckO
           }}
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
-          <button
-            className="context-menu-item"
-            disabled={!canCheckOut}
-            onClick={() => {
-              onCheckOut(contextMenu.file.path)
-              setContextMenu(null)
-            }}
-          >
-            Check Out
-          </button>
-          <button
-            className="context-menu-item"
-            disabled={!canCheckIn}
-            onClick={() => {
-              onCheckIn(contextMenu.file.path)
-              setContextMenu(null)
-            }}
-          >
-            Check In
-          </button>
-          <div className="context-menu-separator" />
+          {!contextMenu.file.isDirectory && (
+            <>
+              <button
+                className="context-menu-item"
+                disabled={!canCheckOut}
+                title={checkOutTitle}
+                onClick={() => {
+                  onCheckOut(contextMenu.file.path)
+                  setContextMenu(null)
+                }}
+              >
+                Check Out
+              </button>
+              <button
+                className="context-menu-item"
+                disabled={!canCheckIn}
+                title={checkInTitle}
+                onClick={() => {
+                  onCheckIn(contextMenu.file.path)
+                  setContextMenu(null)
+                }}
+              >
+                Check In
+              </button>
+              <div className="context-menu-separator" />
+            </>
+          )}
           <button
             className="context-menu-item"
             onClick={() => {

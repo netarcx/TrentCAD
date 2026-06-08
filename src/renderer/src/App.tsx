@@ -73,7 +73,8 @@ export default function App() {
     createNewPart,
     createNewAssembly,
     createSubsystem,
-    dismissError
+    dismissError,
+    setError
   } = useGit()
 
   const [identityChecked, setIdentityChecked] = useState(false)
@@ -631,10 +632,13 @@ export default function App() {
 
   const navigateToPath = useCallback((p: string) => {
     const entry = filesByPath.get(p)
-    if (!entry) return
+    if (!entry) {
+      setError(`“${p}” is no longer in the project — it may have been renamed or deleted. Sync to refresh.`)
+      return
+    }
     setActiveSection('files')
     setSelectedFile(entry)
-  }, [filesByPath, setSelectedFile])
+  }, [filesByPath, setSelectedFile, setError])
 
   const sidebarBadges = useMemo(() => {
     const filesBadge = stats.modified + stats.untracked
@@ -1078,14 +1082,17 @@ export default function App() {
 
         <div className="app-content">
           {activeSection === 'files' && (
-            <ProjectBrowser
-              files={files}
-              selectedFile={selectedFile}
-              onSelect={setSelectedFile}
-              onCheckOut={checkOut}
-              onCheckIn={checkIn}
-              onBulkApply={isMentor ? parts.bulkApply : undefined}
-            />
+            <>
+              {parts.error && <ErrorMsg text={parts.error} style={{ margin: '8px 16px' }} />}
+              <ProjectBrowser
+                files={files}
+                selectedFile={selectedFile}
+                onSelect={setSelectedFile}
+                onCheckOut={checkOut}
+                onCheckIn={checkIn}
+                onBulkApply={isMentor ? parts.bulkApply : undefined}
+              />
+            </>
           )}
 
           {activeSection === 'parts' && isMentor && (

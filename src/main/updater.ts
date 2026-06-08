@@ -23,6 +23,11 @@ export function initAutoUpdater(getMainWindow: () => BrowserWindow | null): void
   autoUpdater.autoDownload = true
   autoUpdater.autoInstallOnAppQuit = true
   autoUpdater.allowPrerelease = true
+  // Force full-file downloads. The differential (blockmap) downloader is a
+  // common cause of a Windows update that "does nothing" — if the previous
+  // version's blockmap is unavailable (e.g. after release churn) it can stall
+  // instead of cleanly falling back. Full downloads are larger but reliable.
+  autoUpdater.disableDifferentialDownload = true
 
   let retryTimer: ReturnType<typeof setTimeout> | null = null
 

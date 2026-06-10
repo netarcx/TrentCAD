@@ -66,14 +66,18 @@ export default function Members() {
 
   useEffect(() => { load() }, [])
 
-  async function patch(id: number, body: Record<string, unknown>): Promise<void> {
+  /** PATCH a member. Returns true on success so callers (saveCaps) can
+   *  keep their editor open — draft intact — when the server rejects. */
+  async function patch(id: number, body: Record<string, unknown>): Promise<boolean> {
     setSavingId(id)
     setError(null)
     try {
       await api('PATCH', `/api/admin/members/${id}`, body)
       await load()
+      return true
     } catch (err) {
       setError((err as ApiError).message)
+      return false
     } finally {
       setSavingId(null)
     }
@@ -94,14 +98,16 @@ export default function Members() {
   }
 
   async function saveCaps(m: MemberFull, next: CapabilityValue): Promise<void> {
-    await patch(m.id, {
+    const ok = await patch(m.id, {
       capabilities: next.capabilities,
       allowedProjectIds: next.allowedProjectIds,
       autoOpenProjectId: next.autoOpenProjectId,
       kioskMode: next.kioskMode,
       archiveMode: next.archiveMode,
     })
-    setEditingId(null)
+    // Only collapse the editor on success — a failed save keeps the
+    // draft on screen so the admin can fix it and retry.
+    if (ok) setEditingId(null)
   }
 
   return (

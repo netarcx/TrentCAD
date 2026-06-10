@@ -151,9 +151,14 @@ export default function App() {
   // manufacturingView is set first so the kiosk shell takes over the
   // moment openProject resolves, without flashing the regular project
   // view in between.
+  // `switchingProjectRef` covers the other transient null gap: the kiosk
+  // shell's project switcher does closeProject() → openProject(), and
+  // without the guard this effect would dump the kiosk user into the
+  // full editing UI mid-switch.
   const prevProjectRef = useRef(project)
+  const switchingProjectRef = useRef(false)
   useEffect(() => {
-    if (manufacturingView && prevProjectRef.current && !project) {
+    if (manufacturingView && prevProjectRef.current && !project && !switchingProjectRef.current) {
       setManufacturingView(false)
     }
     prevProjectRef.current = project
@@ -931,11 +936,16 @@ export default function App() {
       <ManufacturingModeShell
         project={project}
         onSwitchProject={async (targetPath) => {
+          // Hold the kiosk shell across the transient project-null gap
+          // between close and open. openProject returns false on failure
+          // (it doesn't throw), so check the result rather than catch.
+          switchingProjectRef.current = true
           try {
             await closeProject()
-            await openProject(targetPath)
-          } catch {
-            setManufacturingView(false)
+            const opened = await openProject(targetPath)
+            if (!opened) setManufacturingView(false)
+          } finally {
+            switchingProjectRef.current = false
           }
         }}
         onExit={() => { setManufacturingView(false); closeProject() }}
@@ -980,7 +990,14 @@ export default function App() {
           <>
             <button
               className="logo-home-btn"
-              onClick={() => { setActiveSection('files'); closeProject() }}
+              onClick={async () => {
+                setActiveSection('files')
+                // Flush any queued Parts-Manager edits BEFORE the project
+                // closes — after closeProject() the bulkUpdateMeta IPC
+                // throws "No project is open" and the batch is dropped.
+                await parts.flushNow()
+                closeProject()
+              }}
               title="Close this project and return to the welcome screen"
             >
               <img className="logo-img" src={logoUrl} alt="FrameCAD" />
@@ -989,7 +1006,12 @@ export default function App() {
             <span className="divider" />
             <button
               className="back-btn"
-              onClick={() => { setActiveSection('files'); closeProject() }}
+              onClick={async () => {
+                setActiveSection('files')
+                // Same pre-close flush as the logo button above.
+                await parts.flushNow()
+                closeProject()
+              }}
               title="Close this project and go back to the project picker"
             >
               <ChevronLeft size={16} strokeWidth={2} />

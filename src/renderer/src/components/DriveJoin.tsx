@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { HardDrive, FolderOpen, LogOut, RefreshCw } from 'lucide-react'
 import type { GoogleAuthStatus, DriveSharedDrive, DriveFolder, ProjectEntry } from '@shared/types'
 
@@ -77,9 +77,14 @@ export default function DriveJoin({ onBack, onJoinDriveProject, isLoading, allow
     }
   }, [])
 
-  // Once signed in, fetch the Shared Drive list once.
+  // Once signed in, fetch the Shared Drive list once. Latched on a ref —
+  // a failed load leaves `drives === null`, and without the latch the
+  // effect would re-fire loadDrives() in a tight retry loop. The
+  // "Refresh" button is the manual retry path.
+  const driveLoadAttemptedRef = useRef(false)
   useEffect(() => {
-    if (auth?.signedIn && drives === null && !loadingDrives) {
+    if (auth?.signedIn && drives === null && !loadingDrives && !driveLoadAttemptedRef.current) {
+      driveLoadAttemptedRef.current = true
       loadDrives()
     }
   }, [auth?.signedIn, drives, loadingDrives, loadDrives])
@@ -100,6 +105,7 @@ export default function DriveJoin({ onBack, onJoinDriveProject, isLoading, allow
   const handleSignOut = async () => {
     try { await window.api.googleSignOut() } catch { /* best effort */ }
     setAuth({ signedIn: false })
+    driveLoadAttemptedRef.current = false
     setDrives(null)
     setSelectedDrive(null)
     setFolders(null)

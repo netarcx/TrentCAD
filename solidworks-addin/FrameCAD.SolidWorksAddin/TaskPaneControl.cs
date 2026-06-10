@@ -734,7 +734,12 @@ namespace FrameCAD.SolidWorksAddin
         private void SafeInvoke(Action action)
         {
             if (_disposed || IsDisposed || !IsHandleCreated) return;
-            try { BeginInvoke(action); } catch (ObjectDisposedException) { }
+            // InvalidOperationException covers the handle being destroyed
+            // between the guard above and BeginInvoke — without it an
+            // async-void timer tick could throw and crash SolidWorks.
+            try { BeginInvoke(action); }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
         }
 
         private bool _connected;
@@ -826,6 +831,23 @@ namespace FrameCAD.SolidWorksAddin
         {
             if (_polling) return;
             _polling = true;
+            try
+            {
+                await CheckConnectionCore();
+            }
+            finally
+            {
+                // Always clear the in-flight flag here, NOT inside the
+                // SafeInvoke lambda — SafeInvoke silently skips when the
+                // handle isn't created yet (or is disposed), and a single
+                // skipped invoke would leave _polling stuck true forever,
+                // killing health polling for the rest of the SW session.
+                _polling = false;
+            }
+        }
+
+        private async System.Threading.Tasks.Task CheckConnectionCore()
+        {
             var wasConnected = _connected;
             HealthResponse health = null;
             Exception error = null;
@@ -926,12 +948,6 @@ namespace FrameCAD.SolidWorksAddin
                     if (_healthTimer.Interval != nextInterval)
                         _healthTimer.Interval = nextInterval;
                 }
-                // Clear the in-flight flag inside the UI-thread block
-                // so the next timer tick can't start a new poll until
-                // this one's UI work has actually completed (SafeInvoke
-                // uses BeginInvoke, so this runs on the UI thread, not
-                // synchronously with the await above).
-                _polling = false;
             });
         }
 
@@ -1324,6 +1340,13 @@ namespace FrameCAD.SolidWorksAddin
             // overlapping POSTs whose stale reverts clobber each other.
             if (string.IsNullOrEmpty(_currentFilePath) || _metaBusy) return;
             _metaBusy = true;
+            // Disable both combos for the duration — otherwise a second
+            // change while this one is in flight is silently swallowed by
+            // the _metaBusy guard, leaving an unsaved value on screen.
+            // We're on the UI thread here (SelectedIndexChanged handler),
+            // so direct property sets are fine.
+            _cmbReleaseState.Enabled = false;
+            _cmbMfgMethod.Enabled = false;
             try
             {
             var state = _cmbReleaseState.SelectedItem?.ToString();
@@ -1379,7 +1402,17 @@ namespace FrameCAD.SolidWorksAddin
                 ShowMessage(result?.Error ?? "Could not set release state", true);
             }
             }
-            finally { _metaBusy = false; }
+            finally
+            {
+                _metaBusy = false;
+                // Post-await continuation — marshal the re-enable like the
+                // rest of this method does its UI updates.
+                SafeInvoke(() =>
+                {
+                    _cmbReleaseState.Enabled = true;
+                    _cmbMfgMethod.Enabled = true;
+                });
+            }
         }
 
         /// <summary>
@@ -1521,6 +1554,11 @@ namespace FrameCAD.SolidWorksAddin
         {
             if (string.IsNullOrEmpty(_currentFilePath) || _metaBusy) return;
             _metaBusy = true;
+            // Same combo lock-out as DoSetReleaseState — a change made
+            // while a meta write is in flight would otherwise be silently
+            // dropped without reverting the visible selection.
+            _cmbReleaseState.Enabled = false;
+            _cmbMfgMethod.Enabled = false;
             try
             {
             var selected = _cmbMfgMethod.SelectedItem?.ToString();
@@ -1539,7 +1577,15 @@ namespace FrameCAD.SolidWorksAddin
                 ShowMessage(result?.Error ?? "Could not set manufacturing method", true);
             }
             }
-            finally { _metaBusy = false; }
+            finally
+            {
+                _metaBusy = false;
+                SafeInvoke(() =>
+                {
+                    _cmbReleaseState.Enabled = true;
+                    _cmbMfgMethod.Enabled = true;
+                });
+            }
         }
 
         private async System.Threading.Tasks.Task DoUseSwMaterial()
@@ -1933,7 +1979,18 @@ namespace FrameCAD.SolidWorksAddin
                     });
                 }
                 catch (Exception ex) { SafeInvoke(() => ShowMessage(ex.Message, true)); }
-                finally { _busy = false; }
+                finally
+                {
+                    _busy = false;
+                    // SetButtonStates(false, false) above clobbered the cached
+                    // lock-state availability — re-derive it from the active
+                    // doc (and re-enable the connection-gated buttons now)
+                    // instead of leaving Check Out / Check In dead until the
+                    // user switches documents.
+                    if (!string.IsNullOrEmpty(_currentFilePath))
+                        UpdateForDocument(_currentFilePath);
+                    SafeInvoke(() => ApplyButtonStates());
+                }
             }
         }
 
@@ -2020,7 +2077,17 @@ namespace FrameCAD.SolidWorksAddin
                     }
                 }
                 catch (Exception ex) { SafeInvoke(() => ShowMessage(ex.Message, true)); }
-                finally { _busy = false; ApplyButtonStates(); }
+                finally
+                {
+                    _busy = false;
+                    // Same clobber as DoPublish: SetButtonStates(false, false)
+                    // wiped the cached Check Out / Check In availability, and
+                    // the failure paths above never refresh it. Re-derive
+                    // from the active doc so the buttons come back.
+                    if (!string.IsNullOrEmpty(_currentFilePath))
+                        UpdateForDocument(_currentFilePath);
+                    SafeInvoke(() => ApplyButtonStates());
+                }
             }
         }
 

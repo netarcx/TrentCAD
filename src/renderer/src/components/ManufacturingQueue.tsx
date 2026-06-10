@@ -126,6 +126,7 @@ export default function ManufacturingQueue({ onClose, embedded = false }: Props)
     localStorage.setItem(OPERATOR_KEY, initials)
     const loc = location.trim()
     if (loc) localStorage.setItem(LOCATION_KEY, loc)
+    else localStorage.removeItem(LOCATION_KEY)
     setMarkingDone(path)
     setError(null)
     try {
@@ -178,7 +179,11 @@ export default function ManufacturingQueue({ onClose, embedded = false }: Props)
             type="text"
             value={location}
             onChange={e => setLocation(e.target.value)}
-            onBlur={() => { const v = location.trim(); if (v) localStorage.setItem(LOCATION_KEY, v) }}
+            onBlur={() => {
+              const v = location.trim()
+              if (v) localStorage.setItem(LOCATION_KEY, v)
+              else localStorage.removeItem(LOCATION_KEY)
+            }}
             placeholder="e.g. Shelf B3"
             maxLength={60}
             autoComplete="off"

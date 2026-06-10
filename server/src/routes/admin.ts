@@ -350,6 +350,18 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     if (req.body?.status === 'inactive') {
       getDb().prepare(`DELETE FROM devices WHERE memberId = ?`).run(id)
       getDb().prepare(`DELETE FROM locks WHERE ownerMemberId = ?`).run(id)
+      // Also revoke any outstanding PINs bound to this member's identity —
+      // enrolling with one reuses the member row and flips it back to
+      // 'active', silently undoing the deactivation. Same mechanism as
+      // revokePin(): delete rows that still have uses remaining.
+      const gh = (getDb().prepare(
+        `SELECT githubUsername FROM members WHERE id = ?`
+      ).get(id) as { githubUsername: string | null } | undefined)?.githubUsername
+      if (gh) {
+        getDb().prepare(
+          `DELETE FROM pins WHERE LOWER(githubUsername) = LOWER(?) AND useCount < maxUses`
+        ).run(gh)
+      }
     }
 
     logAudit({
@@ -540,6 +552,13 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       const status = req.body?.status === 'resolved' ? 'resolved' : 'open'
       const r = getDb().prepare(`UPDATE issue_reports SET status = ? WHERE id = ?`).run(status, id)
       if (r.changes === 0) return reply.code(404).send({ error: 'Report not found' })
+      logAudit({
+        actorId: req.member!.id,
+        actorLabel: req.member!.displayName,
+        action: 'issue.update',
+        target: `issue:${id}`,
+        detail: `status=${status}`,
+      })
       return { ok: true }
     },
   )
@@ -547,7 +566,15 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
   app.delete<{ Params: { id: string } }>('/api/admin/issues/:id', async (req, reply) => {
     const id = Number.parseInt(req.params.id, 10)
     if (!Number.isInteger(id)) return reply.code(400).send({ error: 'Invalid id' })
-    getDb().prepare(`DELETE FROM issue_reports WHERE id = ?`).run(id)
+    const r = getDb().prepare(`DELETE FROM issue_reports WHERE id = ?`).run(id)
+    if (r.changes > 0) {
+      logAudit({
+        actorId: req.member!.id,
+        actorLabel: req.member!.displayName,
+        action: 'issue.delete',
+        target: `issue:${id}`,
+      })
+    }
     return { ok: true }
   })
 

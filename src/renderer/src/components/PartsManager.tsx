@@ -170,6 +170,7 @@ export default function PartsManager(props: Props) {
             <option value="print">3D Print</option>
             <option value="cnc">CNC</option>
             <option value="manual">Hand</option>
+            <option value="purchase">Purchase</option>
             <option value="other">Other</option>
             <option value="clear">(clear)</option>
           </select>
@@ -266,7 +267,12 @@ export default function PartsManager(props: Props) {
                       </select>
                     </td>
                     <td>
+                      {/* Material/Mass/Cost are uncontrolled (defaultValue) so
+                          typing isn't clobbered by re-renders — keying each
+                          input on the saved value remounts it when a refresh/
+                          sync reloads meta, so reloaded values actually show. */}
                       <input
+                        key={`${p.path}:mat:${p.meta.manufacturingMaterial ?? ''}`}
                         type="text"
                         list="default-materials"
                         defaultValue={p.meta.manufacturingMaterial ?? ''}
@@ -279,6 +285,7 @@ export default function PartsManager(props: Props) {
                     </td>
                     <td>
                       <input
+                        key={`${p.path}:mass:${p.meta.mass ?? ''}`}
                         type="number"
                         step="0.001"
                         min="0"
@@ -294,6 +301,7 @@ export default function PartsManager(props: Props) {
                     </td>
                     <td>
                       <input
+                        key={`${p.path}:cost:${p.meta.cost ?? ''}`}
                         type="number"
                         step="0.01"
                         min="0"

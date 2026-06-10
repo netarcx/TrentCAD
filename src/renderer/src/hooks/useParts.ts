@@ -29,13 +29,21 @@ export default function useParts({ enabled }: UsePartsOptions) {
   const [flushing, setFlushing] = useState(false)
   const [legacyMode, setLegacyMode] = useState(false)
 
+  // Load-generation counter. Each load bumps it; when enabled/project
+  // changes the effect below bumps it too, so an in-flight load from the
+  // previous project resolves stale and its results are dropped instead
+  // of landing in the new project's state.
+  const loadGenRef = useRef(0)
+
   const loadAllParts = useCallback(async () => {
+    const gen = ++loadGenRef.current
     setLoading(true)
     try {
       const [manifest, allMeta] = await Promise.all([
         window.api.getPartsManifest() as Promise<PartsManifest | null>,
         window.api.getAllPartsMeta() as Promise<Record<string, PartMeta>>
       ])
+      if (gen !== loadGenRef.current) return
       if (!manifest) { setAllParts([]); setLegacyMode(false); return }
       setLegacyMode(!!manifest.legacyMode)
       const rows: JoinedPart[] = Object.entries(manifest.entries).map(([p, e]) => ({
@@ -52,15 +60,23 @@ export default function useParts({ enabled }: UsePartsOptions) {
       })
       setAllParts(rows)
     } catch (err) {
+      if (gen !== loadGenRef.current) return
       setError((err as Error).message)
     } finally {
-      setLoading(false)
+      if (gen === loadGenRef.current) setLoading(false)
     }
   }, [])
 
   useEffect(() => {
-    if (enabled && !loading) {
+    // Invalidate any in-flight load from the previous enabled state /
+    // project before kicking off (or skipping) the next one. No
+    // `!loading` guard here — a previous load still in flight must not
+    // suppress the new project's load.
+    loadGenRef.current++
+    if (enabled) {
       loadAllParts()
+    } else {
+      setLoading(false)
     }
   }, [enabled])
 
@@ -128,26 +144,11 @@ export default function useParts({ enabled }: UsePartsOptions) {
     }
   }, [])
 
-  // Flush when the project CLOSES (enabled → false). The hook stays mounted
-  // across project switches (only `enabled` toggles), so the unmount effect
-  // above only fires on app quit — without this, a Mass/Cost edit made within
-  // the 1.2s debounce of clicking "Back" was silently dropped.
-  const prevEnabledRef = useRef(enabled)
-  useEffect(() => {
-    if (prevEnabledRef.current && !enabled) {
-      if (flushTimerRef.current) {
-        clearTimeout(flushTimerRef.current)
-        flushTimerRef.current = null
-      }
-      if (pendingRef.current.size > 0) {
-        const batch = Object.fromEntries(pendingRef.current)
-        pendingRef.current = new Map()
-        setPendingCount(0)
-        window.api.bulkUpdateMeta(batch).catch(() => {})
-      }
-    }
-    prevEnabledRef.current = enabled
-  }, [enabled])
+  // NOTE: pending edits are flushed BEFORE the project closes — App.tsx's
+  // close-project handlers `await parts.flushNow()` ahead of closeProject().
+  // (A previous enabled→false flush effect here was dead code: it ran after
+  // the closeProject IPC resolved, so bulkUpdateMeta threw "No project is
+  // open" and the batch was silently dropped.)
 
   const queueEdit = useCallback((path: string, patch: BulkMetaPatch, optimisticPatch: Partial<PartMeta>) => {
     const existing = pendingRef.current.get(path) || {}

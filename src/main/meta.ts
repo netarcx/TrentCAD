@@ -34,10 +34,25 @@ async function flushMetaCommit(): Promise<void> {
   try {
     await pushSharedFile(metaRelPath(), combined)
   } catch (err) {
-    // Log but don't crash — the local file is already saved. Next
-    // mutation or manual publish will pick it up.
+    // Log but don't crash — the local file is already saved. Put the messages
+    // back: they are what marks the local file as ahead-of-Drive, so mutators
+    // keep skipping the pull (which would overwrite the unpushed edits), and
+    // the retry timer / next edit pushes them again.
     console.error('[meta] deferred commit/push failed:', (err as Error).message)
+    pendingCommitMessages.unshift(...messages)
+    if (!metaCommitTimer) metaCommitTimer = setTimeout(flushMetaCommit, META_COMMIT_DELAY)
   }
+}
+
+// Pull the latest team copy from Drive UNLESS local edits are still waiting on
+// the deferred push. The pull is unconditional (no merge), so pulling while
+// dirty would overwrite the local file with a remote copy that lacks the
+// pending edits — any two edits within the 60s commit window silently lost the
+// first one. Local-dirty wins, matching the sync conflict rule; the deferred
+// push then propagates everything.
+async function pullMetaUnlessDirty(): Promise<void> {
+  if (pendingCommitMessages.length > 0) return
+  await pullSharedFile(metaRelPath())
 }
 
 export { flushMetaCommit }
@@ -193,7 +208,7 @@ async function modifyAndSync(
   commitMessage: string
 ): Promise<void> {
   await withMetaLock(async () => {
-    await pullSharedFile(metaRelPath())
+    await pullMetaUnlessDirty()
     const all = await loadAllMeta()
     const entry = all[filePath] || {}
     mutator(entry)
@@ -258,7 +273,7 @@ export async function setReleaseState(
   const trimmedLocation = location?.trim()
 
   await withMetaLock(async () => {
-    await pullSharedFile(metaRelPath())
+    await pullMetaUnlessDirty()
     const all = await loadAllMeta()
     // Preserve a previously-recorded location unless this call sets a new one,
     // so the shop dashboard can still answer "where is it" after a later state
@@ -428,7 +443,7 @@ async function bulkUpdateMetaImpl(updates: Record<string, BulkMetaPatch>): Promi
   const by = needsAttribution ? await currentUsername() : ''
   const now = new Date().toISOString()
 
-  await pullSharedFile(metaRelPath())
+  await pullMetaUnlessDirty()
   const all = await loadAllMeta()
 
   let touched = 0

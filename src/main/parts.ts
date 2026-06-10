@@ -500,20 +500,25 @@ async function syncManifestImpl(): Promise<PartsManifest> {
  * the same way createNewPart does.
  */
 export async function setLegacyMode(enabled: boolean): Promise<void> {
-  await pullSharedFile(MANIFEST_FILE)
-  const projectDir = getProjectPath()
-  const snapshot = await fs.readFile(path.join(projectDir, MANIFEST_FILE), 'utf-8').catch(() => null)
-  const manifest = await loadManifest()
-  manifest.legacyMode = !!enabled
-  await saveManifest(manifest)
-  try {
-    await pushSharedFile(MANIFEST_FILE, enabled ? 'legacy mode on' : 'legacy mode off')
-  } catch (err) {
-    if (snapshot !== null) {
-      await fs.writeFile(path.join(projectDir, MANIFEST_FILE), snapshot)
+  // Under the manifest lock like every other parts.json mutator — a bare
+  // pull→save→push here racing a syncManifest/createNewPart cycle would push
+  // a stale snapshot that drops the concurrent writer's new entries team-wide.
+  await withManifestLock(async () => {
+    await pullSharedFile(MANIFEST_FILE)
+    const projectDir = getProjectPath()
+    const snapshot = await fs.readFile(path.join(projectDir, MANIFEST_FILE), 'utf-8').catch(() => null)
+    const manifest = await loadManifest()
+    manifest.legacyMode = !!enabled
+    await saveManifest(manifest)
+    try {
+      await pushSharedFile(MANIFEST_FILE, enabled ? 'legacy mode on' : 'legacy mode off')
+    } catch (err) {
+      if (snapshot !== null) {
+        await fs.writeFile(path.join(projectDir, MANIFEST_FILE), snapshot)
+      }
+      throw err
     }
-    throw err
-  }
+  })
 }
 
 export function syncManifest(): Promise<PartsManifest> {
@@ -646,6 +651,7 @@ export function reconcilePartNumbers(): Promise<{
     const key = await projectKey()
     if (!key) return empty
     let manifest = await loadManifest()
+    const localManifest = manifest
     const localProvisional = Object.entries(manifest.entries).filter(([, e]) => e.provisional)
     if (localProvisional.length === 0) { lastNumberConflicts = []; return empty }
     // Pull the team's latest so we reconcile against current numbers. The pull
@@ -658,6 +664,18 @@ export function reconcilePartNumbers(): Promise<{
     } catch { /* keep our local copy */ }
     for (const [relPath, entry] of localProvisional) {
       if (!manifest.entries[relPath]) manifest.entries[relPath] = entry
+      // The provisional entry's subsystem (top-level folder → XX) mapping was
+      // assigned offline too — without it, later parts in the same folder get
+      // a DIFFERENT XX from ensureTopLevelFolderNumber, desyncing numbering.
+      const topLevel = relPath.replace(/\\/g, '/').split('/')[0]
+      const localNum = localManifest.assemblies[topLevel]
+      if (localNum && !manifest.assemblies[topLevel]) {
+        manifest.assemblies[topLevel] = localNum
+        const localNext = localManifest.nextAssemblyCounters[''] || 1
+        if ((manifest.nextAssemblyCounters[''] || 1) < localNext) {
+          manifest.nextAssemblyCounters[''] = localNext
+        }
+      }
     }
 
     const team = await import('./teamServer')

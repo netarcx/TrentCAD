@@ -171,7 +171,7 @@ const IGNORED_PATTERNS = [
   /\.DS_Store$/
 ]
 
-function isIgnored(relativePath: string): boolean {
+export function isIgnored(relativePath: string): boolean {
   return IGNORED_PATTERNS.some(p => p.test(relativePath))
 }
 
@@ -253,6 +253,11 @@ export async function getLocalChanges(
   }
 
   for (const relPath of Object.keys(manifest.files)) {
+    // The walk skips ignored paths (.framecad/ metadata, COTS/, dotfiles), so
+    // manifest entries for them — pushSharedFile records .framecad/parts-meta.json
+    // and .framecad/admin.json — would otherwise read as "deleted" forever and
+    // publish would trash the team's shared metadata on Drive.
+    if (isIgnored(relPath)) continue
     if (!localFiles.has(relPath)) {
       changes.push({ relativePath: relPath, type: 'deleted' })
     }

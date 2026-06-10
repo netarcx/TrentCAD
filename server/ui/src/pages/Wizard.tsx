@@ -46,7 +46,6 @@ export default function Wizard() {
   const [projectName, setProjectName] = useState('')
   const [projectDriveFolderId, setProjectDriveFolderId] = useState('')
   const [projectSharedDriveId, setProjectSharedDriveId] = useState('')
-  const [projectQuotaGb, setProjectQuotaGb] = useState('10')
   // The team's current Shared-Drive allowlist. The project step appends the
   // new project's Shared Drive to it so clients are actually permitted to
   // reach it (the desktop refuses a Shared Drive that isn't allowlisted).
@@ -119,10 +118,6 @@ export default function Wizard() {
     setBusy(true)
     setError(null)
     try {
-      const gb = Number.parseFloat(projectQuotaGb)
-      const quotaBytes = Number.isFinite(gb) && gb >= 0
-        ? Math.round(gb * 1024 * 1024 * 1024)
-        : null
       const folderId = projectDriveFolderId.trim()
       const driveId = projectSharedDriveId.trim()
       // If the project lives in a Shared Drive, add that drive to the team's
@@ -143,7 +138,6 @@ export default function Wizard() {
         name: projectName.trim(),
         driveFolderId: folderId,
         sharedDriveId: driveId || undefined,
-        quotaBytes,
       })
       setStep('member')
     } catch (err) {
@@ -161,6 +155,10 @@ export default function Wizard() {
         role: pinRole,
         displayName: pinDisplayName.trim() || undefined,
         githubUsername: pinGitHub.trim() || undefined,
+        // Match the copy shown after issue: "Single-use. Expires in
+        // 7 days if not used." (server defaults are 3 uses / 24 h).
+        ttlMs: 7 * 24 * 3600 * 1000,
+        maxUses: 1,
         capabilities: pinCaps.capabilities,
         allowedProjectIds: pinCaps.allowedProjectIds,
         autoOpenProjectId: pinCaps.autoOpenProjectId,
@@ -307,20 +305,6 @@ export default function Wizard() {
               The Shared Drive ID is added to your team's allowlist so clients
               are permitted to reach it — leave blank only if the folder lives
               in a regular My Drive (not recommended for a team).
-            </div>
-            <label>Storage quota (GB)</label>
-            <input
-              type="number"
-              min="0"
-              step="0.5"
-              value={projectQuotaGb}
-              onChange={e => setProjectQuotaGb(e.target.value)}
-              placeholder="blank = unlimited"
-            />
-            <div className="hint" style={{ marginTop: 4 }}>
-              Hard cap on how much CAD data this project can store in
-              Google Drive. 10 GB is plenty for a robot's worth of files;
-              tweak later from the Projects page.
             </div>
             <div className="wizard-nav">
               <button className="link" onClick={() => setStep('member')}>

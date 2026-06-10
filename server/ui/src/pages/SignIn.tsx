@@ -97,7 +97,16 @@ export default function SignIn() {
       const res = await api<AuthResponse>('POST', '/api/enroll', {
         pin: clean,
         deviceLabel: pinLabel.trim() || 'Admin browser',
+        // `kind: 'web'` gets the 30-day web-session TTL instead of an
+        // immortal desktop device; `adminOnly: true` makes the server
+        // reject non-admin PINs with 403 BEFORE consuming a use, so a
+        // student PIN pasted here isn't burned.
+        kind: 'web',
+        adminOnly: true,
       })
+      // Fallback for older servers that ignore `adminOnly` and enroll
+      // anyway — keep the client-side gate so a non-admin session is
+      // never committed to storage.
       if (res.member.role !== 'admin') {
         setError('That PIN is for a non-admin role. This web UI is admin-only.')
         return
@@ -123,7 +132,14 @@ export default function SignIn() {
       // password-mode login screen after this flow.
       setUsername(seed)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : (err as Error).message)
+      if (err instanceof ApiError && err.status === 403) {
+        // Server-side adminOnly gate: the PIN is real but non-admin.
+        // No use was consumed, so the teammate can still enroll on
+        // the desktop with the same PIN.
+        setError(err.message || 'That PIN is for a non-admin role. This web UI is admin-only — the PIN is still usable in the FrameCAD desktop app.')
+      } else {
+        setError(err instanceof ApiError ? err.message : (err as Error).message)
+      }
     } finally {
       setBusy(false)
     }

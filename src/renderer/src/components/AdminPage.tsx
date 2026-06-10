@@ -192,7 +192,9 @@ export default function AdminPage({ hasProject, isAdmin, isMentor, canForceCheck
       if (timer) clearTimeout(timer)
       cleanup()
     }
-  }, [tab, hasProject, loadAllParts])
+    // `flushing` must be in the deps — the listener closes over it, and
+    // without it a reload could fire mid-flush against a stale `false`.
+  }, [tab, hasProject, loadAllParts, flushing])
 
   const flushNow = useCallback(async () => {
     if (flushTimerRef.current) {

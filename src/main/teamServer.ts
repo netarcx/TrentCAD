@@ -233,6 +233,10 @@ export async function enroll(args: {
     state.me = data.member
     state.team = data.team
     state.error = null
+    // A successful enroll IS proof the device is welcome again — don't leave
+    // the revoked flag (from a prior 401) set when the follow-up refresh
+    // fails transiently, or the renderer keeps gating a legitimate device.
+    state.revoked = false
     await persistEnrollment()
     // Pull the rest of the snapshot so the welcome screen has the
     // project registry without a second user gesture.
@@ -286,6 +290,7 @@ export async function loginDevice(args: {
     state.me = data.member
     state.team = data.team
     state.error = null
+    state.revoked = false // fresh login — mirror the enroll success path
     await persistEnrollment()
     await refresh().catch(() => {})
     return { success: true, snapshot: currentSnapshot() }
@@ -600,6 +605,16 @@ export async function listDrivePublishHistory(
   return data.entries ?? []
 }
 
+// The publish dialogs (desktop Toolbar + SolidWorks add-in) promise "leave
+// blank for a random label" — this is where that label is minted, so both
+// surfaces get it from the one chokepoint that records history.
+const LABEL_ADJECTIVES = ['swift', 'bold', 'tidy', 'brave', 'calm', 'keen', 'spry', 'deft', 'sly', 'zesty', 'noble', 'merry', 'lucid', 'sturdy', 'quick']
+const LABEL_NOUNS = ['falcon', 'gearbox', 'piston', 'bracket', 'sprocket', 'chassis', 'rivet', 'flange', 'camshaft', 'spindle', 'gusset', 'bearing', 'pulley', 'truss', 'anvil']
+function randomPublishLabel(): string {
+  const pick = (arr: string[]) => arr[Math.floor(Math.random() * arr.length)]
+  return `${pick(LABEL_ADJECTIVES)}-${pick(LABEL_NOUNS)}-${Math.floor(Math.random() * 900 + 100)}`
+}
+
 /** Record a publish so it shows in History. Best effort — a failure here
  *  must never fail the publish itself, so callers ignore rejections. */
 export async function recordDrivePublish(
@@ -608,8 +623,9 @@ export async function recordDrivePublish(
   files: string[],
 ): Promise<void> {
   if (!state.token) return
+  const label = message.trim() || randomPublishLabel()
   await fetchTeamApi(
     `/api/projects/${encodeURIComponent(projectKey)}/history`,
-    { method: 'POST', body: { message, files }, timeoutMs: 6000 },
+    { method: 'POST', body: { message: label, files }, timeoutMs: 6000 },
   )
 }

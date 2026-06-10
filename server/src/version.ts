@@ -102,7 +102,7 @@ export async function getLatestReleaseVersion(): Promise<string | null> {
   return inflight
 }
 
-async function fetchLatestRelease(): Promise<string | null> {
+async function fetchLatestRelease(): Promise<string> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 5000)
   try {
@@ -113,9 +113,12 @@ async function fetchLatestRelease(): Promise<string | null> {
       },
       signal: controller.signal,
     })
-    if (!res.ok) return null
+    // Throw (rather than return null) on any failure so the caller's
+    // catch path keeps a previously-good cached version instead of
+    // overwriting it with a null marked fresh for the next hour.
+    if (!res.ok) throw new Error(`GitHub releases API returned ${res.status}`)
     const json = (await res.json()) as { tag_name?: string }
-    if (!json.tag_name) return null
+    if (!json.tag_name) throw new Error('GitHub releases API response missing tag_name')
     return json.tag_name.replace(/^v/i, '')
   } finally {
     clearTimeout(timer)
@@ -125,27 +128,60 @@ async function fetchLatestRelease(): Promise<string | null> {
 /**
  * Strict semver-ish comparator: -1 if a<b, 0 if equal, 1 if a>b.
  * Tolerates missing/short segments ("3.0" treated as "3.0.0") and
- * pre-release suffixes (ignored — "3.0.3-beta" == "3.0.3"). Returns 0
+ * compares pre-release suffixes per semver: a release without a suffix
+ * is GREATER than one with ("1.0.1" > "1.0.1-rc.5"), and suffixes
+ * compare segment-by-segment ("1.0.1-rc.1" < "1.0.1-rc.5"). Returns 0
  * for anything we can't parse, which is the conservative choice for
  * the "is outdated?" check: don't nag the user about a version we
  * can't reason about.
  */
 export function compareVersions(a: string, b: string): -1 | 0 | 1 {
-  const parse = (s: string): number[] => {
-    const stripped = s.replace(/^v/i, '').split('-')[0]
-    const parts = stripped.split('.').map(p => Number.parseInt(p, 10))
-    if (parts.some(n => !Number.isFinite(n))) return []
-    while (parts.length < 3) parts.push(0)
-    return parts
+  const parse = (s: string): { core: number[]; pre: string[] } | null => {
+    const stripped = s.replace(/^v/i, '')
+    const dash = stripped.indexOf('-')
+    const coreStr = dash === -1 ? stripped : stripped.slice(0, dash)
+    const pre = dash === -1 ? [] : stripped.slice(dash + 1).split('.')
+    const core = coreStr.split('.').map(p => Number.parseInt(p, 10))
+    if (core.some(n => !Number.isFinite(n))) return null
+    while (core.length < 3) core.push(0)
+    return { core, pre }
   }
   const pa = parse(a)
   const pb = parse(b)
-  if (pa.length === 0 || pb.length === 0) return 0
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const ai = pa[i] ?? 0
-    const bi = pb[i] ?? 0
+  if (!pa || !pb) return 0
+  for (let i = 0; i < Math.max(pa.core.length, pb.core.length); i++) {
+    const ai = pa.core[i] ?? 0
+    const bi = pb.core[i] ?? 0
     if (ai < bi) return -1
     if (ai > bi) return 1
+  }
+  // Numeric cores equal — pre-release ordering. No suffix outranks any
+  // suffix (a final release is newer than its own RCs).
+  if (pa.pre.length === 0 && pb.pre.length === 0) return 0
+  if (pa.pre.length === 0) return 1
+  if (pb.pre.length === 0) return -1
+  // Both pre-releases: compare segment-by-segment. Numeric segments
+  // compare numerically and rank below alphanumeric ones; otherwise
+  // lexical. A longer suffix wins when all shared segments tie
+  // ("rc.1.1" > "rc.1") — standard semver rules.
+  for (let i = 0; i < Math.max(pa.pre.length, pb.pre.length); i++) {
+    const as = pa.pre[i]
+    const bs = pb.pre[i]
+    if (as === undefined) return -1
+    if (bs === undefined) return 1
+    const an = /^\d+$/.test(as) ? Number.parseInt(as, 10) : null
+    const bn = /^\d+$/.test(bs) ? Number.parseInt(bs, 10) : null
+    if (an !== null && bn !== null) {
+      if (an < bn) return -1
+      if (an > bn) return 1
+    } else if (an !== null) {
+      return -1
+    } else if (bn !== null) {
+      return 1
+    } else {
+      if (as < bs) return -1
+      if (as > bs) return 1
+    }
   }
   return 0
 }

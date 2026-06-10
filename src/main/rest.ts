@@ -270,10 +270,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           json(res, 400, { error: 'Missing or invalid path parameter' })
           return
         }
-        // status() returns a tree of subpath-relative paths, so the
-        // lookup here uses the subpath-relative path as-is.
+        // status() returns a tree of project-root-relative paths, while the
+        // add-in (whose root is the subpath-prefixed effective root) sends
+        // subpath-relative paths — translate at the boundary like the meta
+        // endpoints do.
         const driveFiles = await driveProject.status()
-        const driveEntry = findEntry(driveFiles, filePath)
+        const driveEntry = findEntry(driveFiles, toGitRel(filePath))
         if (!driveEntry) { json(res, 404, { error: 'File not found' }); return }
         // Drive sync pulls remote changes wholesale; no cheap per-file probe.
         json(res, 200, { ...driveEntry, newerOnRemote: false })
@@ -313,7 +315,10 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           return
         }
         try {
-          await serialWrite(() => teamServer.acquireDriveLock(restDriveKey(), safePath))
+          // Locks are keyed by project-root-relative paths (what the desktop's
+          // status tree uses); the add-in sends subpath-relative ones, so
+          // translate here or the same file gets two independent lock keys.
+          await serialWrite(() => teamServer.acquireDriveLock(restDriveKey(), toGitRel(safePath)))
           json(res, 200, { success: true })
         } catch (err) {
           json(res, 500, { success: false, error: (err as Error).message })
@@ -329,7 +334,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           return
         }
         try {
-          await serialWrite(() => teamServer.releaseDriveLock(restDriveKey(), safePath))
+          await serialWrite(() => teamServer.releaseDriveLock(restDriveKey(), toGitRel(safePath)))
           json(res, 200, { success: true })
         } catch (err) {
           json(res, 500, { success: false, error: (err as Error).message })
@@ -745,6 +750,10 @@ export function startRestServer(project?: ProjectConfig, port?: number): void {
 export function setRestProject(project: ProjectConfig): void {
   currentProject = project
   clearPendingExports()
+  // Queued creates carry absolute paths computed against the PREVIOUS
+  // project — serving them to the add-in now would prompt it to create a
+  // part in the wrong project's folder.
+  pendingCreates.length = 0
 }
 
 export function setRestMainWindow(getter: () => BrowserWindow | null): void {
@@ -754,6 +763,7 @@ export function setRestMainWindow(getter: () => BrowserWindow | null): void {
 export function clearRestProject(): void {
   currentProject = null
   clearPendingExports()
+  pendingCreates.length = 0
 }
 
 export function stopRestServer(): void {

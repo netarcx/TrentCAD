@@ -134,38 +134,65 @@ async function readConfig(): Promise<AppConfig> {
 }
 
 async function writeConfig(config: AppConfig): Promise<void> {
-  await fs.writeFile(getConfigPath(), JSON.stringify(config, null, 2))
+  // Atomic write (temp + rename, like saveManifest/saveAllMeta): a crash
+  // mid-write would corrupt the JSON and readConfig's catch would silently
+  // drop the team-server enrollment, the Google refresh token, and recents.
+  const dest = getConfigPath()
+  const tmp = dest + '.tmp'
+  await fs.writeFile(tmp, JSON.stringify(config, null, 2))
+  await fs.rename(tmp, dest)
+}
+
+// Serialize every read-modify-write of the config file. Mutators run from
+// independent flows (enrollment persisting its token, a project open updating
+// recents, OAuth saving the refresh token) — unserialized, two concurrent ones
+// each load a copy and the later save silently drops the earlier one's field
+// (e.g. losing `teamServer` de-enrolls the user on next launch). Same pattern
+// as withManifestLock in drive.ts.
+let configLock: Promise<unknown> = Promise.resolve()
+function withConfigLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = configLock.then(fn, fn)
+  configLock = run.then(() => {}, () => {}) // never leave the chain rejected
+  return run
+}
+
+function mutateConfig(mutator: (config: AppConfig) => void | Promise<void>): Promise<void> {
+  return withConfigLock(async () => {
+    const config = await readConfig()
+    await mutator(config)
+    await writeConfig(config)
+  })
 }
 
 export async function addRecentProject(project: ProjectConfig): Promise<void> {
-  const config = await readConfig()
-  const canonProject: ProjectConfig = { ...project, path: canonPath(project.path) }
-  const existing = config.recentProjects.find(p => p.path === canonProject.path)
-  const merged: ProjectConfig = { ...canonProject, pinned: existing?.pinned ?? canonProject.pinned }
-  config.recentProjects = config.recentProjects.filter(p => p.path !== canonProject.path)
-  config.recentProjects.unshift(merged)
-  // Cap unpinned entries at 10. Pinned entries are kept regardless so
-  // the team's go-to projects don't age out.
-  const pinned = config.recentProjects.filter(p => p.pinned)
-  const unpinned = config.recentProjects.filter(p => !p.pinned).slice(0, 10)
-  config.recentProjects = [...pinned, ...unpinned]
-  await writeConfig(config)
+  await mutateConfig(config => {
+    const canonProject: ProjectConfig = { ...project, path: canonPath(project.path) }
+    const existing = config.recentProjects.find(p => p.path === canonProject.path)
+    const merged: ProjectConfig = { ...canonProject, pinned: existing?.pinned ?? canonProject.pinned }
+    config.recentProjects = config.recentProjects.filter(p => p.path !== canonProject.path)
+    config.recentProjects.unshift(merged)
+    // Cap unpinned entries at 10. Pinned entries are kept regardless so
+    // the team's go-to projects don't age out.
+    const pinned = config.recentProjects.filter(p => p.pinned)
+    const unpinned = config.recentProjects.filter(p => !p.pinned).slice(0, 10)
+    config.recentProjects = [...pinned, ...unpinned]
+  })
 }
 
 export async function setProjectPinned(targetPath: string, pinned: boolean): Promise<void> {
-  const config = await readConfig()
-  const canon = canonPath(targetPath)
-  const entry = config.recentProjects.find(p => p.path === canon)
-  if (!entry) return
-  entry.pinned = pinned || undefined
-  await writeConfig(config)
+  await mutateConfig(config => {
+    const canon = canonPath(targetPath)
+    const entry = config.recentProjects.find(p => p.path === canon)
+    if (!entry) return
+    entry.pinned = pinned || undefined
+  })
 }
 
 export async function removeRecentProject(targetPath: string): Promise<void> {
-  const config = await readConfig()
-  const canon = canonPath(targetPath)
-  config.recentProjects = config.recentProjects.filter(p => p.path !== canon)
-  await writeConfig(config)
+  await mutateConfig(config => {
+    const canon = canonPath(targetPath)
+    config.recentProjects = config.recentProjects.filter(p => p.path !== canon)
+  })
 }
 
 export async function getRecentProjects(): Promise<ProjectConfig[]> {
@@ -177,12 +204,12 @@ export async function setCachedBrowseConfig(
   org?: string,
   prefix?: string
 ): Promise<void> {
-  const config = await readConfig()
-  config.cachedBrowseConfig = {
-    gitHubOrg: org?.trim() || undefined,
-    projectPrefix: prefix?.trim() || undefined
-  }
-  await writeConfig(config)
+  await mutateConfig(config => {
+    config.cachedBrowseConfig = {
+      gitHubOrg: org?.trim() || undefined,
+      projectPrefix: prefix?.trim() || undefined
+    }
+  })
 }
 
 export async function getCachedBrowseConfig(): Promise<{ gitHubOrg?: string; projectPrefix?: string }> {
@@ -201,10 +228,10 @@ export async function getArchiveRoot(): Promise<string> {
 }
 
 export async function setArchiveRoot(root: string | null): Promise<void> {
-  const config = await readConfig()
-  if (root && root.trim()) config.archiveRoot = root.trim()
-  else delete config.archiveRoot
-  await writeConfig(config)
+  await mutateConfig(config => {
+    if (root && root.trim()) config.archiveRoot = root.trim()
+    else delete config.archiveRoot
+  })
 }
 
 export async function getTeamServerSettings(): Promise<{ serverUrl: string; token: string } | null> {
@@ -225,13 +252,13 @@ export async function getTeamServerSettings(): Promise<{ serverUrl: string; toke
 export async function setTeamServerSettings(
   settings: { serverUrl: string; token: string } | null,
 ): Promise<void> {
-  const config = await readConfig()
-  if (settings) {
-    config.teamServer = { serverUrl: settings.serverUrl, token: settings.token }
-  } else {
-    delete config.teamServer
-  }
-  await writeConfig(config)
+  await mutateConfig(config => {
+    if (settings) {
+      config.teamServer = { serverUrl: settings.serverUrl, token: settings.token }
+    } else {
+      delete config.teamServer
+    }
+  })
 }
 
 export interface GoogleAuthSettings {
@@ -256,17 +283,17 @@ export async function getGoogleAuthSettings(): Promise<GoogleAuthSettings | null
 export async function setGoogleAuthSettings(
   settings: GoogleAuthSettings | null,
 ): Promise<void> {
-  const config = await readConfig()
-  if (settings) {
-    config.googleAuth = {
-      refreshToken: settings.refreshToken,
-      email: settings.email,
-      name: settings.name,
+  await mutateConfig(config => {
+    if (settings) {
+      config.googleAuth = {
+        refreshToken: settings.refreshToken,
+        email: settings.email,
+        name: settings.name,
+      }
+    } else {
+      delete config.googleAuth
     }
-  } else {
-    delete config.googleAuth
-  }
-  await writeConfig(config)
+  })
 }
 
 /**

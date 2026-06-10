@@ -171,8 +171,17 @@ function broadcastStatus(getMainWindow: () => BrowserWindow | null): void {
 function startWatching(dirPath: string, win: BrowserWindow): void {
   stopWatching()
   const debouncedNotify = debounce(() => notifyFileChange(win), 500)
+  // Dot-file ignore is matched against the path RELATIVE to the watch root —
+  // chokidar hands us absolute paths, and a project that merely lives under a
+  // dot-directory ancestor (e.g. ~/.local/share/...) would otherwise match
+  // /(^|[/\\])\../ on every event and the watcher would go silently dead.
+  const dotRel = /(^|[/\\])\../
+  const ignoreDotOutsideRoot = (p: string): boolean => {
+    const rel = path.relative(dirPath, p)
+    return rel ? dotRel.test(rel) : false
+  }
   watcher = watch(dirPath, {
-    ignored: [/(^|[/\\])\../, /node_modules/, /parts\.json$/],
+    ignored: [ignoreDotOutsideRoot, /node_modules/, /parts\.json$/],
     persistent: true,
     ignoreInitial: true,
     depth: 10

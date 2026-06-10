@@ -38,6 +38,8 @@ const BROADCAST_THROTTLE_MS = 500
 let running = false
 let timer: ReturnType<typeof setTimeout> | null = null
 let ticking = false
+// "Sync now" arrived while a pass was running — re-run immediately after.
+let rerunImmediate = false
 let getWin: (() => BrowserWindow | null) | null = null
 let archiveRoot = ''
 let lastTickAt: number | null = null
@@ -142,7 +144,13 @@ function schedule(): void {
 
 async function tick(immediate = false): Promise<void> {
   if (!running) return
-  if (ticking) return // a pass is already in flight; the timer will catch up
+  if (ticking) {
+    // A pass is in flight. A timer tick can just wait for the next schedule,
+    // but a forced "Sync now" must not be silently dropped — queue one
+    // immediate re-run for when the current pass finishes.
+    if (immediate) rerunImmediate = true
+    return
+  }
   ticking = true
   if (timer) { clearTimeout(timer); timer = null }
   try {
@@ -175,7 +183,12 @@ async function tick(immediate = false): Promise<void> {
   } finally {
     ticking = false
     broadcast(true)
-    schedule()
+    if (rerunImmediate) {
+      rerunImmediate = false
+      void tick(true)
+    } else {
+      schedule()
+    }
   }
 }
 

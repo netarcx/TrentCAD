@@ -17,7 +17,7 @@ import {
   type MemberStatus,
   type MemberCapabilities,
 } from '../db.js'
-import { consumePin, generateToken, hashToken, verifyPassword } from '../auth.js'
+import { consumePin, findPin, generateToken, hashToken, verifyPassword } from '../auth.js'
 
 interface EnrollBody {
   pin?: string
@@ -32,6 +32,14 @@ interface EnrollBody {
    *  device row so the admin UI can flag outdated clients without
    *  waiting for the first authed heartbeat. */
   clientVersion?: string
+  /** 'web' for admin-UI browser sessions (30-day token TTL), anything
+   *  else — including absent, which is what the desktop sends — is
+   *  'desktop' (non-expiring token). */
+  kind?: string
+  /** When true, reject non-admin PINs with 403 BEFORE consuming a use —
+   *  the admin web UI's PIN sign-in path, where burning a student PIN
+   *  on a doomed sign-in attempt would be hostile. */
+  adminOnly?: boolean
 }
 
 interface TeamRow {
@@ -98,6 +106,47 @@ function recordEnrollFailure(ip: string, now: number): void {
   }
 }
 
+// ── Password brute-force throttle (per client IP + username) ──────────────
+// Failed logins used to lock the ACCOUNT (member row) for 15 minutes
+// regardless of source, which let anyone who knew an admin's username keep
+// that admin locked out forever — and bootstrap recovery is disabled once a
+// password admin exists. Keying on `${ip}|${username}` means an attacker
+// only locks themselves out; the real admin on a different IP signs in
+// unaffected. Same shape and pruning policy as the enroll throttle above.
+const LOGIN_WINDOW_MS = 15 * 60 * 1000
+const LOGIN_MAX_FAILS = 5
+const LOGIN_LOCK_MS = 15 * 60 * 1000
+const loginAttempts = new Map<string, { fails: number; windowStart: number; lockedUntil: number }>()
+
+function loginLockRemainingMs(key: string, now: number): number {
+  const rec = loginAttempts.get(key)
+  return rec && rec.lockedUntil > now ? rec.lockedUntil - now : 0
+}
+
+/** Returns true when this failure tripped the lock. */
+function recordLoginFailure(key: string, now: number): boolean {
+  let rec = loginAttempts.get(key)
+  if (!rec || now - rec.windowStart > LOGIN_WINDOW_MS) {
+    rec = { fails: 0, windowStart: now, lockedUntil: 0 }
+  }
+  rec.fails += 1
+  let locked = false
+  if (rec.fails >= LOGIN_MAX_FAILS) {
+    rec.lockedUntil = now + LOGIN_LOCK_MS
+    rec.fails = 0
+    rec.windowStart = now
+    locked = true
+  }
+  loginAttempts.set(key, rec)
+  // Opportunistic prune so scanner traffic can't grow the map unbounded.
+  if (loginAttempts.size > 5000) {
+    for (const [k, v] of loginAttempts) {
+      if (v.lockedUntil <= now && now - v.windowStart > LOGIN_WINDOW_MS) loginAttempts.delete(k)
+    }
+  }
+  return locked
+}
+
 export async function registerPublicRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/health', async () => ({ status: 'ok', name: 'framecad-server' }))
 
@@ -117,6 +166,19 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
     const pin = (body.pin ?? '').trim().toUpperCase()
     if (!pin) {
       return reply.code(400).send({ error: 'Missing PIN' })
+    }
+    const deviceKind = body.kind === 'web' ? 'web' : 'desktop'
+
+    // Admin-only enrollments (the admin web UI's PIN sign-in) pre-check
+    // the PIN's role WITHOUT consuming a use — a mentor/student PIN
+    // pasted into the admin sign-in box should bounce, not burn. An
+    // unknown PIN falls through to consumePin below so it still counts
+    // as a brute-force guess.
+    if (body.adminOnly) {
+      const candidate = findPin(pin)
+      if (candidate && candidate.role !== 'admin') {
+        return reply.code(403).send({ error: 'This PIN is not an admin PIN' })
+      }
     }
 
     // Burn the PIN atomically. Returns null on unknown / consumed / expired.
@@ -257,9 +319,9 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
     const clientVersion =
       ((body.clientVersion ?? '').replace(/^v/i, '').slice(0, 32).trim()) || null
     const deviceResult = db.prepare(
-      `INSERT INTO devices (memberId, label, tokenHash, createdAt, lastSeenAt, clientVersion)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(member.id, deviceLabel, tokenHash, now, now, clientVersion)
+      `INSERT INTO devices (memberId, label, tokenHash, createdAt, lastSeenAt, kind, clientVersion)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(member.id, deviceLabel, tokenHash, now, now, deviceKind, clientVersion)
 
     const team = db.prepare(`SELECT * FROM team WHERE id = 1`).get() as TeamRow
 
@@ -304,15 +366,16 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
   // an internet-exposed deployment where PIN-only was too weak.
   //
   // Username matching is case-insensitive against either displayName
-  // or githubUsername. Failed attempts increment a counter; the
-  // 5th failure within 15 minutes locks the account for the next
-  // 15 minutes (regardless of which IP is trying). After a successful
-  // login the counter resets.
+  // or githubUsername. Failed attempts increment a per-IP+username
+  // counter; the 5th failure within 15 minutes locks that IP out of
+  // that username for the next 15 minutes (other IPs — i.e. the real
+  // owner — are unaffected). After a successful login the counter
+  // resets.
   //
-  // Account-lock window: 15 min. Same window for "count failures
-  // toward the lock". So a determined attacker can do 4 attempts
-  // every 15 min indefinitely — but that's ~14 attempts/hour, which
-  // against argon2id passwords is computationally cheap to ignore.
+  // Lock window: 15 min. Same window for "count failures toward the
+  // lock". So a determined attacker can do 4 attempts every 15 min
+  // per IP indefinitely — but that's ~14 attempts/hour, which against
+  // argon2id passwords is computationally cheap to ignore.
   app.post<{ Body: { username?: string; password?: string; deviceLabel?: string; kind?: string; clientVersion?: string } }>(
     '/api/login',
     async (req, reply) => {
@@ -325,6 +388,17 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
 
       const db = getDb()
       const now = Date.now()
+      const loginKey = `${req.ip || 'unknown'}|${username.toLowerCase()}`
+
+      // Locked out — even a correct password is rejected until the
+      // lock expires. We don't leak HOW LONG precisely; just "try later".
+      const lockMs = loginLockRemainingMs(loginKey, now)
+      if (lockMs > 0) {
+        const minutes = Math.ceil(lockMs / 60000)
+        return reply.code(429).send({
+          error: `Too many failed login attempts. Try again in about ${minutes} minute${minutes === 1 ? '' : 's'}.`,
+        })
+      }
 
       // Lookup is case-insensitive and tries the explicit `username`
       // column first (the canonical login handle picked at set-
@@ -389,58 +463,26 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
           '$argon2id$v=19$m=19456,t=2,p=1$dummysaltdummy$dummyhashdummyhashdum',
           password,
         ).catch(() => false)
+        // Unknown usernames count toward the same throttle so guessing
+        // handles is no cheaper than guessing passwords.
+        recordLoginFailure(loginKey, now)
         return reply.code(401).send({ error: 'Invalid username or password.' })
-      }
-
-      // Locked out — even a correct password is rejected until the
-      // lock expires. We don't leak HOW LONG; just "try later".
-      if (member.lockedUntil !== null && member.lockedUntil > now) {
-        const minutes = Math.ceil((member.lockedUntil - now) / 60000)
-        return reply.code(429).send({
-          error: `Account temporarily locked due to repeated failed login attempts. Try again in about ${minutes} minute${minutes === 1 ? '' : 's'}.`,
-        })
-      }
-      // Lock has expired — decay the failure counter back to 0 so the
-      // next typo doesn't immediately re-trigger the lock. Without
-      // this, a user with 4 historical fails from any time in the
-      // past would hit lockout at their FIRST fresh typo (not the
-      // documented 5-fails-in-15-min). Clear in-memory copy too so
-      // the count-increment branch below sees the reset value.
-      if (member.lockedUntil !== null && member.failedLoginCount > 0) {
-        db.prepare(
-          `UPDATE members SET failedLoginCount = 0, failedLoginFirstAt = NULL, lockedUntil = NULL WHERE id = ?`
-        ).run(member.id)
-        member.failedLoginCount = 0
-        member.failedLoginFirstAt = null
-        member.lockedUntil = null
       }
 
       const ok = await verifyPassword(member.passwordHash, password)
       if (!ok) {
-        const LOCK_THRESHOLD = 5
-        const LOCK_WINDOW_MS = 15 * 60 * 1000
-        const LOCK_DURATION_MS = 15 * 60 * 1000
-        const windowStart =
-          member.failedLoginFirstAt && now - member.failedLoginFirstAt <= LOCK_WINDOW_MS
-            ? member.failedLoginFirstAt
-            : now
-        const baseCount = windowStart === member.failedLoginFirstAt ? member.failedLoginCount : 0
-        const newCount = baseCount + 1
-        const newLockedUntil = newCount >= LOCK_THRESHOLD
-          ? now + LOCK_DURATION_MS
-          : null
-        db.prepare(
-          `UPDATE members SET failedLoginCount = ?, failedLoginFirstAt = ?, lockedUntil = ? WHERE id = ?`
-        ).run(newCount, windowStart, newLockedUntil, member.id)
+        const locked = recordLoginFailure(loginKey, now)
         logAudit({
           actorId: member.id,
           actorLabel: member.displayName,
-          action: newLockedUntil ? 'login.locked' : 'login.failed',
+          action: locked ? 'login.locked' : 'login.failed',
           target: `member:${member.id}`,
-          detail: `count=${newCount}`,
+          detail: `ip=${req.ip || 'unknown'}`,
         })
         return reply.code(401).send({ error: 'Invalid username or password.' })
       }
+      // Valid credentials → this IP isn't brute-forcing this account.
+      loginAttempts.delete(loginKey)
 
       // Reset the failure counter on success + record lastLoginAt
       // for audit / "show last sign-in" UX later.

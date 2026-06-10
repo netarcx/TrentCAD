@@ -2,6 +2,21 @@ import { useState, useCallback, useEffect } from 'react'
 import type { FileEntry, HistoryEntry, ProjectConfig, LockInfo } from '@shared/types'
 import { clearRendererThumbnailCache } from '../components/FileThumbnail'
 
+// Find a file entry by path anywhere in the tree. Used to re-resolve
+// `selectedFile` against fresh tree data — without this, the selection
+// keeps the FileEntry captured at click time and the DetailsPanel shows
+// stale lock/status after Check Out / Check In / Sync.
+function findByPath(entries: FileEntry[], path: string): FileEntry | null {
+  for (const entry of entries) {
+    if (entry.path === path) return entry
+    if (entry.children) {
+      const found = findByPath(entry.children, path)
+      if (found) return found
+    }
+  }
+  return null
+}
+
 export function useGit() {
   const [project, setProject] = useState<ProjectConfig | null>(null)
   const [files, setFiles] = useState<FileEntry[]>([])
@@ -19,6 +34,7 @@ export function useGit() {
     // a listener every dev re-render.
     const fileCleanup = window.api.onFileChange((newFiles) => {
       setFiles(newFiles)
+      setSelectedFile(prev => prev ? findByPath(newFiles, prev.path) ?? null : null)
     })
     const errorCleanup = window.api.onError((err) => {
       setError(err)
@@ -36,6 +52,7 @@ export function useGit() {
       window.api.getLocks()
     ])
     setFiles(newFiles)
+    setSelectedFile(prev => prev ? findByPath(newFiles, prev.path) ?? null : null)
     setHistory(newHistory)
     setLocks(newLocks)
   }

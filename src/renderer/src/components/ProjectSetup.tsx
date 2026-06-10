@@ -529,6 +529,10 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
     // it shows the welcome screen at rest, which matches the live DOM
     // state at the moment of impact (translateY(0) in the keyframe).
     void triggerWaterSlam(cx, cy, cachedSlamSnapshot.current)
+
+    // The slam impact is what "unlocks" the session-persistent
+    // click-wave ripples (see installClickWaves above).
+    installClickWaves()
   }
 
   // First time the welcome screen mounts in this app session, the logo

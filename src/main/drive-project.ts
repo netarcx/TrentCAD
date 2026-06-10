@@ -214,9 +214,8 @@ function collectFiles(entries: FileEntry[], states: Set<string>, out: string[] =
  * matching the historical git behaviour). Throws — refusing the whole publish —
  * if any pending file violates, listing every offender.
  */
-async function assertPublishAllowed(dir: string): Promise<void> {
+async function assertPublishAllowed(dir: string, pending: string[]): Promise<void> {
   const policies = getPolicies()
-  const pending = collectFiles(await getLocalStatus(dir), new Set(['modified', 'untracked']))
   const maxBytes = policies.maxFileSizeMb * 1024 * 1024
   const blocked = new Set(policies.blockedExtensions.map(e => e.toLowerCase()))
   // Probe each pending file CONCURRENTLY (the size check is an independent
@@ -254,10 +253,14 @@ async function assertPublishAllowed(dir: string): Promise<void> {
  * If we ARE enrolled but can't reach the server to verify, we block rather
  * than risk a blind overwrite (publish needs the network anyway).
  */
-async function assertLocksHeld(dir: string, key: string): Promise<void> {
+async function assertLocksHeld(key: string, allModified: string[]): Promise<void> {
   const snap = currentSnapshot()
   if (!snap.enrolled) return // standalone — no team locks to honor
-  const modified = collectFiles(await getLocalStatus(dir), new Set(['modified']))
+  // parts.json is FrameCAD-managed shared metadata (part-number reservations),
+  // written by the app — never something a user "checks out". A failed
+  // metadata push can leave it locally dirty; requiring a lock on it would
+  // block the publish with an error the user can't act on.
+  const modified = allModified.filter(p => p !== 'parts.json')
   if (modified.length === 0) return
   let locks: { filePath: string; ownerMemberId: number; ownerName: string }[]
   try {
@@ -350,19 +353,29 @@ export async function publish(onProgress?: (p: PublishProgress) => void): Promis
   changedPaths?: string[]
 }> {
   if (!current) return { success: false, error: 'No Drive project open' }
+  const { dir, config } = current
   try {
     onProgress?.({ phase: 'preparing', percent: 0 })
-    // Enforce policy (size/extension) AND check-out locks BEFORE uploading.
-    await assertPublishAllowed(current.dir)
-    if (current.config.driveFolderId) {
-      await assertLocksHeld(current.dir, current.config.driveFolderId)
-    }
-    const result = await publishChanges(current.dir, prog => {
+    // Policy (size/extension) and check-out locks are enforced via the guard,
+    // which publishChanges runs INSIDE its manifest lock against the exact
+    // change set being uploaded. Asserting out here instead would race a
+    // SolidWorks save landing while the publish waited on the lock — that file
+    // would upload with no validation at all.
+    const result = await publishChanges(dir, prog => {
       onProgress?.({
         phase: prog.percent >= 100 ? 'done' : 'uploading',
         percent: prog.percent,
         detail: prog.detail
       })
+    }, async changes => {
+      const pending = changes
+        .filter(c => c.type === 'added' || c.type === 'modified')
+        .map(c => c.relativePath)
+      await assertPublishAllowed(dir, pending)
+      if (config.driveFolderId) {
+        const modified = changes.filter(c => c.type === 'modified').map(c => c.relativePath)
+        await assertLocksHeld(config.driveFolderId, modified)
+      }
     })
     onProgress?.({ phase: 'done', percent: 100 })
     return { success: true, changedPaths: result.changedPaths }

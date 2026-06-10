@@ -13,12 +13,14 @@ import {
   createEmptyManifest,
   computeFileHash,
   getLocalChanges,
+  isIgnored,
   loadStagingState,
   saveStagingState,
   createEmptyStagingState,
   type DriveManifest,
   type DriveFileEntry,
-  type DriveStagingState
+  type DriveStagingState,
+  type LocalChange
 } from './drive-manifest'
 
 // Hidden per-project folder that holds background-uploaded ("staged") files
@@ -191,6 +193,59 @@ async function uploadMedia(
   })
 }
 
+// Create a new Drive file from local bytes, with retry that is safe against
+// the create-committed-but-response-lost case. A blind withRetry around
+// files.create mints a duplicate same-name sibling on exactly the flaky-network
+// failures it exists to absorb (Drive allows same-name siblings), which then
+// corrupts every client's sync. On a retry, first look for a same-name child of
+// the parent and update it instead of creating again.
+async function createFileSafe(
+  drive: drive_v3.Drive,
+  sharedDriveId: string,
+  parentId: string,
+  name: string,
+  localPath: string
+): Promise<{ data: drive_v3.Schema$File }> {
+  let attempted = false
+  return withRetry(async () => {
+    if (attempted) {
+      try {
+        const res = await drive.files.list({
+          q: `'${parentId}' in parents and name = '${escapeQueryValue(name)}' and trashed = false`,
+          driveId: sharedDriveId,
+          corpora: 'drive',
+          includeItemsFromAllDrives: true,
+          supportsAllDrives: true,
+          fields: 'files(id)',
+          pageSize: 1
+        })
+        const existingId = res.data.files?.[0]?.id
+        if (existingId) {
+          const stream = createReadStream(localPath)
+          try {
+            return await drive.files.update(
+              { fileId: existingId, media: { body: stream }, supportsAllDrives: true, fields: 'id, modifiedTime' },
+              { timeout: DRIVE_TRANSFER_TIMEOUT_MS }
+            )
+          } finally {
+            stream.destroy()
+          }
+        }
+      } catch { /* lookup failed — fall through to a fresh create attempt */ }
+    }
+    attempted = true
+    const stream = createReadStream(localPath)
+    try {
+      return await drive.files.create(
+        { requestBody: { name, parents: [parentId] }, media: { body: stream }, supportsAllDrives: true, fields: 'id, modifiedTime' },
+        { timeout: DRIVE_TRANSFER_TIMEOUT_MS }
+      )
+    } finally {
+      stream.destroy()
+    }
+  })
+}
+
 // Download one Drive file to disk (with retry) and return the local file's
 // hash/mtime/size for the manifest. Shared by the join + sync paths. Bytes
 // land in a hidden sibling temp file and are renamed into place only on full
@@ -204,7 +259,12 @@ async function downloadOne(
   const dir = path.dirname(destPath)
   await fs.mkdir(dir, { recursive: true })
   // Leading-dot name → ignored by both the chokidar watcher and getLocalChanges.
-  const tmpPath = path.join(dir, `.${path.basename(destPath)}.framecad-dl`)
+  // Random suffix so two concurrent downloads of the same dest (e.g. Drive
+  // allows duplicate names in one folder) never interleave into one temp file.
+  const tmpPath = path.join(
+    dir,
+    `.${path.basename(destPath)}.${randomBytes(4).toString('hex')}.framecad-dl`
+  )
   try {
     await withRetry(async () => {
       const res = await drive.files.get(
@@ -315,10 +375,46 @@ interface DownloadProgress {
   detail?: string
 }
 
+// True when a Drive item name can't safely become a local path segment: `.`/`..`
+// escape the project directory via path.join, and slashes/backslashes silently
+// change the directory structure on download ('\' splits into a subfolder on
+// Windows but stays in the manifest key, so the file reads as added+deleted
+// forever and the next publish trashes the teammate's original).
+function isUnsafeDriveName(name: string): boolean {
+  return name === '.' || name === '..' || name.includes('/') || name.includes('\\') || name.includes('\0')
+}
+
 /**
  * Recursively list all files (not folders) under a Drive folder.
+ * De-duplicated: Drive allows two files with the same name in one folder (and
+ * names differing only by case, which collide on Windows/macOS filesystems).
+ * Keeping both would race two concurrent downloads into one local path and
+ * flip-flop the manifest between the two ids every sync — so keep only the
+ * newest entry per case-folded path.
  */
 async function listAllFiles(
+  drive: drive_v3.Drive,
+  folderId: string,
+  basePath: string,
+  driveId: string
+): Promise<{ driveFileId: string; name: string; relativePath: string; modifiedTime: string; size: number }[]> {
+  const all = await listAllFilesInner(drive, folderId, basePath, driveId)
+  const byKey = new Map<string, (typeof all)[number]>()
+  for (const f of all) {
+    const key = f.relativePath.toLowerCase()
+    const prev = byKey.get(key)
+    if (!prev) {
+      byKey.set(key, f)
+      continue
+    }
+    console.warn(`[drive] duplicate file name on Drive, keeping newest copy: ${f.relativePath}`)
+    // ISO 8601 timestamps compare chronologically as strings.
+    if (f.modifiedTime > prev.modifiedTime) byKey.set(key, f)
+  }
+  return [...byKey.values()]
+}
+
+async function listAllFilesInner(
   drive: drive_v3.Drive,
   folderId: string,
   basePath: string,
@@ -341,13 +437,17 @@ async function listAllFiles(
 
     for (const f of res.data.files ?? []) {
       if (!f.id || !f.name) continue
+      if (isUnsafeDriveName(f.name)) {
+        console.warn(`[drive] skipping unsafely named Drive item: ${JSON.stringify(f.name)}`)
+        continue
+      }
       // Never descend into the staging folder — its contents are unpublished
       // work-in-progress that must stay invisible to other clients' sync.
       if (f.mimeType === 'application/vnd.google-apps.folder' && f.name === STAGING_FOLDER_NAME) continue
       const relPath = basePath ? `${basePath}/${f.name}` : f.name
 
       if (f.mimeType === 'application/vnd.google-apps.folder') {
-        const children = await listAllFiles(drive, f.id, relPath, driveId)
+        const children = await listAllFilesInner(drive, f.id, relPath, driveId)
         results.push(...children)
       } else {
         results.push({
@@ -658,21 +758,32 @@ export function stageFile(projectDir: string, relativePath: string): Promise<voi
 
     const drive = await getDrive()
     const stagingFolderId = await ensureStagingFolder(drive, projectDir, manifest, state)
-    const resp = await uploadMedia(localPath, media =>
-      existing?.stagedFileId
-        ? drive.files.update({
+    const resp = existing?.stagedFileId
+      ? await uploadMedia(localPath, media =>
+          drive.files.update({
             fileId: existing.stagedFileId,
             media,
             supportsAllDrives: true,
             fields: 'id'
           }, { timeout: DRIVE_TRANSFER_TIMEOUT_MS })
-        : drive.files.create({
-            requestBody: { name: relativePath.split('/').pop()!, parents: [stagingFolderId] },
-            media,
-            supportsAllDrives: true,
-            fields: 'id'
-          }, { timeout: DRIVE_TRANSFER_TIMEOUT_MS })
-    )
+        )
+      : await createFileSafe(drive, manifest.sharedDriveId, stagingFolderId, relativePath.split('/').pop()!, localPath)
+
+    if (stagingPaused) {
+      // A publish took exclusive control of staging while this upload was in
+      // flight (publish only waits a bounded time for the stage chain). Its
+      // orphan sweep may already have trashed this copy, and writing staging
+      // state now would race the publish's own staging-state writes — worst
+      // case promoting a trashed file into the live location later. Drop this
+      // upload: trash a freshly created copy (an updated id is already tracked
+      // and reconciled by the publish) and let a later stage pass redo it.
+      if (!existing?.stagedFileId) {
+        try {
+          await drive.files.update({ fileId: resp.data.id!, requestBody: { trashed: true }, supportsAllDrives: true, fields: 'id' })
+        } catch { /* the orphan sweep catches it */ }
+      }
+      return
+    }
 
     state.files[relativePath] = {
       stagedFileId: resp.data.id!,
@@ -890,11 +1001,11 @@ async function pushMetadataFileImpl(projectDir: string, relPath: string): Promis
   const parentId = await ensureFolderPath(drive, manifest.sharedDriveId, manifest.projectFolderId, relDir, folderCache)
 
   const existingId = manifest.files[relPath]?.driveFileId ?? await findDriveFileId(drive, manifest, relPath)
-  const resp = await uploadMedia(localPath, media =>
-    existingId
-      ? drive.files.update({ fileId: existingId, media, supportsAllDrives: true, fields: 'id, modifiedTime' }, { timeout: DRIVE_TRANSFER_TIMEOUT_MS })
-      : drive.files.create({ requestBody: { name, parents: [parentId] }, media, supportsAllDrives: true, fields: 'id, modifiedTime' }, { timeout: DRIVE_TRANSFER_TIMEOUT_MS })
-  )
+  const resp = existingId
+    ? await uploadMedia(localPath, media =>
+        drive.files.update({ fileId: existingId, media, supportsAllDrives: true, fields: 'id, modifiedTime' }, { timeout: DRIVE_TRANSFER_TIMEOUT_MS })
+      )
+    : await createFileSafe(drive, manifest.sharedDriveId, parentId, name, localPath)
 
   const [stat, hash] = await Promise.all([fs.stat(localPath), computeFileHash(localPath)])
   manifest.files[relPath] = {
@@ -967,13 +1078,19 @@ export interface PublishChangesResult {
  */
 export function publishChanges(
   projectDir: string,
-  onProgress?: (progress: DownloadProgress) => void
+  onProgress?: (progress: DownloadProgress) => void,
+  /** Validation hook run INSIDE the manifest lock against the exact change set
+   *  being published (policy + check-out asserts). Running it before taking the
+   *  lock would race a save landing while the publish waited on the lock — that
+   *  file would upload with no validation at all. Throw to abort the publish. */
+  guard?: (changes: LocalChange[]) => Promise<void>
 ): Promise<PublishChangesResult> {
-  return withManifestLock(projectDir, () => publishChangesImpl(projectDir, onProgress))
+  return withManifestLock(projectDir, () => publishChangesImpl(projectDir, onProgress, guard))
 }
 async function publishChangesImpl(
   projectDir: string,
-  onProgress?: (progress: DownloadProgress) => void
+  onProgress?: (progress: DownloadProgress) => void,
+  guard?: (changes: LocalChange[]) => Promise<void>
 ): Promise<PublishChangesResult> {
   const manifest = await loadManifest(projectDir)
   if (!manifest) throw new Error('No Drive manifest — this project is not a Drive project.')
@@ -994,6 +1111,7 @@ async function publishChangesImpl(
     const staging = await loadStagingState(projectDir)
 
     const changes = await getLocalChanges(projectDir, manifest)
+    if (guard) await guard(changes)
     const adds = changes.filter(c => c.type === 'added' || c.type === 'modified')
     const dels = changes.filter(c => c.type === 'deleted')
     const total = adds.length + dels.length
@@ -1056,7 +1174,11 @@ async function publishChangesImpl(
             fileId: staged.stagedFileId,
             addParents: parentId,
             removeParents: staging.stagingFolderId!,
-            requestBody: { name },
+            // trashed:false — if a racing reconcile/orphan sweep trashed this
+            // staged copy, promoting it without un-trashing would publish a
+            // trashed file: teammates' next sync would see the path gone and
+            // delete their local copies.
+            requestBody: { name, trashed: false },
             supportsAllDrives: true,
             fields: 'id, modifiedTime'
           })
@@ -1073,23 +1195,18 @@ async function publishChangesImpl(
         await dropStagedEntry(c.relativePath)
       } else {
         // Slow path: no current staged copy — upload the bytes now (parallel).
-        // uploadMedia destroys the read stream on each attempt so retries don't
-        // leak file descriptors.
-        const resp = await uploadMedia(localPath, media =>
-          existing?.driveFileId
-            ? drive.files.update({
+        // uploadMedia/createFileSafe destroy the read stream on each attempt so
+        // retries don't leak file descriptors.
+        const resp = existing?.driveFileId
+          ? await uploadMedia(localPath, media =>
+              drive.files.update({
                 fileId: existing.driveFileId,
                 media,
                 supportsAllDrives: true,
                 fields: 'id, modifiedTime'
               }, { timeout: DRIVE_TRANSFER_TIMEOUT_MS })
-            : drive.files.create({
-                requestBody: { name, parents: [parentId] },
-                media,
-                supportsAllDrives: true,
-                fields: 'id, modifiedTime'
-              }, { timeout: DRIVE_TRANSFER_TIMEOUT_MS })
-        )
+            )
+          : await createFileSafe(drive, manifest.sharedDriveId, parentId, name, localPath)
         driveFileId = resp.data.id!
         driveModifiedTime = resp.data.modifiedTime ?? new Date().toISOString()
       }
@@ -1226,6 +1343,10 @@ async function syncRemoteImpl(
   // New paths to keep OUT of the download set because handling them as a
   // download would duplicate an id we're preserving under the old path.
   const skipDownloadPaths = new Set<string>()
+  // Old paths whose manifest entry we deliberately KEPT even though the remote
+  // listing no longer has them (locked/dirty rename, or a failed local move).
+  // The deletion sweep below must not undo that decision.
+  const preservedOldPaths = new Set<string>()
   for (const r of remote) {
     const oldPath = manifestPathById.get(r.driveFileId)
     if (!oldPath || oldPath === r.relativePath) continue // unchanged or untracked
@@ -1239,6 +1360,7 @@ async function syncRemoteImpl(
       // lock would strand the server-side path-keyed lock and leave one
       // driveFileId under two manifest keys.
       skipDownloadPaths.add(r.relativePath)
+      preservedOldPaths.add(oldPath)
       continue
     }
     // Something already exists at the new path locally (an untracked file the
@@ -1262,6 +1384,7 @@ async function syncRemoteImpl(
       // two-keys-one-id corruption). Skip it; the old entry stays and the move
       // reconciles on a later sync once the file is closed.
       skipDownloadPaths.add(r.relativePath)
+      preservedOldPaths.add(oldPath)
     }
   }
 
@@ -1313,13 +1436,38 @@ async function syncRemoteImpl(
 
   // Files gone from Drive → delete locally, unless the user has local
   // edits to that path (then keep their copy).
+  const remoteLowerPaths = new Set(remote.map(r => r.relativePath.toLowerCase()))
   for (const relPath of Object.keys(manifest.files)) {
     if (remoteByPath.has(relPath)) continue
     if (locallyDirty.has(relPath)) continue
+    // Ignored paths (.framecad/ metadata entries recorded by push/pullMetadataFile)
+    // can never be locallyDirty — the local walk skips them — so without this
+    // guard a Drive-side trash (e.g. from a client running an older build)
+    // would delete the team's local parts-meta.json/admin.json here.
+    if (isIgnored(relPath)) continue
+    // A held check-out lock means "this file is mine right now" even before the
+    // first local edit — never delete it out from under the lock (mirrors the
+    // rename-reconcile above, which keeps the old entry for the same reason).
+    if (lockedByMe?.has(relPath) || preservedOldPaths.has(relPath)) continue
+    if (remoteLowerPaths.has(relPath.toLowerCase())) {
+      // A case-variant of this path survived dedupe (e.g. Bracket.sldprt vs
+      // bracket.sldprt). On case-insensitive filesystems both keys map to the
+      // SAME local file, which a download above may have just written — drop
+      // only the stale manifest key, never the bytes.
+      delete manifest.files[relPath]
+      updated++
+      continue
+    }
     const dest = path.join(projectDir, ...relPath.split('/'))
-    try { await fs.rm(dest, { force: true }) } catch { /* ignore */ }
-    delete manifest.files[relPath]
-    updated++
+    try {
+      // force:true ignores a missing file but still throws on EBUSY/EPERM
+      // (file open in SolidWorks). Only drop the manifest entry once the file
+      // is actually gone — dropping it while the bytes remain makes the file
+      // look "added" and the next publish re-uploads what the team deleted.
+      await fs.rm(dest, { force: true })
+      delete manifest.files[relPath]
+      updated++
+    } catch { /* locked on disk — retry on a later sync */ }
   }
 
   manifest.lastSyncedAt = Date.now()

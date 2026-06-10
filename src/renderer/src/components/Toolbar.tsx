@@ -65,7 +65,11 @@ export default function Toolbar({
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [showCreateMenu])
 
+  // Each handler guards on isLoading itself — the buttons are disabled,
+  // but the Enter-key paths in the modal inputs would otherwise fire the
+  // action regardless.
   const handlePublish = () => {
+    if (isLoading) return
     onPublish(message.trim())
     setMessage('')
     setShowPublish(false)
@@ -77,6 +81,7 @@ export default function Toolbar({
   }
 
   const handleNewPart = async () => {
+    if (isLoading) return
     const folder = getSelectedFolder(selectedFile)
     const result = await onNewPart(folder, partDescription.trim() || undefined)
     if (result) {
@@ -87,6 +92,7 @@ export default function Toolbar({
   }
 
   const handleNewSubsystem = async () => {
+    if (isLoading) return
     if (!subsystemName.trim()) return
     const parentFolder = getSelectedFolder(selectedFile)
     const result = await onNewSubsystem(parentFolder, subsystemName.trim())
@@ -98,6 +104,7 @@ export default function Toolbar({
   }
 
   const handleNewAssembly = async () => {
+    if (isLoading) return
     if (!assemblyName.trim()) return
     const parentFolder = getSelectedFolder(selectedFile)
     const result = await onNewAssembly(parentFolder, assemblyName.trim(), assemblyDescription.trim() || undefined)

@@ -26,6 +26,7 @@ import {
   gcStaging as driveGcStaging
 } from './drive'
 import { loadManifest } from './drive-manifest'
+import { joinTargetDir } from '@shared/paths'
 import { addRecentProject } from './config'
 import { getPolicies, currentSnapshot, listDriveLocks } from './teamServer'
 
@@ -92,18 +93,73 @@ export async function open(dir: string): Promise<ProjectConfig | null> {
 }
 
 /**
- * Join a Drive project: download every file under `folderId` into
- * `localPath`, write the manifest, and make it the active project.
- * `onProgress` is forwarded to the renderer as a join-progress event by
- * the IPC handler.
+ * Refuse join targets that would mix two projects into one tree.
+ * Shared folders are poison: each project's sync/publish sees the
+ * other's files as its own new files and cross-copies them into the
+ * opposite Drive project. Three shapes to block:
+ *  1. `dir` already holds a DIFFERENT project's manifest (re-joining
+ *     the SAME project is fine — that's the partial-join repair path).
+ *  2. `dir` sits INSIDE an existing project (an ancestor has a
+ *     manifest) — the outer project would sync/publish the inner one.
+ *  3. `dir` exists with foreign content and no manifest — the next
+ *     publish would upload someone's unrelated files to the team Drive.
+ */
+async function assertJoinTargetSafe(dir: string, folderId: string): Promise<void> {
+  const manifest = await loadManifest(dir)
+  if (manifest && manifest.projectFolderId !== folderId) {
+    throw new Error(
+      `That folder already contains the FrameCAD project ` +
+      `"${manifest.projectFolderName || path.basename(dir)}". Each project needs its own ` +
+      `folder — pick a different save location.`
+    )
+  }
+
+  for (let cur = path.dirname(dir); ; cur = path.dirname(cur)) {
+    if (await loadManifest(cur)) {
+      throw new Error(
+        `That location is inside the FrameCAD project at "${cur}". ` +
+        `Projects can't be nested — pick a folder outside it.`
+      )
+    }
+    if (path.dirname(cur) === cur) break // filesystem root
+  }
+
+  if (!manifest) {
+    const entries = await fs.readdir(dir).catch(() => [] as string[])
+    if (entries.length > 0) {
+      throw new Error(
+        `"${dir}" already exists and isn't empty. Joining into it would ` +
+        `publish those files to the team's Shared Drive — pick a different ` +
+        `save location (or empty that folder first).`
+      )
+    }
+  }
+}
+
+/**
+ * Join a Drive project: download every file under `folderId` into a
+ * per-project subfolder of `savePath` (named after the Drive folder, so
+ * two projects can never share a directory), write the manifest, and
+ * make it the active project. `onProgress` is forwarded to the renderer
+ * as a join-progress event by the IPC handler.
  */
 export async function join(
   folderId: string,
   sharedDriveId: string,
-  localPath: string,
+  savePath: string,
   name: string,
   onProgress?: (p: PublishProgress) => void
 ): Promise<ProjectConfig> {
+  // If the picked folder IS this project already (legacy layout from
+  // before per-project subfolders, being re-joined to repair a partial
+  // download), use it as-is. Otherwise same computation the renderer
+  // previews (joinTargetDir): append the project's folder name unless
+  // the picked folder is already named that.
+  const pickedManifest = await loadManifest(savePath)
+  const localPath = pickedManifest?.projectFolderId === folderId
+    ? savePath
+    : joinTargetDir(savePath, name, folderId, path.sep)
+  await assertJoinTargetSafe(localPath, folderId)
   await downloadProject(folderId, sharedDriveId, localPath, prog => {
     onProgress?.({
       phase: prog.percent >= 100 ? 'done' : 'uploading',

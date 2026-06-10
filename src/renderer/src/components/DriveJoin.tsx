@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { HardDrive, FolderOpen, LogOut, RefreshCw } from 'lucide-react'
 import type { GoogleAuthStatus, DriveSharedDrive, DriveFolder, ProjectEntry } from '@shared/types'
+import { joinTargetDir } from '@shared/paths'
 
 interface Props {
   /** Back to the welcome screen. */
@@ -311,6 +312,15 @@ export default function DriveJoin({ onBack, onJoinDriveProject, isLoading, allow
               />
               <button className="browse-btn" onClick={handleBrowse}>Browse</button>
             </div>
+            {savePath.trim() && (
+              // Mirrors the main process exactly (same shared helper): a
+              // per-project subfolder is created inside the picked location
+              // so two projects can never land in the same folder.
+              <div className="form-hint" style={{ marginTop: 6 }}>
+                Project will be downloaded to{' '}
+                <span className="mono">{joinTargetDir(savePath.trim(), selectedFolder.name, selectedFolder.id)}</span>
+              </div>
+            )}
             <div className="form-hint" style={{ marginTop: 6, lineHeight: 1.5 }}>
               <strong>Pro tip:</strong> put the project folder close to the
               drive root (e.g. <span className="mono">C:\framecad\</span>) and

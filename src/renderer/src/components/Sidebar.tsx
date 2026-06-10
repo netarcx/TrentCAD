@@ -10,17 +10,21 @@ interface Props {
    *  the entry for students so they can't reach the bulk dropdown that
    *  bypasses the DetailsPanel release-state gate. */
   isMentor: boolean
+  /** Shop (manufacturing queue) — mentor+ OR the manufacturingView
+   *  capability. Its "Done" button flips release states, so an ungated
+   *  tab let any student bypass the release-state gate too. */
+  canShop: boolean
 }
 
-const allItems: { id: SidebarSection; label: string; Icon: LucideIcon; mentorOnly?: boolean }[] = [
+const allItems: { id: SidebarSection; label: string; Icon: LucideIcon; mentorOnly?: boolean; shopGated?: boolean }[] = [
   { id: 'files', label: 'Files', Icon: FolderOpen },
   { id: 'parts', label: 'Parts', Icon: Wrench, mentorOnly: true },
   { id: 'activity', label: 'Activity', Icon: Activity },
-  { id: 'shop', label: 'Shop', Icon: Factory }
+  { id: 'shop', label: 'Shop', Icon: Factory, shopGated: true }
 ]
 
-export default function Sidebar({ active, onSelect, badges, isMentor }: Props) {
-  const items = allItems.filter(i => isMentor || !i.mentorOnly)
+export default function Sidebar({ active, onSelect, badges, isMentor, canShop }: Props) {
+  const items = allItems.filter(i => (isMentor || !i.mentorOnly) && (canShop || !i.shopGated))
   return (
     <nav className="app-sidebar">
       {items.map(({ id, label, Icon }) => (

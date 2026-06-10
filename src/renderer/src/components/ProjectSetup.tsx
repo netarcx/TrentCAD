@@ -143,11 +143,25 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
   // own transforms on top.
   const logoBounceRef = useRef<HTMLDivElement | null>(null)
   const logoSpacerRef = useRef<HTMLDivElement | null>(null)
+  // The member's auto-open/kiosk target. Setting one is an explicit admin
+  // statement that this member belongs in that project, so it stays
+  // visible and joinable even without the broader Team Projects capability
+  // — otherwise a kiosk/auto-open member on a fresh install dead-ends on
+  // an empty welcome screen with no way to download their one project.
+  const autoOpenTarget = (teamSnapshot?.me?.autoOpenProjectId != null)
+    ? (teamSnapshot?.projects ?? []).find(p => p.id === teamSnapshot!.me!.autoOpenProjectId)
+    : undefined
+  // Gate on browseTeamProjects — the ONE project capability the admin web
+  // UI exposes ("Team Projects: lets them see and join projects registered
+  // in this server"). It used to require `openProject`, which the admin UI
+  // deliberately hides as a legacy no-op — so an admin who ticked Team
+  // Projects + set the allowlist still saw every join refused with
+  // "your admin has not granted you access".
   const canJoinDrive =
     !!teamSnapshot?.enrolled &&
-    !!teamSnapshot.me?.capabilities?.openProject &&
+    (!!teamSnapshot.me?.capabilities?.browseTeamProjects || !!autoOpenTarget) &&
     (
-      teamSnapshot.me.role !== 'student' ||
+      teamSnapshot.me?.role !== 'student' ||
       // A folder id alone is enough — DriveJoin resolves the containing
       // Shared Drive when the registry row never recorded one.
       (teamSnapshot.projects?.some(p => !!p.driveFolderId) ?? false)
@@ -733,11 +747,14 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
           const caps = teamSnapshot.me?.capabilities
           // No browse capability → empty state with the same copy
           // we use when the project list IS available but happens
-          // to be empty. The server filters /api/projects to honor
-          // the per-member allowlist; this is the client-side
-          // capability gate that controls whether the LIST itself
-          // is visible.
-          if (!caps?.browseTeamProjects) {
+          // to be empty. EXCEPT when the admin set an auto-open/kiosk
+          // target: that's an explicit "this member belongs in that
+          // project", so show that one row (it must be downloadable on
+          // a fresh install or the kiosk dead-ends). The server filters
+          // /api/projects to honor the per-member allowlist; this is
+          // the client-side capability gate that controls whether the
+          // LIST itself is visible.
+          if (!caps?.browseTeamProjects && !autoOpenTarget) {
             return (
               <div
                 className="setup-cards-empty hint"
@@ -749,7 +766,9 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
               </div>
             )
           }
-          const projects = teamSnapshot.projects ?? []
+          const projects = caps?.browseTeamProjects
+            ? (teamSnapshot.projects ?? [])
+            : [autoOpenTarget!]
           if (projects.length === 0) {
             return (
               <div
@@ -816,11 +835,12 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
 
         {/* Manufacturing View — secondary action. Quieter outline
             button under the project list so it doesn't compete with
-            the projects themselves. Capability-gated (same flag as
-            before). Disabled when there are no local clones — the
-            shop-floor view lives INSIDE a project. */}
+            the projects themselves. Mentors+ always have it; students
+            via the manufacturingView capability (same rule as the
+            in-project Shop tab). Disabled when there are no local
+            clones — the shop-floor view lives INSIDE a project. */}
         {teamSnapshot?.enrolled
-          && teamSnapshot.me?.capabilities?.manufacturingView
+          && (teamSnapshot.me?.role !== 'student' || teamSnapshot.me?.capabilities?.manufacturingView)
           && onEnterManufacturingView && (
           <div className="setup-mfg-row">
             <button

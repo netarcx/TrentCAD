@@ -370,6 +370,26 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       ).run(id)
     }
 
+    // A demotion must stick: enrollment treats the PIN role as upgrade-only,
+    // so a leftover identity-bound PIN with a HIGHER role would silently
+    // re-promote this member the next time they enroll a device with it.
+    // Revoke any outstanding PIN bound to this member that now outranks them.
+    if (req.body?.role) {
+      const rank: Record<Role, number> = { student: 0, mentor: 1, admin: 2 }
+      const outranking = VALID_ROLES.filter(r => rank[r] > rank[req.body!.role as Role])
+      if (outranking.length > 0) {
+        const gh = (getDb().prepare(
+          `SELECT githubUsername FROM members WHERE id = ?`
+        ).get(id) as { githubUsername: string | null } | undefined)?.githubUsername
+        getDb().prepare(
+          `DELETE FROM pins
+            WHERE useCount < maxUses
+              AND role IN (${outranking.map(() => '?').join(',')})
+              AND (boundMemberId = ?${gh ? ' OR LOWER(githubUsername) = LOWER(?)' : ''})`
+        ).run(...outranking, id, ...(gh ? [gh] : []))
+      }
+    }
+
     logAudit({
       actorId: req.member!.id,
       actorLabel: req.member!.displayName,

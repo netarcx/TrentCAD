@@ -258,6 +258,17 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
       member = db.prepare(
         `SELECT * FROM members WHERE id = ?`
       ).get(result.lastInsertRowid as number) as MemberRow
+    } else if (pinRow.boundMemberId != null) {
+      // A bound re-enroll PIN's ONLY job is to attach the new device to
+      // this member — the member row stays authoritative for role, caps,
+      // allowlist, kiosk, and archive. Bumping/merging from the PIN here
+      // would freeze the member's grants at PIN-ISSUE time: an admin who
+      // demoted or locked down the member after issuing it would have
+      // that change silently undone the moment the PIN is used.
+      if (member.status !== 'active') {
+        db.prepare(`UPDATE members SET status = 'active' WHERE id = ?`).run(member.id)
+        member.status = 'active'
+      }
     } else {
       // Reusing an existing record. Bump the role to the PIN's role
       // ONLY if it's higher — i.e. an admin-issued mentor PIN upgrades a

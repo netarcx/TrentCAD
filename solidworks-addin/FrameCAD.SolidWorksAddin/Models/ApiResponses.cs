@@ -249,12 +249,39 @@ namespace FrameCAD.SolidWorksAddin.Models
         [JsonProperty("isMember")]
         public bool IsMember { get; set; }
 
+        /// <summary>Server-computed "may create parts/assemblies/folders":
+        /// mentors+ always, students via the manageCadStructure capability.
+        /// Nullable: an older desktop doesn't send it — treat null as
+        /// allowed (those desktops don't enforce it server-side either).</summary>
+        [JsonProperty("canManageCad")]
+        public bool? CanManageCad { get; set; }
+
+        /// <summary>Server-computed "may mark a part manufactured" (the
+        /// shop-floor flow): mentors+ always, students via the
+        /// manufacturingView capability. Null (older desktop) deliberately
+        /// maps to NOT granted — the opposite of CanManageCad's default —
+        /// because this is a NEW student grant: against a desktop that
+        /// doesn't report it (and doesn't enforce it server-side), we keep
+        /// the add-in's old mentor-only behavior rather than loosening.</summary>
+        [JsonProperty("canShop")]
+        public bool? CanShop { get; set; }
+
         /// <summary>True if the user can sign off on releases / mark manufactured / force-release locks.</summary>
         public bool IsMentor =>
             !Configured || Role == "admin" || Role == "mentor";
 
         public bool IsAdmin =>
             !Configured || Role == "admin";
+
+        /// <summary>Gate for New Part / New Assembly / New Folder. Mirrors the
+        /// desktop's canManageCad; the desktop's REST API enforces it too, so
+        /// this only exists to fail fast with a friendly message.</summary>
+        public bool AllowCadStructure =>
+            !Configured || CanManageCad != false;
+
+        /// <summary>Gate for marking a part manufactured.</summary>
+        public bool AllowMarkManufactured =>
+            IsMentor || CanShop == true;
     }
 
     /// <summary>

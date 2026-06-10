@@ -456,14 +456,19 @@ export default function App() {
   // it; a student gets it via the server-granted manageCadStructure capability.
   const canManageCad = isMentor || !!teamSnapshot?.me?.capabilities?.manageCadStructure
   const canForceCheckIn = isMentor || !!teamSnapshot?.me?.capabilities?.forceCheckIn
+  // Shop's "Done" button writes release states (released → manufactured),
+  // so it follows the same shape as the other workflow powers: mentors+
+  // always, students via the server-granted manufacturingView capability.
+  const canShop = isMentor || !!teamSnapshot?.me?.capabilities?.manufacturingView
 
   // If a server-side demotion takes effect (e.g. admin changed our
   // role from mentor to student) while we're sitting on the Parts
   // section, snap back to Files so the user isn't staring at a
-  // hidden panel (Parts is mentor-gated).
+  // hidden panel (Parts is mentor-gated; Shop is capability-gated).
   useEffect(() => {
     if (!isMentor && activeSection === 'parts') setActiveSection('files')
-  }, [isMentor, activeSection])
+    if (!canShop && activeSection === 'shop') setActiveSection('files')
+  }, [isMentor, canShop, activeSection])
 
   const openAdminOverlay = useCallback(() => {
     if (!showAdmin) setShowAdmin(true)
@@ -1061,6 +1066,7 @@ export default function App() {
           onSelect={handleSidebarSelect}
           badges={sidebarBadges}
           isMentor={isMentor}
+          canShop={canShop}
         />
 
         <div className="app-content">
@@ -1135,8 +1141,8 @@ export default function App() {
             <ActivityView history={history} />
           )}
 
-          {activeSection === 'shop' && (
-            <ManufacturingQueue embedded onClose={() => setActiveSection('files')} />
+          {activeSection === 'shop' && canShop && (
+            <ManufacturingQueue />
           )}
         </div>
 

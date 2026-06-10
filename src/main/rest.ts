@@ -111,6 +111,44 @@ function broadcastStatus(): void {
     .catch(() => {})
 }
 
+/**
+ * Mirror of the desktop's canManageCad gate (App.tsx): mentors/admins
+ * always, students via the manageCadStructure capability, standalone
+ * (un-enrolled) unrestricted. The desktop hides its New Part / New
+ * Assembly / New Subsystem / rename UI behind this — without the same
+ * check here, the SolidWorks add-in walked right past it.
+ */
+function canManageCadNow(): boolean {
+  const snap = teamServer.currentSnapshot()
+  if (!snap.enrolled) return true
+  const role = snap.me?.role
+  if (role === 'admin' || role === 'mentor') return true
+  return !!snap.me?.capabilities?.manageCadStructure
+}
+
+const MANAGE_CAD_DENIED =
+  'Your admin hasn’t granted you the Manage CAD structure permission — ask them to enable it for you on the team server.'
+
+/**
+ * Mirror of the desktop's canShop gate (App.tsx): mentors/admins always,
+ * students via the manufacturingView capability, standalone unrestricted.
+ * Controls who may mark a part manufactured (the shop-floor "Done" flow).
+ */
+function canShopNow(): boolean {
+  const snap = teamServer.currentSnapshot()
+  if (!snap.enrolled) return true
+  const role = snap.me?.role
+  if (role === 'admin' || role === 'mentor') return true
+  return !!snap.me?.capabilities?.manufacturingView
+}
+
+function isMentorNow(): boolean {
+  const snap = teamServer.currentSnapshot()
+  if (!snap.enrolled) return true
+  const role = snap.me?.role
+  return role === 'admin' || role === 'mentor'
+}
+
 function serialWrite<T>(fn: () => Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     writeLock = writeLock.then(async () => {
@@ -300,9 +338,15 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
             configured: snap.enrolled,
             role: snap.me?.role ?? null,
             isMember: snap.enrolled,
+            // Additive (the frozen { configured, role, isMember } contract is
+            // untouched; old add-ins ignore unknown fields). Lets the add-in
+            // gate its New Part / release-state UI on the same capability
+            // flags the desktop uses, instead of role alone.
+            canManageCad: canManageCadNow(),
+            canShop: canShopNow(),
           })
         } catch {
-          json(res, 200, { configured: false, role: null, isMember: false })
+          json(res, 200, { configured: false, role: null, isMember: false, canManageCad: true, canShop: true })
         }
         return
       }
@@ -378,6 +422,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       }
 
       case 'POST /api/parts/new-part': {
+        if (!canManageCadNow()) { json(res, 403, { success: false, error: MANAGE_CAD_DENIED }); return }
         const body = parseJson(await readBody(req)) as { folder?: string; description?: string } | null
         // Empty folder = project root. Otherwise sanitize: reject
         // absolute paths and any traversal that would escape the
@@ -460,6 +505,26 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         if (!validStates.includes(body.state)) {
           json(res, 400, { error: `Invalid state. Expected one of: ${validStates.join(', ')}` })
           return
+        }
+        // Mirror the desktop's release gating (DetailsPanel pills + Shop
+        // "Done"): students may only flip draft ↔ in-review; marking
+        // manufactured is additionally allowed via the manufacturingView
+        // capability; anything already signed off (released/manufactured)
+        // is mentor-only in either direction. The add-in has a local role
+        // check, but this REST surface was otherwise unenforced — a
+        // student could un-release a part right past the desktop's gate.
+        if (!isMentorNow()) {
+          const metaMod = await import('./meta')
+          const current = (await metaMod.getPartMeta(toGitRel(safePath)).catch(() => ({} as Partial<PartMeta>)))
+            ?.release?.state ?? 'draft'
+          const allowed =
+            (body.state === 'manufactured' && canShopNow()) ||
+            ((body.state === 'draft' || body.state === 'in-review') &&
+              (current === 'draft' || current === 'in-review'))
+          if (!allowed) {
+            json(res, 403, { success: false, error: 'Only a mentor can set this release state. Set the part to in-review and ask a mentor to sign off.' })
+            return
+          }
         }
         try {
           const meta = await import('./meta')
@@ -650,6 +715,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       }
 
       case 'POST /api/parts/new-subsystem': {
+        if (!canManageCadNow()) { json(res, 403, { success: false, error: MANAGE_CAD_DENIED }); return }
         const body = parseJson(await readBody(req)) as {
           parentFolder?: string
           name?: string
@@ -670,6 +736,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       }
 
       case 'POST /api/parts/new-assembly': {
+        if (!canManageCadNow()) { json(res, 403, { success: false, error: MANAGE_CAD_DENIED }); return }
         const body = parseJson(await readBody(req)) as {
           parentFolder?: string
           name?: string

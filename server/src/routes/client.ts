@@ -456,8 +456,12 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
     ).all() as Array<Omit<ProjectRow, 'archived'>>
 
     if (member.role === 'student') {
+      // The auto-open/kiosk target counts as allowed even when the admin
+      // forgot to also tick it in the allowlist — setting it IS an explicit
+      // "this member belongs in that project". Without this, a kiosk member
+      // gets an empty project list and dead-ends on a fresh install.
       const allowed = new Set(member.allowedProjectIds)
-      return { projects: rows.filter(p => allowed.has(p.id)) }
+      return { projects: rows.filter(p => allowed.has(p.id) || p.id === member.autoOpenProjectId) }
     }
     return { projects: rows }
   })
@@ -481,11 +485,14 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
   // (access is admin-granted, matching /api/projects above). Admins/mentors
   // always pass. Students may not touch unregistered project keys: once a
   // team uses project allowlists, the server is the authoritative write gate.
-  function keyAllowed(member: { role: string; allowedProjectIds: number[] }, key: string): boolean {
+  function keyAllowed(member: { role: string; allowedProjectIds: number[]; autoOpenProjectId: number | null }, key: string): boolean {
     if (member.role !== 'student') return true
     const proj = getDb().prepare(`SELECT id FROM projects WHERE driveFolderId = ?`).get(key) as { id: number } | undefined
     if (!proj) return false
-    return member.allowedProjectIds.includes(proj.id)
+    // Auto-open/kiosk target is implicitly allowed — must match the
+    // /api/projects filter above or the kiosk can list-and-join its
+    // project but then fail every lock call.
+    return member.allowedProjectIds.includes(proj.id) || proj.id === member.autoOpenProjectId
   }
   function denyKey(reply: import('fastify').FastifyReply): unknown {
     return reply.code(403).send({ error: 'You don’t have access to this project.' })

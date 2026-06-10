@@ -2126,130 +2126,84 @@ body.slam-shake {
   font-size: 12px;
 }
 
-.mfg-queue-modal {
-  width: 720px;
-  max-height: 84vh;
+/* ── Manufacturing View (shop-floor job board) ──────────────────────
+   One design serves both surfaces: the Shop sidebar tab and the
+   full-screen kiosk (ManufacturingModeShell). Built for shop-floor
+   reading distance: big mono part numbers, thumbnail job cards in a
+   responsive grid, one unmissable action per card. Tokens only, so
+   light/dark both work. */
+
+.mfg-shop-header {
   display: flex;
-  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
 }
 
-.mfg-queue-tabs {
-  display: flex;
-  gap: 4px;
-  margin-bottom: 12px;
-  border-bottom: 1px solid var(--border);
+.mfg-shop-heading { flex: 1; min-width: 0; }
+
+.mfg-shop-heading h2 {
+  font-size: 24px;
+  letter-spacing: -0.02em;
+  margin: 0 0 4px;
 }
 
-.mfg-queue-tab {
-  padding: 8px 14px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.mfg-shop-sub {
+  font-size: 12.5px;
+  color: var(--text-muted);
 }
 
-.mfg-queue-tab:hover { color: var(--text-primary); }
-
-.mfg-queue-tab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-}
-
-.mfg-queue-count {
-  font-size: 10px;
-  background: var(--bg-surface);
-  padding: 1px 6px;
-  border-radius: 8px;
-}
-
-.mfg-queue-tab.active .mfg-queue-count {
-  background: var(--accent-tint);
-  color: var(--accent);
-}
-
-.mfg-queue-list {
-  flex: 1;
-  overflow-y: auto;
-  margin-bottom: 12px;
-}
-
-.mfg-queue-item {
-  display: flex;
-  gap: 12px;
-  padding: 10px 12px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  margin-bottom: 6px;
-}
-
-.mfg-queue-item.needs-export {
-  border-color: var(--yellow);
-  background: color-mix(in srgb, var(--yellow) 8%, var(--bg-primary));
-}
-
-.mfg-queue-needs-export-badge {
-  display: inline-block;
-  margin-left: 8px;
-  padding: 1px 7px;
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  background: var(--yellow);
-  color: var(--on-yellow);
-  border-radius: 10px;
-  vertical-align: middle;
-}
-
-.mfg-queue-needs-export-pill {
+.mfg-shop-refresh {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  height: 16px;
-  margin-left: 6px;
-  padding: 0 5px;
-  font-size: 10px;
-  font-weight: 700;
-  background: var(--yellow);
-  color: var(--on-yellow);
-  border-radius: 8px;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
-.mfg-operator-bar {
+@keyframes mfg-spin {
+  to { transform: rotate(360deg); }
+}
+
+.mfg-spin { animation: mfg-spin 1s linear infinite; }
+
+/* Station identity — who is at this bench and where finished parts go.
+   Reads as a control strip, not part of the queue itself. */
+.mfg-station-bar {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: flex-end;
+  gap: 18px;
   flex-wrap: wrap;
-  margin: 12px 0;
-  padding: 10px 14px;
-  background: var(--accent-tint);
-  border: 1px solid var(--accent);
+  margin: 0 0 14px;
+  padding: 12px 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
   border-radius: var(--radius);
 }
 
-.mfg-operator-bar label {
-  font-size: 11px;
+.mfg-station-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.mfg-station-field label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.6px;
   color: var(--accent);
 }
 
-.mfg-operator-bar input {
+.mfg-station-field input {
   /* Wide enough that the uppercased placeholder ("E.G. JD") isn't clipped. */
-  width: 110px;
-  padding: 6px 10px;
-  background: var(--bg-primary);
-  border: 1px solid var(--accent);
+  width: 120px;
+  padding: 7px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text-primary);
   font-size: 16px;
@@ -2260,26 +2214,97 @@ body.slam-shake {
   outline: none;
 }
 
-.mfg-operator-bar input:focus {
-  border-color: var(--accent-hover);
+.mfg-station-field input:focus {
+  border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-tint);
 }
 
-/* Free-text location ("Shelf B3") needs more room than 2-6 initials. */
-.mfg-operator-bar input.mfg-location-input {
-  width: 170px;
+/* Free-text location ("Shelf B3") needs more room than 2-6 initials,
+   and isn't shouty uppercase. */
+.mfg-station-field input.mfg-location-input {
+  width: 220px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 500;
+  font-size: 14px;
 }
 
-.mfg-operator-hint {
+.mfg-station-hint {
   font-size: 11px;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   flex: 1;
-  min-width: 200px;
+  min-width: 220px;
+  padding-bottom: 7px;
+}
+
+/* Method tabs — segmented buttons with icon + count. */
+.mfg-shop-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 16px;
+}
+
+.mfg-shop-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.mfg-shop-tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.mfg-shop-tab.active {
+  color: var(--accent);
+  background: var(--accent-tint);
+  border-color: var(--accent);
+}
+
+.mfg-queue-count {
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+
+.mfg-shop-tab.active .mfg-queue-count {
+  background: var(--accent);
+  color: var(--bg-primary);
+}
+
+.mfg-queue-needs-export-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--yellow);
+  color: var(--on-yellow);
+  border-radius: 8px;
 }
 
 .mfg-queue-export-banner {
-  margin: 0 0 12px;
-  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 9px 12px;
   background: color-mix(in srgb, var(--yellow) 15%, var(--bg-primary));
   border: 1px solid var(--yellow);
   border-radius: var(--radius);
@@ -2287,7 +2312,163 @@ body.slam-shake {
   color: var(--text-primary);
 }
 
+.mfg-queue-export-banner svg { color: var(--yellow); flex-shrink: 0; }
 .mfg-queue-export-banner strong { color: var(--yellow); }
+
+/* Job cards. */
+.mfg-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 14px;
+}
+
+.mfg-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  transition: border-color 0.15s;
+}
+
+.mfg-card:hover { border-color: var(--text-muted); }
+
+.mfg-card.needs-export {
+  border-color: color-mix(in srgb, var(--yellow) 55%, var(--border));
+}
+
+.mfg-card-top {
+  display: flex;
+  gap: 14px;
+  padding: 14px 14px 0;
+  align-items: center;
+}
+
+.mfg-card-thumb {
+  width: 72px;
+  height: 72px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: var(--bg-surface);
+  object-fit: contain;
+}
+
+.mfg-card-thumb-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+.mfg-card-id { flex: 1; min-width: 0; }
+
+.mfg-card-name {
+  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.mfg-card-folder {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mfg-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 12px 14px 0;
+}
+
+.mfg-chip {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+}
+
+.mfg-chip-material {
+  background: var(--accent-tint);
+  color: var(--accent);
+}
+
+.mfg-chip-time {
+  background: none;
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
+}
+
+.mfg-card-notes {
+  padding: 10px 14px 0;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+.mfg-card-export-warn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 12px 14px 0;
+  padding: 7px 10px;
+  font-size: 11.5px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--yellow) 14%, var(--bg-secondary));
+  color: var(--text-primary);
+}
+
+.mfg-card-export-warn svg { color: var(--yellow); flex-shrink: 0; }
+
+/* The one action — pinned to the card bottom so a row of cards reads
+   as a row of identical big buttons. */
+.mfg-card-done {
+  margin: 14px;
+  margin-top: auto;
+  height: 42px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  background: var(--accent);
+  color: var(--bg-primary);
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.mfg-card-done:hover:not(:disabled) { background: var(--accent-hover); }
+
+.mfg-card-done:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.mfg-shop-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 56px 20px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.mfg-shop-empty p {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.mfg-shop-empty span { font-size: 12px; }
 
 .export-queue-status {
   display: flex;
@@ -2332,6 +2513,44 @@ body.slam-shake {
   margin-left: auto;
   display: flex;
   gap: 8px;
+}
+
+/* Row-list styles below (mfg-queue-list/item/main/path/meta/notes/empty)
+   now serve the Admin → Export Queue list only — the shop-floor
+   Manufacturing View moved to the mfg-card grid above. */
+.mfg-queue-list {
+  flex: 1;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+
+.mfg-queue-item {
+  display: flex;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 6px;
+}
+
+.mfg-queue-item.needs-export {
+  border-color: var(--yellow);
+  background: color-mix(in srgb, var(--yellow) 8%, var(--bg-primary));
+}
+
+.mfg-queue-needs-export-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--yellow);
+  color: var(--on-yellow);
+  border-radius: 10px;
+  vertical-align: middle;
 }
 
 .mfg-queue-main {
@@ -3767,52 +3986,12 @@ body.slam-shake {
   flex-shrink: 0;
 }
 
+/* The Manufacturing View's scroll container (Shop tab + kiosk shell). */
 .mfg-queue-embedded {
   flex: 1;
   overflow-y: auto;
-  padding: 24px 32px;
+  padding: 24px 28px 40px;
   background: var(--bg-primary);
-}
-
-.mfg-queue-embedded .actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 24px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border);
-}
-
-.mfg-queue-embedded h2 {
-  font-size: 22px;
-  margin: 0 0 8px;
-}
-
-/* Big readable part numbers when the queue is rendered shop-floor-style.
-   Targets the path element inside .mfg-queue-item only when inside the
-   embedded container so the modal version stays compact. */
-.mfg-queue-embedded .mfg-queue-path {
-  font-size: 18px;
-  font-weight: 700;
-  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
-  color: var(--text-primary);
-}
-
-.mfg-queue-embedded .mfg-queue-meta {
-  font-size: 13px;
-}
-
-.mfg-queue-embedded .mfg-queue-item {
-  padding: 14px 16px;
-}
-
-.mfg-queue-embedded .mfg-queue-tab {
-  padding: 10px 16px;
-  font-size: 14px;
-}
-
-.mfg-queue-embedded .mfg-queue-tab .mfg-queue-count {
-  font-size: 13px;
 }
 
 .project-name-btn {

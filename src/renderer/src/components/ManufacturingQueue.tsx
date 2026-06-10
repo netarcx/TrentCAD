@@ -1,28 +1,22 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
+import {
+  Printer, Cog, Hammer, ShoppingCart, Package, RefreshCw,
+  AlertTriangle, Inbox, Box, User, MapPin, type LucideIcon
+} from 'lucide-react'
 import type { ManufacturingMethod, ManufacturingQueueItem } from '@shared/types'
+import FileThumbnail from './FileThumbnail'
 import ErrorMsg from './ErrorMsg'
 
-interface Props {
-  onClose: () => void
-  /**
-   * When `embedded`, renders without the modal-overlay wrapper so the
-   * queue can live inside a dedicated full-screen view (Manufacturing
-   * View on the welcome screen). The Close button still calls onClose
-   * so the parent can exit the view.
-   */
-  embedded?: boolean
-}
-
-const METHODS: ManufacturingMethod[] = ['print', 'cnc', 'manual', 'purchase', 'other']
+const METHODS: { key: ManufacturingMethod; label: string; Icon: LucideIcon }[] = [
+  { key: 'print', label: '3D Print', Icon: Printer },
+  { key: 'cnc', label: 'CNC', Icon: Cog },
+  { key: 'manual', label: 'Hand', Icon: Hammer },
+  { key: 'purchase', label: 'Purchase', Icon: ShoppingCart },
+  { key: 'other', label: 'Other', Icon: Package }
+]
 
 function methodLabel(m: ManufacturingMethod): string {
-  switch (m) {
-    case 'print': return '3D Print'
-    case 'cnc': return 'CNC'
-    case 'manual': return 'Hand'
-    case 'purchase': return 'Purchase'
-    case 'other': return 'Other'
-  }
+  return METHODS.find(x => x.key === m)?.label ?? m
 }
 
 function relativeTime(iso?: string): string {
@@ -33,6 +27,18 @@ function relativeTime(iso?: string): string {
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
   return d.toLocaleDateString()
+}
+
+/** "Drivetrain/26-2129-01-005.sldprt" → "26-2129-01-005" */
+function fileTitle(path: string): string {
+  const base = path.split('/').pop() ?? path
+  return base.replace(/\.(sldprt|sldasm|slddrw)$/i, '')
+}
+
+/** "Drivetrain/26-2129-01-005.sldprt" → "Drivetrain" ('' at project root) */
+function folderOf(path: string): string {
+  const idx = path.lastIndexOf('/')
+  return idx > 0 ? path.slice(0, idx) : ''
 }
 
 // Persisted across sessions so a single operator working through a
@@ -47,7 +53,7 @@ function normalizeInitials(raw: string): string {
   return raw.trim().replace(/[^A-Za-z0-9.]/g, '').slice(0, 6).toUpperCase()
 }
 
-export default function ManufacturingQueue({ onClose, embedded = false }: Props) {
+export default function ManufacturingQueue() {
   const [items, setItems] = useState<ManufacturingQueueItem[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<ManufacturingMethod>('print')
@@ -90,26 +96,28 @@ export default function ManufacturingQueue({ onClose, embedded = false }: Props)
     }
   }, [refresh])
 
-  // Per-method tallies in a single pass over `items` (instead of the
-  // previous 11 separate .filter() scans), memoized so typing in the
-  // operator / location inputs doesn't re-walk the whole queue each
-  // keystroke. `visible` stays its own memo since it also depends on `tab`.
-  const { counts, needsExportCounts, totalNeedsExport } = useMemo(() => {
+  // Per-method tallies in a single pass over `items`, memoized so typing
+  // in the operator / location inputs doesn't re-walk the whole queue
+  // each keystroke. `visible` stays its own memo since it also depends
+  // on `tab`.
+  const { counts, needsExportCounts, totalNeedsExport, totalQueued } = useMemo(() => {
     const counts: Record<string, number> = {}
     const needsExportCounts: Record<string, number> = {}
     let totalNeedsExport = 0
+    let totalQueued = 0
     for (const m of METHODS) {
-      counts[m] = 0
-      needsExportCounts[m] = 0
+      counts[m.key] = 0
+      needsExportCounts[m.key] = 0
     }
     for (const i of items) {
       if (i.method in counts) {
         counts[i.method]++
+        totalQueued++
         if (i.needsExport) needsExportCounts[i.method]++
       }
       if (i.needsExport) totalNeedsExport++
     }
-    return { counts, needsExportCounts, totalNeedsExport }
+    return { counts, needsExportCounts, totalNeedsExport, totalQueued }
   }, [items])
 
   const visible = useMemo(() => items.filter(i => i.method === tab), [items, tab])
@@ -146,16 +154,28 @@ export default function ManufacturingQueue({ onClose, embedded = false }: Props)
   }
 
   const operatorReady = normalizeInitials(operator).length > 0
+  const doneLabel = tab === 'purchase' ? 'Mark received' : 'Mark done'
 
-  const body = (
-    <>
-        <h2>Manufacturing Queue</h2>
-        <p className="admin-hint">
-          Every part with release state <strong>Released</strong> appears here, grouped by manufacturing method. Click <em>Done</em> when the part has been made and state will move to <strong>Manufactured</strong>.
-        </p>
+  return (
+    <div className="mfg-queue-embedded">
+      <div className="mfg-shop-header">
+        <div className="mfg-shop-heading">
+          <h2>Manufacturing Queue</h2>
+          <span className="mfg-shop-sub">
+            {totalQueued === 0
+              ? 'Nothing waiting — released parts land here, grouped by how they get made.'
+              : `${totalQueued} released ${totalQueued === 1 ? 'part' : 'parts'} waiting to be made. Press ${tab === 'purchase' ? 'Mark received' : 'Mark done'} when a part is finished.`}
+          </span>
+        </div>
+        <button className="toolbar-btn mfg-shop-refresh" onClick={refresh} disabled={loading} title="Re-read the queue from the project">
+          <RefreshCw size={14} className={loading ? 'mfg-spin' : undefined} />
+          Refresh
+        </button>
+      </div>
 
-        <div className="mfg-operator-bar">
-          <label htmlFor="mfg-operator-input">Operator initials</label>
+      <div className="mfg-station-bar">
+        <div className="mfg-station-field">
+          <label htmlFor="mfg-operator-input"><User size={13} /> Operator initials</label>
           <input
             id="mfg-operator-input"
             type="text"
@@ -170,10 +190,9 @@ export default function ManufacturingQueue({ onClose, embedded = false }: Props)
             maxLength={6}
             autoComplete="off"
           />
-          <span className="mfg-operator-hint">
-            Required to mark parts done — the next person can edit this before pressing Done.
-          </span>
-          <label htmlFor="mfg-location-input" style={{ marginLeft: 16 }}>Storing at (optional)</label>
+        </div>
+        <div className="mfg-station-field">
+          <label htmlFor="mfg-location-input"><MapPin size={13} /> Storing finished parts at</label>
           <input
             id="mfg-location-input"
             type="text"
@@ -184,97 +203,104 @@ export default function ManufacturingQueue({ onClose, embedded = false }: Props)
               if (v) localStorage.setItem(LOCATION_KEY, v)
               else localStorage.removeItem(LOCATION_KEY)
             }}
-            placeholder="e.g. Shelf B3"
+            placeholder="e.g. Shelf B3 (optional)"
             maxLength={60}
             autoComplete="off"
             className="mfg-location-input"
           />
         </div>
+        <span className="mfg-station-hint">
+          Initials are required to mark parts done — the next person at this station can change them before pressing the button.
+        </span>
+      </div>
 
-        {totalNeedsExport > 0 && (
-          <div className="mfg-queue-export-banner">
+      {totalNeedsExport > 0 && (
+        <div className="mfg-queue-export-banner">
+          <AlertTriangle size={14} />
+          <span>
             <strong>{totalNeedsExport}</strong> {totalNeedsExport === 1 ? 'part is' : 'parts are'} released but missing the paired CAM file. Use <em>Admin → Export Queue</em> to batch-export, or open the part in SolidWorks to trigger an auto-export.
-          </div>
-        )}
-
-        <div className="mfg-queue-tabs">
-          {METHODS.map(m => (
-            <button
-              key={m}
-              className={`mfg-queue-tab${tab === m ? ' active' : ''}`}
-              onClick={() => setTab(m)}
-            >
-              {methodLabel(m)}
-              <span className="mfg-queue-count">{counts[m] || 0}</span>
-              {(needsExportCounts[m] || 0) > 0 && (
-                <span className="mfg-queue-needs-export-pill" title="Parts missing their CAM export">
-                  {needsExportCounts[m]}
-                </span>
-              )}
-            </button>
-          ))}
+          </span>
         </div>
+      )}
 
-        {loading && <div className="mfg-queue-empty">Loading...</div>}
-        {!loading && visible.length === 0 && (
-          <div className="mfg-queue-empty">No parts queued for {methodLabel(tab)}.</div>
-        )}
+      <div className="mfg-shop-tabs">
+        {METHODS.map(({ key, label, Icon }) => (
+          <button
+            key={key}
+            className={`mfg-shop-tab${tab === key ? ' active' : ''}`}
+            onClick={() => setTab(key)}
+          >
+            <Icon size={15} />
+            {label}
+            <span className="mfg-queue-count">{counts[key] || 0}</span>
+            {(needsExportCounts[key] || 0) > 0 && (
+              <span className="mfg-queue-needs-export-pill" title="Parts missing their CAM export">
+                {needsExportCounts[key]}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
 
-        {visible.length > 0 && (
-          <div className="mfg-queue-list">
-            {visible.map(item => (
-              <div className={`mfg-queue-item${item.needsExport ? ' needs-export' : ''}`} key={item.path}>
-                <div className="mfg-queue-main">
-                  <div className="mfg-queue-path">
-                    {item.path}
-                    {item.needsExport && (
-                      <span className="mfg-queue-needs-export-badge" title={`Expected file: ${item.expectedExportPath}`}>
-                        Needs .{item.needsExport}
-                      </span>
-                    )}
+      {loading && items.length === 0 && (
+        <div className="mfg-shop-empty"><RefreshCw size={32} className="mfg-spin" /><p>Loading the queue…</p></div>
+      )}
+      {!loading && visible.length === 0 && (
+        <div className="mfg-shop-empty">
+          <Inbox size={32} />
+          <p>No parts queued for {methodLabel(tab)}.</p>
+          <span>Parts appear here when a mentor releases them with the {methodLabel(tab)} method.</span>
+        </div>
+      )}
+
+      {visible.length > 0 && (
+        <div className="mfg-card-grid">
+          {visible.map(item => {
+            const title = fileTitle(item.path)
+            const folder = folderOf(item.path)
+            return (
+              <div className={`mfg-card${item.needsExport ? ' needs-export' : ''}`} key={item.path}>
+                <div className="mfg-card-top">
+                  <FileThumbnail
+                    path={item.path}
+                    size={72}
+                    className="mfg-card-thumb"
+                    title={item.path}
+                    fallback={<div className="mfg-card-thumb mfg-card-thumb-fallback"><Box size={28} /></div>}
+                  />
+                  <div className="mfg-card-id">
+                    <div className="mfg-card-name" title={item.path}>{title}</div>
+                    <div className="mfg-card-folder">{folder || 'Project root'}</div>
                   </div>
-                  <div className="mfg-queue-meta">
-                    {item.material && <span><strong>Material:</strong> {item.material}</span>}
-                    {typeof item.mass === 'number' && <span><strong>Mass:</strong> {item.mass.toFixed(2)} lb</span>}
-                    {item.releasedBy && <span><strong>Released by:</strong> {item.releasedBy}</span>}
-                    {item.releasedAt && <span>{relativeTime(item.releasedAt)}</span>}
-                  </div>
-                  {item.notes && <div className="mfg-queue-notes">{item.notes}</div>}
                 </div>
+                <div className="mfg-card-chips">
+                  {item.material && <span className="mfg-chip mfg-chip-material">{item.material}</span>}
+                  {typeof item.mass === 'number' && <span className="mfg-chip">{item.mass.toFixed(2)} lb</span>}
+                  {item.releasedBy && <span className="mfg-chip">Released by {item.releasedBy}</span>}
+                  {item.releasedAt && <span className="mfg-chip mfg-chip-time">{relativeTime(item.releasedAt)}</span>}
+                </div>
+                {item.notes && <div className="mfg-card-notes">{item.notes}</div>}
+                {item.needsExport && (
+                  <div className="mfg-card-export-warn" title={item.expectedExportPath ? `Expected file: ${item.expectedExportPath}` : undefined}>
+                    <AlertTriangle size={13} />
+                    Missing the .{item.needsExport} export — open this part in SolidWorks to generate it.
+                  </div>
+                )}
                 <button
-                  className="toolbar-btn primary"
+                  className="mfg-card-done"
                   onClick={() => handleMarkManufactured(item.path)}
                   disabled={markingDone === item.path || !operatorReady}
                   title={!operatorReady ? 'Enter your initials at the top first' : undefined}
                 >
-                  {markingDone === item.path ? '...' : tab === 'purchase' ? 'Received' : 'Done'}
+                  {markingDone === item.path ? 'Saving…' : doneLabel}
                 </button>
               </div>
-            ))}
-          </div>
-        )}
-
-        {error && <ErrorMsg text={error} />}
-
-        <div className="actions">
-          <button className="toolbar-btn" onClick={refresh}>Refresh</button>
-          {/* Embedded (sidebar tab / kiosk shell) has no overlay to close —
-              a primary "Close" button there is a dead/confusing affordance. */}
-          {!embedded && <button className="toolbar-btn primary" onClick={onClose}>Close</button>}
+            )
+          })}
         </div>
-    </>
-  )
+      )}
 
-  if (embedded) {
-    // Full-screen Manufacturing View — no modal overlay, content
-    // takes the whole available space
-    return <div className="mfg-queue-embedded">{body}</div>
-  }
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal mfg-queue-modal" onClick={e => e.stopPropagation()}>
-        {body}
-      </div>
+      {error && <ErrorMsg text={error} />}
     </div>
   )
 }

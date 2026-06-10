@@ -231,7 +231,10 @@ namespace FrameCAD.SolidWorksAddin
             if (description != null) obj["description"] = description;
             var response = await PostJsonAsync("/api/parts/new-part", obj);
             var json = await response.Content.ReadAsStringAsync();
-            return JsonConvert.DeserializeObject<CreatePartResult>(json);
+            // Coalesce like Sync/Publish — an empty/non-JSON error body would
+            // otherwise return null and NRE in the caller's .Success check.
+            return JsonConvert.DeserializeObject<CreatePartResult>(json)
+                ?? new CreatePartResult { Success = false, Error = $"Create failed (HTTP {(int)response.StatusCode})" };
         }
 
         public async Task<CreatePartResult> CreateNewAssemblyAsync(string name, string parentFolder = "", string description = null)
@@ -240,7 +243,8 @@ namespace FrameCAD.SolidWorksAddin
             if (description != null) obj["description"] = description;
             var response = await PostJsonAsync("/api/parts/new-assembly", obj);
             var json = await response.Content.ReadAsStringAsync();
-            return JsonConvert.DeserializeObject<CreatePartResult>(json);
+            return JsonConvert.DeserializeObject<CreatePartResult>(json)
+                ?? new CreatePartResult { Success = false, Error = $"Create failed (HTTP {(int)response.StatusCode})" };
         }
 
         public async Task<CreateSubsystemResult> CreateSubsystemAsync(string name, string parentFolder = "")
@@ -248,7 +252,8 @@ namespace FrameCAD.SolidWorksAddin
             var obj = new Dictionary<string, string> { { "name", name }, { "parentFolder", parentFolder } };
             var response = await PostJsonAsync("/api/parts/new-subsystem", obj);
             var json = await response.Content.ReadAsStringAsync();
-            return JsonConvert.DeserializeObject<CreateSubsystemResult>(json);
+            return JsonConvert.DeserializeObject<CreateSubsystemResult>(json)
+                ?? new CreateSubsystemResult { Success = false, Error = $"Create failed (HTTP {(int)response.StatusCode})" };
         }
 
         public async Task<List<PendingCreate>> GetPendingCreatesAsync()

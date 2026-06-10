@@ -125,7 +125,7 @@ export default function ManufacturingModeShell({ project, onSwitchProject, onExi
       {printResult && (
         <div className="mfg-mode-status">{printResult}</div>
       )}
-      <ManufacturingQueue embedded onClose={onExit} />
+      <ManufacturingQueue />
     </div>
   )
 }

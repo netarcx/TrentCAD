@@ -1352,13 +1352,25 @@ namespace FrameCAD.SolidWorksAddin
             var state = _cmbReleaseState.SelectedItem?.ToString();
             if (string.IsNullOrEmpty(state)) return;
 
-            // Role gate — mirror the desktop DetailsPanel rules: only
-            // mentors / admins can mark released or manufactured.
-            // Revert the combo and show a hint instead of silently
-            // letting the API accept it (server is unauthenticated).
-            if (!_coordState.IsMentor && (state == "released" || state == "manufactured"))
+            // Role gate — mirror the desktop DetailsPanel rules: students
+            // may only flip draft ↔ in-review; marking manufactured is
+            // additionally allowed via the manufacturingView capability
+            // (the shop-floor flow); anything already signed off
+            // (released/manufactured) is mentor-only in either direction —
+            // the old check only looked at the TARGET state, so a student
+            // could quietly drag a released part back to draft. Revert the
+            // combo and show a hint; the desktop's REST API now enforces
+            // the same rule server-side as a backstop.
+            var currentState = _currentMeta?.Release?.State ?? "draft";
+            var signedOff = currentState == "released" || currentState == "manufactured";
+            var stateAllowed = _coordState.IsMentor
+                || (state == "manufactured" && _coordState.AllowMarkManufactured)
+                || ((state == "draft" || state == "in-review") && !signedOff);
+            if (!stateAllowed)
             {
-                ShowMessage("Only mentors can mark a part " + state + ". Set it to in-review and ask a mentor to sign off.", true);
+                ShowMessage(signedOff
+                    ? "A mentor has signed off on this part — only a mentor can change its release state now."
+                    : "Only mentors can mark a part " + state + ". Set it to in-review and ask a mentor to sign off.", true);
                 // Revert by re-fetching meta and replaying through UpdateMetaDisplay,
                 // which sets the combo via _suppressReleaseChange so no recursive save.
                 try
@@ -1395,6 +1407,13 @@ namespace FrameCAD.SolidWorksAddin
             var result = await _api.SetReleaseStateAsync(_currentFilePath, state, note);
             if (result?.Success == true)
             {
+                // Keep the cached meta in step so the gate above sees the
+                // true current state on the next change without a re-fetch.
+                if (_currentMeta != null)
+                {
+                    if (_currentMeta.Release == null) _currentMeta.Release = new PartReleaseInfoDto();
+                    _currentMeta.Release.State = state;
+                }
                 ShowMessage($"Release state set to {state}.", false);
             }
             else
@@ -1997,6 +2016,14 @@ namespace FrameCAD.SolidWorksAddin
         private async System.Threading.Tasks.Task DoNewPart()
         {
             if (_busy) return;
+            // Capability gate (mirrors the desktop's canManageCad; the REST
+            // API enforces it too). Fail fast with the reason instead of
+            // letting the user fill the whole dialog and then get a 403.
+            if (!_coordState.AllowCadStructure)
+            {
+                ShowMessage("Your admin hasn't granted you the Manage CAD structure permission — ask them to enable it for you on the team server.", true);
+                return;
+            }
             using (var dialog = new NewPartDialog())
             {
                 if (dialog.ShowDialog() != DialogResult.OK) return;
@@ -2129,6 +2156,14 @@ namespace FrameCAD.SolidWorksAddin
                     System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = target, UseShellExecute = true });
                 else
                     ShowMessage("FrameCAD not found — please reinstall or open it manually first.", true);
+            }
+            catch (Exception ex)
+            {
+                // MainWindowHandle / Process.Start can throw (process exited
+                // mid-enumeration, access denied). This is a sync Click
+                // handler — an escaped exception lands in SolidWorks's
+                // message pump, not ours.
+                ShowMessage("Could not open FrameCAD: " + ex.Message, true);
             }
             finally
             {

@@ -51,10 +51,15 @@ export default function DriveJoin({ onBack, onJoinDriveProject, isLoading, allow
   const [selectedFolder, setSelectedFolder] = useState<DriveFolder | null>(null)
 
   const [savePath, setSavePath] = useState('')
-  const allowedDriveIds = useMemo(() => new Set(
+  // Keyed on the folder id ALONE: registry rows registered before the
+  // sharedDriveId column existed (or with the optional field blank) must
+  // still count as allowed. The folder id is globally unique on Drive, so
+  // dropping the drive prefix loses nothing — and the server enforces the
+  // real per-member access on every lock/history call anyway.
+  const allowedFolderIds = useMemo(() => new Set(
     allowedProjects
-      .filter(p => p.driveFolderId && p.sharedDriveId)
-      .map(p => `${p.sharedDriveId}:${p.driveFolderId}`)
+      .filter(p => p.driveFolderId)
+      .map(p => p.driveFolderId!)
   ), [allowedProjects])
 
   // Initial auth probe — cached, no network. If already signed in we
@@ -120,24 +125,36 @@ export default function DriveJoin({ onBack, onJoinDriveProject, isLoading, allow
     setError(null)
     try {
       const listed = await window.api.driveListFolders(drive.id)
-      setFolders(allowAllProjects ? listed : listed.filter(f => allowedDriveIds.has(`${drive.id}:${f.id}`)))
+      setFolders(allowAllProjects ? listed : listed.filter(f => allowedFolderIds.has(f.id)))
     } catch (err) {
       setError((err as Error).message)
     } finally {
       setLoadingFolders(false)
     }
-  }, [allowAllProjects, allowedDriveIds])
+  }, [allowAllProjects, allowedFolderIds])
 
   // Pre-target: when opened for a specific team project, auto-advance the
   // picker to its Shared Drive, then its folder, landing the user on the
   // save-path step. Each guard (`!selected*`) lets the user still override
   // manually; if the drive/folder isn't visible to this account the picker
-  // just stays put. Declared after pickDrive so the dep ref isn't in its TDZ.
+  // just stays put. When the registry row never recorded a sharedDriveId
+  // (pre-v18 rows, or the optional field left blank), ask Drive which
+  // Shared Drive contains the folder — the folder id alone is enough.
+  // Declared after pickDrive so the dep ref isn't in its TDZ.
   useEffect(() => {
     if (!initialTarget || !drives || selectedDrive) return
-    const target = drives.find(d => d.id === initialTarget.sharedDriveId)
-    if (target) pickDrive(target)
-    else setError(`Couldn’t find “${initialTarget.name}” on this Google account. Pick it manually below, or sign out and use the account with access to your team’s Shared Drive.`)
+    let cancelled = false
+    ;(async () => {
+      let driveId = initialTarget.sharedDriveId
+      if (!driveId) {
+        driveId = (await window.api.driveResolveSharedDrive(initialTarget.folderId).catch(() => null)) ?? ''
+      }
+      if (cancelled) return
+      const target = driveId ? drives.find(d => d.id === driveId) : undefined
+      if (target) pickDrive(target)
+      else setError(`Couldn’t find “${initialTarget.name}” on this Google account. Pick it manually below, or sign out and use the account with access to your team’s Shared Drive.`)
+    })()
+    return () => { cancelled = true }
   }, [initialTarget, drives, selectedDrive, pickDrive])
 
   useEffect(() => {
@@ -154,7 +171,7 @@ export default function DriveJoin({ onBack, onJoinDriveProject, isLoading, allow
 
   const handleJoin = async () => {
     if (!selectedDrive || !selectedFolder || !savePath) return
-    if (!allowAllProjects && !allowedDriveIds.has(`${selectedDrive.id}:${selectedFolder.id}`)) {
+    if (!allowAllProjects && !allowedFolderIds.has(selectedFolder.id)) {
       setError('Your admin has not granted you access to join that project.')
       return
     }

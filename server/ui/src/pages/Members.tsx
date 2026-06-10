@@ -38,6 +38,9 @@ export default function Members() {
   const [error, setError] = useState<string | null>(null)
   const [savingId, setSavingId] = useState<number | null>(null)
   const [editingId, setEditingId] = useState<number | null>(null)
+  /** Freshly issued re-enroll PIN per member id, shown inline until dismissed. */
+  const [issuedPins, setIssuedPins] = useState<Record<number, string>>({})
+  const [copiedPin, setCopiedPin] = useState<string | null>(null)
 
   async function load(): Promise<void> {
     try {
@@ -90,6 +93,22 @@ export default function Members() {
     try {
       await api('DELETE', `/api/admin/members/${m.id}`)
       await load()
+    } catch (err) {
+      setError((err as ApiError).message)
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  /** Issue a re-enrollment PIN bound to this member — for a new laptop or a
+   *  wiped install. Enrolling with it attaches the device to the SAME member
+   *  (role/caps/allowlist intact) instead of creating a duplicate. */
+  async function issueMemberPin(m: MemberFull): Promise<void> {
+    setSavingId(m.id)
+    setError(null)
+    try {
+      const pin = await api<{ code: string }>('POST', `/api/admin/members/${m.id}/pin`)
+      setIssuedPins(prev => ({ ...prev, [m.id]: pin.code }))
     } catch (err) {
       setError((err as ApiError).message)
     } finally {
@@ -187,6 +206,14 @@ export default function Members() {
                     <button
                       className="secondary"
                       disabled={savingId === m.id}
+                      title="Issue a PIN that re-enrolls this member on another device — same account, role, and permissions"
+                      onClick={() => issueMemberPin(m)}
+                    >
+                      New PIN
+                    </button>
+                    <button
+                      className="secondary"
+                      disabled={savingId === m.id}
                       onClick={() => setEditingId(editingId === m.id ? null : m.id)}
                     >
                       {editingId === m.id ? 'Cancel' : 'Set Permissions'}
@@ -196,6 +223,42 @@ export default function Members() {
                     </button>
                   </td>
                 </tr>
+                {issuedPins[m.id] && (
+                  <tr>
+                    <td colSpan={6} style={{ background: 'var(--accent-tint)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 4px', flexWrap: 'wrap' }}>
+                        <span className="hint">
+                          Enrollment PIN for <strong>{m.displayName}</strong> — single-use, expires in 7 days.
+                          It signs the new device into this account:
+                        </span>
+                        <span className="mono" style={{ fontSize: 16, fontWeight: 700, letterSpacing: 2 }}>
+                          {issuedPins[m.id]}
+                        </span>
+                        <button
+                          className="secondary"
+                          onClick={() => {
+                            navigator.clipboard.writeText(issuedPins[m.id]).then(() => {
+                              setCopiedPin(issuedPins[m.id])
+                              setTimeout(() => setCopiedPin(null), 1500)
+                            })
+                          }}
+                        >
+                          {copiedPin === issuedPins[m.id] ? 'Copied!' : 'Copy'}
+                        </button>
+                        <button
+                          className="secondary"
+                          onClick={() => setIssuedPins(prev => {
+                            const next = { ...prev }
+                            delete next[m.id]
+                            return next
+                          })}
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )}
                 {editingId === m.id && (
                   <tr>
                     <td colSpan={6} style={{ background: 'var(--bg-hover)' }}>

@@ -320,6 +320,27 @@ export async function getFolderName(folderId: string): Promise<string | null> {
   }
 }
 
+/**
+ * Which Shared Drive contains this folder? Lets the welcome screen join an
+ * assigned project whose server registry row predates the sharedDriveId
+ * column (or was registered without it) — the folder id alone is enough,
+ * Drive itself knows the rest. Returns null when the folder isn't visible
+ * to this Google account (or isn't on a Shared Drive at all).
+ */
+export async function resolveSharedDriveIdForFolder(folderId: string): Promise<string | null> {
+  try {
+    const drive = await getDrive()
+    const res = await drive.files.get({
+      fileId: folderId,
+      fields: 'driveId',
+      supportsAllDrives: true
+    })
+    return res.data.driveId ?? null
+  } catch {
+    return null
+  }
+}
+
 export async function listSharedDrives(): Promise<{ id: string; name: string }[]> {
   const drive = await getDrive()
   const results: { id: string; name: string }[] = []
@@ -580,6 +601,10 @@ async function buildTree(
 
   for (const entry of dirEntries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (entry.name.startsWith('.') || IGNORED.includes(entry.name)) continue
+    // parts.json is FrameCAD-managed metadata (the Parts tab is its UI).
+    // As a tree row it just sat there flagged "New" — clutter that reads
+    // like something's wrong. It still syncs/publishes; it's only hidden.
+    if (entry.isFile() && dir === rootDir && entry.name === 'parts.json') continue
 
     const fullPath = path.join(dir, entry.name)
     const relativePath = path.relative(rootDir, fullPath).replace(/\\/g, '/')

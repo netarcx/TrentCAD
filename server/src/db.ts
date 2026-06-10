@@ -489,6 +489,14 @@ const MIGRATIONS: string[] = [
   `
   CREATE INDEX IF NOT EXISTS projects_driveFolderId_idx ON projects(driveFolderId);
   `,
+  // v24: PINs issuable FOR AN EXISTING MEMBER (re-enroll on a new laptop,
+  // recover after a wiped install). A bound PIN attaches the enrolling
+  // device directly to this member row — no new member is created and no
+  // githubUsername match is needed (most students never set one). NULL =
+  // the classic new-identity PIN, unchanged.
+  `
+  ALTER TABLE pins ADD COLUMN boundMemberId INTEGER REFERENCES members(id) ON DELETE CASCADE;
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an

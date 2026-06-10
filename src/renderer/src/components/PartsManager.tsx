@@ -106,7 +106,7 @@ export default function PartsManager(props: Props) {
   else if (pendingCount > 0) saveStatus = `${pendingCount} pending change${pendingCount === 1 ? '' : 's'}`
 
   return (
-    <div className="admin-section">
+    <div className="admin-section parts-manager">
       <h3>Parts Manager</h3>
       <p className="admin-hint">
         Inline-edit metadata for every part in the project. Edits apply

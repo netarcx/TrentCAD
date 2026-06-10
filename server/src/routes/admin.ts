@@ -119,7 +119,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     const rows = getDb().prepare(
       `SELECT code, role, displayName, githubUsername, expiresAt, createdAt,
               capabilities, allowedProjectIds, autoOpenProjectId, kioskMode, archiveMode,
-              maxUses, useCount
+              maxUses, useCount, boundMemberId
          FROM pins
         WHERE useCount < maxUses
           AND (expiresAt IS NULL OR expiresAt > ?)
@@ -138,6 +138,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       archiveMode: number
       maxUses: number
       useCount: number
+      boundMemberId: number | null
     }>
     return {
       pins: rows.map(r => ({
@@ -154,6 +155,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         archiveMode: r.archiveMode === 1,
         maxUses: r.maxUses,
         useCount: r.useCount,
+        boundMemberId: r.boundMemberId,
       })),
     }
   })
@@ -362,6 +364,10 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
           `DELETE FROM pins WHERE LOWER(githubUsername) = LOWER(?) AND useCount < maxUses`
         ).run(gh)
       }
+      // Re-enroll PINs bound by member id would reactivate them the same way.
+      getDb().prepare(
+        `DELETE FROM pins WHERE boundMemberId = ? AND useCount < maxUses`
+      ).run(id)
     }
 
     logAudit({
@@ -374,12 +380,53 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     return { success: true }
   })
 
+  // Issue a re-enrollment PIN for an EXISTING member — new laptop, wiped
+  // install, returning student. The PIN is bound to the member row, so
+  // enrolling with it attaches the new device to this member (same role,
+  // capabilities, allowlist) instead of minting a duplicate identity.
+  app.post<{ Params: { id: string }; Body: { ttlMs?: number | null; maxUses?: number } }>(
+    '/api/admin/members/:id/pin',
+    async (req, reply) => {
+      const id = Number.parseInt(req.params.id, 10)
+      if (!Number.isFinite(id)) return reply.code(400).send({ error: 'Invalid member id' })
+      const member = getDb().prepare(
+        `SELECT id, displayName, githubUsername, role, status FROM members WHERE id = ?`
+      ).get(id) as { id: number; displayName: string; githubUsername: string | null; role: Role; status: string } | undefined
+      if (!member) return reply.code(404).send({ error: 'Member not found' })
+      if (member.status !== 'active') {
+        return reply.code(400).send({ error: 'Member is deactivated — set them active first, then issue the PIN.' })
+      }
+      const pin = issuePin({
+        role: member.role,
+        displayName: member.displayName,
+        githubUsername: member.githubUsername,
+        createdBy: req.member!.id,
+        // Same promise the first-launch wizard makes for its invite PIN:
+        // single-use, 7 days. Both overridable per request.
+        ttlMs: req.body?.ttlMs === null ? null : (req.body?.ttlMs ?? 7 * 24 * 3600 * 1000),
+        maxUses: typeof req.body?.maxUses === 'number' ? req.body.maxUses : 1,
+        boundMemberId: member.id,
+      })
+      logAudit({
+        actorId: req.member!.id,
+        actorLabel: req.member!.displayName,
+        action: 'pin.create',
+        target: pin.code,
+        detail: `re-enroll member:${id} (${member.displayName})`,
+      })
+      return pin
+    }
+  )
+
   app.delete<{ Params: { id: string } }>('/api/admin/members/:id', async (req, reply) => {
     const id = Number.parseInt(req.params.id, 10)
     if (!Number.isFinite(id)) return reply.code(400).send({ error: 'Invalid member id' })
     if (id === req.member!.id) {
       return reply.code(400).send({ error: "Can't delete yourself" })
     }
+    // The foreign_keys pragma is off, so the boundMemberId REFERENCES clause
+    // won't cascade — clear this member's re-enroll PINs explicitly.
+    getDb().prepare(`DELETE FROM pins WHERE boundMemberId = ?`).run(id)
     const result = getDb().prepare(`DELETE FROM members WHERE id = ?`).run(id)
     if (result.changes === 0) return reply.code(404).send({ error: 'Member not found' })
     logAudit({

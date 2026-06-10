@@ -209,10 +209,22 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
     const githubUsername = pinRow.githubUsername || null
 
     // Reuse an existing member row only for the PIN's own bound identity —
-    // the same person enrolling a second device with an identity-bound PIN.
-    // An unbound PIN always creates a fresh member row.
+    // either an explicit boundMemberId (a "re-enroll this existing member"
+    // PIN issued from the Members page) or the PIN's bound githubUsername
+    // (the same person enrolling a second device). An unbound PIN always
+    // creates a fresh member row.
     let member: MemberRow | undefined
-    if (githubUsername) {
+    if (pinRow.boundMemberId != null) {
+      member = db.prepare(
+        `SELECT * FROM members WHERE id = ?`
+      ).get(pinRow.boundMemberId) as MemberRow | undefined
+      if (!member) {
+        // The member was hard-deleted after this PIN was issued. Refuse
+        // rather than silently minting a brand-new identity the admin
+        // didn't intend. (The PIN use is burned; the admin can reissue.)
+        return reply.code(410).send({ error: 'The member this PIN was issued for no longer exists. Ask your admin for a new PIN.' })
+      }
+    } else if (githubUsername) {
       member = db.prepare(
         `SELECT * FROM members WHERE LOWER(githubUsername) = LOWER(?)`
       ).get(githubUsername) as MemberRow | undefined

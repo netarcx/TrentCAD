@@ -87,7 +87,9 @@ export default function Reports() {
         </div>
 
         {visible.length === 0 ? (
-          <div className="hint">No {showResolved ? '' : 'open '}reports. 🎉</div>
+          // No emoji here — the server box often lacks an emoji font and it
+          // rendered as a tofu box (□) in the admin UI.
+          <div className="hint">No {showResolved ? '' : 'open '}reports — all clear.</div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {visible.map(r => (

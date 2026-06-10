@@ -1,6 +1,6 @@
 {
   "name": "framecad-server",
-  "version": "1.0.1-rc.2",
+  "version": "1.0.1-rc.3",
   "description": "Self-hosted team-coordination server for FrameCAD",
   "private": true,
   "type": "module",
@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "dev:ui": "npm --prefix ui run dev",
-    "build": "npm run build:ui && node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p .",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p . && npm run build:ui",
     "build:ui": "npm --prefix ui ci --no-audit --no-fund && npm --prefix ui run build",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",

@@ -91,12 +91,22 @@ export default function ActivityView({ history }: Props) {
 
   const totalLabel = `${history.length} event${history.length === 1 ? '' : 's'}`
 
+  // Header matches the sibling full-page tabs (Parts Manager, Manufacturing
+  // Queue): big h2 title + admin-hint description, not a bare panel strip.
+  const titles = (
+    <div className="activity-view-titles">
+      <h2>Activity</h2>
+      <p className="admin-hint">
+        Everything the team has published, newest first — straight from the
+        team server's publish history.
+      </p>
+    </div>
+  )
+
   if (history.length === 0) {
     return (
       <div className="activity-view">
-        <div className="activity-view-header">
-          <h3>Activity</h3>
-        </div>
+        <div className="activity-view-header">{titles}</div>
         <div className="activity-view-empty">
           Nothing has happened yet. Publish your first changes and they'll show up here.
         </div>
@@ -107,7 +117,7 @@ export default function ActivityView({ history }: Props) {
   return (
     <div className="activity-view">
       <div className="activity-view-header">
-        <h3>Activity</h3>
+        {titles}
         <span className="activity-view-count">{totalLabel}</span>
       </div>
       <div className="activity-feed">

@@ -874,6 +874,8 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   ipcMain.handle('google-sign-out', () => googleAuth.googleSignOut())
 
   ipcMain.handle('drive-list-shared-drives', () => driveOps.listSharedDrives())
+  ipcMain.handle('drive-resolve-shared-drive', (_e, folderId: string) =>
+    driveOps.resolveSharedDriveIdForFolder(folderId))
   ipcMain.handle('drive-list-folders', (_e, sharedDriveId: string) =>
     driveOps.listDriveFolders(sharedDriveId))
 

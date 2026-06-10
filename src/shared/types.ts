@@ -668,6 +668,10 @@ export interface IpcApi {
   googleSignOut(): Promise<void>
   /** Shared Drives the signed-in user can see. */
   driveListSharedDrives(): Promise<DriveSharedDrive[]>
+  /** Which Shared Drive contains this folder — lets the welcome list join an
+   *  assigned project whose registry row never recorded a sharedDriveId.
+   *  Null when the folder isn't visible to the signed-in account. */
+  driveResolveSharedDrive(folderId: string): Promise<string | null>
   /** Top-level folders inside a Shared Drive (the project picker). */
   driveListFolders(sharedDriveId: string): Promise<DriveFolder[]>
   /** Download a Drive folder into a local dir and open it as the active

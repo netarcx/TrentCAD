@@ -187,6 +187,7 @@ export default function ManufacturingQueue({ onClose, embedded = false }: Props)
             placeholder="e.g. Shelf B3"
             maxLength={60}
             autoComplete="off"
+            className="mfg-location-input"
           />
         </div>
 
@@ -257,7 +258,9 @@ export default function ManufacturingQueue({ onClose, embedded = false }: Props)
 
         <div className="actions">
           <button className="toolbar-btn" onClick={refresh}>Refresh</button>
-          <button className="toolbar-btn primary" onClick={onClose}>Close</button>
+          {/* Embedded (sidebar tab / kiosk shell) has no overlay to close —
+              a primary "Close" button there is a dead/confusing affordance. */}
+          {!embedded && <button className="toolbar-btn primary" onClick={onClose}>Close</button>}
         </div>
     </>
   )

@@ -237,23 +237,10 @@ export default function Wizard() {
               placeholder="FRC Team 2129"
               autoFocus
             />
-            <label>GitHub org (optional)</label>
-            <input
-              value={gitHubOrg}
-              onChange={e => setGitHubOrg(e.target.value)}
-              placeholder="netarcx"
-            />
-            <div className="hint" style={{ marginTop: 4 }}>
-              Only used for the optional "create a repo on GitHub" helper on
-              the Projects page. Leave blank — FrameCAD stores CAD in Google
-              Drive, not GitHub.
-            </div>
-            <label>Project prefix (optional)</label>
-            <input
-              value={projectPrefix}
-              onChange={e => setProjectPrefix(e.target.value)}
-              placeholder="frc2129-"
-            />
+            {/* GitHub org + project prefix are GitHub-era leftovers — Team
+                Settings marks them "Legacy / optional — currently unused",
+                so the first-launch wizard doesn't ask new operators for
+                them. Still editable in Team Settings for old deployments. */}
             <div className="wizard-nav">
               <button className="link" onClick={() => setStep('project')}>
                 Skip for now

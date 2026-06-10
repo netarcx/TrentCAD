@@ -173,6 +173,9 @@ export function issuePin(args: {
   kioskMode?: boolean
   archiveMode?: boolean
   maxUses?: number
+  /** Bind this PIN to an EXISTING member row: enrolling with it attaches
+   *  the device to that member instead of creating a new identity. */
+  boundMemberId?: number | null
 }): IssuedPin {
   const now = Date.now()
   const ttl = args.ttlMs === undefined ? DEFAULT_PIN_TTL_MS : args.ttlMs
@@ -206,8 +209,8 @@ export function issuePin(args: {
     try {
       getDb().prepare(
         `INSERT INTO pins (code, role, displayName, githubUsername, expiresAt, createdBy, createdAt,
-                           capabilities, allowedProjectIds, autoOpenProjectId, kioskMode, archiveMode, maxUses)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                           capabilities, allowedProjectIds, autoOpenProjectId, kioskMode, archiveMode, maxUses, boundMemberId)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         code,
         args.role,
@@ -222,6 +225,7 @@ export function issuePin(args: {
         kioskMode ? 1 : 0,
         archiveMode ? 1 : 0,
         maxUses,
+        args.boundMemberId ?? null,
       )
       return { code, role: args.role, expiresAt, capabilities, allowedProjectIds, autoOpenProjectId, kioskMode, archiveMode, maxUses }
     } catch (err) {
@@ -251,6 +255,8 @@ export interface PinRecord {
   archiveMode: number  // SQLite stores boolean as 0/1
   maxUses: number
   useCount: number
+  /** Member row this PIN re-enrolls (null = classic new-identity PIN). */
+  boundMemberId: number | null
 }
 
 /** Look up a PIN. Does NOT consume it. Returns null if unknown. */

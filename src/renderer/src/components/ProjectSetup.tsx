@@ -148,7 +148,9 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
     !!teamSnapshot.me?.capabilities?.openProject &&
     (
       teamSnapshot.me.role !== 'student' ||
-      (teamSnapshot.projects?.some(p => !!p.driveFolderId && !!p.sharedDriveId) ?? false)
+      // A folder id alone is enough — DriveJoin resolves the containing
+      // Shared Drive when the registry row never recorded one.
+      (teamSnapshot.projects?.some(p => !!p.driveFolderId) ?? false)
     )
   const serverProjectByDriveId = new Map(
     (teamSnapshot?.projects ?? [])
@@ -766,9 +768,13 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
                   ? recentProjects.find(r => r.backend === 'drive' && r.driveFolderId === p.driveFolderId)
                   : undefined
                 // A not-yet-downloaded project is joinable when the server
-                // recorded its Drive coordinates — clicking it starts a
-                // pre-targeted download instead of being a dead row.
-                const joinable = !local && !!p.driveFolderId && !!p.sharedDriveId
+                // recorded its Drive folder — clicking it starts a
+                // pre-targeted download instead of being a dead row. A
+                // missing sharedDriveId (rows registered before that column
+                // existed, or with the optional field left blank) is fine:
+                // DriveJoin resolves the containing Shared Drive from the
+                // folder id itself.
+                const joinable = !local && !!p.driveFolderId
                 const interactive = !!local || joinable
                 const RowTag = interactive ? 'button' : 'div'
                 return (
@@ -776,14 +782,14 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
                   key={p.id}
                   type={interactive ? 'button' : undefined}
                   className={'project-list-row' + (interactive ? '' : ' project-list-row-static')}
-                  title={local ? local.path : joinable ? `Download “${p.name}” from Google Drive` : 'Not available to join yet — your admin hasn’t linked this project to a Google Drive folder.'}
+                  title={local ? local.path : joinable ? `Download “${p.name}” from Google Drive` : 'Not available to join yet — your admin hasn’t recorded this project’s Google Drive folder ID on the team server.'}
                   disabled={interactive ? isLoading : undefined}
                   onClick={
                     local
                       ? () => onOpenProject(local.path)
                       : joinable
                         ? () => {
-                            setJoinTarget({ sharedDriveId: p.sharedDriveId!, folderId: p.driveFolderId!, name: p.name })
+                            setJoinTarget({ sharedDriveId: p.sharedDriveId ?? '', folderId: p.driveFolderId!, name: p.name })
                             setMode('drive')
                           }
                         : undefined

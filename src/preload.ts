@@ -313,6 +313,9 @@ const api: IpcApi = {
   driveListSharedDrives: () =>
     ipcRenderer.invoke('drive-list-shared-drives'),
 
+  driveResolveSharedDrive: (folderId) =>
+    ipcRenderer.invoke('drive-resolve-shared-drive', folderId),
+
   driveListFolders: (sharedDriveId) =>
     ipcRenderer.invoke('drive-list-folders', sharedDriveId),
 

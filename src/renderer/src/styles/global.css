@@ -1044,15 +1044,21 @@ body.slam-shake {
 
 .activity-view-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   padding: 16px 20px 12px;
   border-bottom: 1px solid var(--border);
 }
 
-.activity-view-header h3 {
-  font-size: 14px;
-  font-weight: 600;
+/* Title treatment matches the sibling tabs (Parts Manager, Shop). */
+.activity-view-titles h2 {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0 0 4px;
+}
+
+.activity-view-titles .admin-hint {
+  margin: 0;
 }
 
 .activity-view-count {
@@ -1069,7 +1075,7 @@ body.slam-shake {
 .activity-view-empty {
   color: var(--text-muted);
   font-size: 13px;
-  padding: 20px 0;
+  padding: 20px;
 }
 
 .activity-view-item {
@@ -2239,7 +2245,8 @@ body.slam-shake {
 }
 
 .mfg-operator-bar input {
-  width: 90px;
+  /* Wide enough that the uppercased placeholder ("E.G. JD") isn't clipped. */
+  width: 110px;
   padding: 6px 10px;
   background: var(--bg-primary);
   border: 1px solid var(--accent);
@@ -2256,6 +2263,11 @@ body.slam-shake {
 .mfg-operator-bar input:focus {
   border-color: var(--accent-hover);
   box-shadow: 0 0 0 2px var(--accent-tint);
+}
+
+/* Free-text location ("Shelf B3") needs more room than 2-6 initials. */
+.mfg-operator-bar input.mfg-location-input {
+  width: 170px;
 }
 
 .mfg-operator-hint {
@@ -3612,7 +3624,10 @@ body.slam-shake {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--bg-surface);
+  /* --bg-surface vanished against the modal background — the "step 2 of 6"
+     dots looked like a single lone dot. Use the border tone so the upcoming
+     steps are visible but clearly inactive. */
+  background: var(--border);
   transition: background 0.2s;
 }
 
@@ -3992,6 +4007,13 @@ body.slam-shake {
   max-width: 720px;
 }
 
+/* The Parts Manager table needs all of its columns (release, method,
+   material, mass, cost) — clipped to the 720px reading-width cap it grew a
+   horizontal scrollbar while most of the page sat empty. */
+.admin-content > .parts-manager {
+  max-width: 1100px;
+}
+
 .admin-content h3 {
   font-size: 16px;
   font-weight: 600;
@@ -4008,6 +4030,20 @@ body.slam-shake {
   color: var(--text-secondary);
   margin-top: 10px;
   margin-bottom: 4px;
+}
+
+/* Checkbox rows are sentence-style toggles, not field captions — without
+   this the generic label rule above wins on specificity and renders them
+   as squashed all-caps block text with the checkbox jammed against it. */
+.admin-content label.admin-checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text-primary);
 }
 
 .admin-content input[type="text"],

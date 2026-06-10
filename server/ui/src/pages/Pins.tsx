@@ -24,6 +24,8 @@ interface PinRow {
   archiveMode: boolean
   maxUses: number
   useCount: number
+  /** Set when this PIN re-enrolls an existing member (issued from Members). */
+  boundMemberId?: number | null
 }
 
 interface IssuedPin {
@@ -312,6 +314,15 @@ export default function Pins() {
                   <td>
                     {p.displayName || p.githubUsername || <span className="hint">anyone</span>}
                     {p.githubUsername && <span className="mono" style={{ marginLeft: 6, opacity: 0.7 }}>@{p.githubUsername}</span>}
+                    {p.boundMemberId != null && (
+                      <span
+                        className="pill"
+                        style={{ marginLeft: 6, color: 'var(--accent)', background: 'var(--accent-tint)' }}
+                        title="Re-enrolls an existing member — signs the new device into their account"
+                      >
+                        RE-ENROLL
+                      </span>
+                    )}
                   </td>
                   <td className="mono">{p.useCount}/{p.maxUses}</td>
                   <td className="mono" title={JSON.stringify(p.capabilities)}>

@@ -245,7 +245,13 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     // .framecad/drive-manifest.json. Opening anything else is an error —
     // there is no git fallback. New projects start as "make a folder in the
     // team's Shared Drive, then Join from Google Drive".
-    const driveConfig = await driveProject.open(dirPath).catch(() => null)
+    // open() returns null ONLY when the folder has no
+    // .framecad/drive-manifest.json — a genuine "this isn't a project".
+    // Any other failure (network, I/O) throws with its real cause; let that
+    // propagate instead of mislabeling every failure "not a FrameCAD project"
+    // (which used to send a signed-out user to "Join from Google Drive" — the
+    // very thing they couldn't do — for a project they'd already downloaded).
+    const driveConfig = await driveProject.open(dirPath)
     if (!driveConfig) {
       throw new Error('This folder isn’t a FrameCAD project. Use “Join from Google Drive” to download a project first.')
     }

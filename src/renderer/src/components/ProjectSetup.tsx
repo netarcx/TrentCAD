@@ -102,6 +102,42 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
     window.api.getRecentProjects().then(setRecentProjects).catch(() => {})
   }, [])
 
+  // Google Drive sign-in status. Opening an already-downloaded project talks
+  // to Drive (sync / publish / locks, plus a legacy-manifest name back-fill),
+  // so a not-signed-in open dead-ends in a confusing "isn't a FrameCAD
+  // project" error. We grey out the local-open rows on this and offer an
+  // inline sign-in instead. null = still checking → treated as unlocked so the
+  // rows don't flash disabled on load.
+  const [googleSignedIn, setGoogleSignedIn] = useState<boolean | null>(null)
+  const [signingIn, setSigningIn] = useState(false)
+  const refreshGoogleStatus = useCallback(() => {
+    window.api.googleAuthStatus()
+      .then(s => setGoogleSignedIn(!!s.signedIn))
+      .catch(() => setGoogleSignedIn(false))
+  }, [])
+  useEffect(() => { refreshGoogleStatus() }, [refreshGoogleStatus])
+  // Re-check on returning to the home view — a DriveJoin sign-in (or a
+  // Settings sign-out) may have flipped it while we were away.
+  useEffect(() => {
+    if (mode === 'select') refreshGoogleStatus()
+  }, [mode, refreshGoogleStatus])
+
+  const signInToGoogle = useCallback(async () => {
+    setSigningIn(true)
+    try {
+      const s = await window.api.googleSignIn()
+      setGoogleSignedIn(!!s.signedIn)
+    } catch {
+      // user closed the consent window / denied — leave it locked
+    } finally {
+      setSigningIn(false)
+    }
+  }, [])
+
+  // Local (already-downloaded) projects can only be opened once Google Drive
+  // is connected. Download / Join rows are exempt — DriveJoin signs in itself.
+  const driveLocked = googleSignedIn === false
+
   // Welcome-screen "report an issue" reminder + inline form. Reports go to the
   // team server's admin Reports page (same pipe as the error-banner Report
   // button), so the admin sees problems fast instead of hearing them in person.
@@ -736,6 +772,33 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
           </div>
         )}
 
+        {/* Not signed in to Google Drive → opening a downloaded project would
+            fail. Surface a clear sign-in prompt and grey out the local-open
+            rows below until it's connected. */}
+        {teamSnapshot?.enrolled && driveLocked && (
+          <div
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              gap: 12, flexWrap: 'wrap', margin: '20px auto 0', padding: '12px 16px',
+              border: '1px solid var(--border, rgba(255,255,255,0.12))', borderRadius: 8,
+              background: 'var(--overlay-0, rgba(255,255,255,0.03))', maxWidth: 520
+            }}
+          >
+            <span style={{ fontSize: 13, opacity: 0.9 }}>
+              <HardDrive size={14} strokeWidth={1.75} style={{ verticalAlign: '-2px', marginRight: 6 }} />
+              Sign in to Google Drive to open your projects.
+            </span>
+            <button
+              type="button"
+              className="toolbar-btn primary"
+              onClick={signInToGoogle}
+              disabled={signingIn}
+            >
+              {signingIn ? 'Opening Google…' : 'Sign in with Google'}
+            </button>
+          </div>
+        )}
+
         {/* Enrolled: render the list of projects the team server has
             granted this member access to. This is INFORMATIONAL only —
             joining a project happens through "Join from Google Drive"
@@ -795,23 +858,29 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
                 // folder id itself.
                 const joinable = !local && !!p.driveFolderId
                 const interactive = !!local || joinable
+                // A downloaded project can't be opened until Google Drive is
+                // connected; the download/join rows are exempt (DriveJoin signs
+                // in itself).
+                const localLocked = !!local && driveLocked
                 const RowTag = interactive ? 'button' : 'div'
                 return (
                 <RowTag
                   key={p.id}
                   type={interactive ? 'button' : undefined}
                   className={'project-list-row' + (interactive ? '' : ' project-list-row-static')}
-                  title={local ? local.path : joinable ? `Download “${p.name}” from Google Drive` : 'Not available to join yet — your admin hasn’t recorded this project’s Google Drive folder ID on the team server.'}
-                  disabled={interactive ? isLoading : undefined}
+                  title={localLocked ? 'Sign in to Google Drive to open this project' : local ? local.path : joinable ? `Download “${p.name}” from Google Drive` : 'Not available to join yet — your admin hasn’t recorded this project’s Google Drive folder ID on the team server.'}
+                  disabled={interactive ? (isLoading || localLocked) : undefined}
                   onClick={
-                    local
-                      ? () => onOpenProject(local.path)
-                      : joinable
-                        ? () => {
-                            setJoinTarget({ sharedDriveId: p.sharedDriveId ?? '', folderId: p.driveFolderId!, name: p.name })
-                            setMode('drive')
-                          }
-                        : undefined
+                    localLocked
+                      ? undefined
+                      : local
+                        ? () => onOpenProject(local.path)
+                        : joinable
+                          ? () => {
+                              setJoinTarget({ sharedDriveId: p.sharedDriveId ?? '', folderId: p.driveFolderId!, name: p.name })
+                              setMode('drive')
+                            }
+                          : undefined
                   }
                 >
                   <div className="project-list-row-main">
@@ -847,10 +916,12 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
               type="button"
               className="setup-mfg-button"
               onClick={() => onEnterManufacturingView?.()}
-              disabled={recentProjects.length === 0}
-              title={recentProjects.length === 0
-                ? 'Open a project first — the manufacturing queue lives inside a project'
-                : 'Shop-floor view: just what needs to be made'}
+              disabled={recentProjects.length === 0 || driveLocked}
+              title={driveLocked
+                ? 'Sign in to Google Drive first'
+                : recentProjects.length === 0
+                  ? 'Open a project first — the manufacturing queue lives inside a project'
+                  : 'Shop-floor view: just what needs to be made'}
             >
               <Factory size={14} strokeWidth={1.75} />
               <span>Manufacturing View</span>
@@ -877,9 +948,9 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
                   key={p.path}
                   type="button"
                   className="project-list-row"
-                  disabled={isLoading}
-                  title={p.path}
-                  onClick={() => onOpenProject(p.path)}
+                  disabled={isLoading || driveLocked}
+                  title={driveLocked ? 'Sign in to Google Drive to open this project' : p.path}
+                  onClick={driveLocked ? undefined : () => onOpenProject(p.path)}
                 >
                   <div className="project-list-row-main">
                     <div className="project-list-row-name">

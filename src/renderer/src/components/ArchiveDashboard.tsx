@@ -64,10 +64,36 @@ export default function ArchiveDashboard(props: Props) {
     return () => clearInterval(id)
   }, [])
 
+  // Archive mirroring is pure Google Drive download, so it dead-ends with a
+  // "Not signed in to Google" error on every project when signed out. Track
+  // sign-in status and offer an inline sign-in instead of N identical red
+  // card errors with no way to act on them.
+  const [googleSignedIn, setGoogleSignedIn] = useState<boolean | null>(null)
+  const [signingIn, setSigningIn] = useState(false)
+  useEffect(() => {
+    window.api.googleAuthStatus()
+      .then(s => setGoogleSignedIn(!!s.signedIn))
+      .catch(() => setGoogleSignedIn(false))
+  }, [])
+
   async function syncNow(): Promise<void> {
     setBusy(true)
     try { setStatus(await window.api.archiveSyncNow()) }
     finally { setBusy(false) }
+  }
+
+  async function signInToGoogle(): Promise<void> {
+    setSigningIn(true)
+    try {
+      const s = await window.api.googleSignIn()
+      setGoogleSignedIn(!!s.signedIn)
+      // Kick a sync straight away so the mirror starts filling in.
+      if (s.signedIn) setStatus(await window.api.archiveSyncNow())
+    } catch {
+      /* user closed the consent window — stay signed out */
+    } finally {
+      setSigningIn(false)
+    }
   }
 
   async function chooseRoot(): Promise<void> {
@@ -118,7 +144,12 @@ export default function ArchiveDashboard(props: Props) {
             </p>
           </div>
           <span className="spacer" />
-          <button className="toolbar-btn" onClick={syncNow} disabled={busy || syncing}>
+          {googleSignedIn === false && (
+            <button className="toolbar-btn primary" onClick={signInToGoogle} disabled={signingIn}>
+              <HardDriveDownload size={15} /> {signingIn ? 'Opening Google…' : 'Sign in with Google'}
+            </button>
+          )}
+          <button className="toolbar-btn" onClick={syncNow} disabled={busy || syncing || googleSignedIn === false}>
             <RefreshCw size={15} className={syncing ? 'spin' : ''} /> Sync now
           </button>
         </div>

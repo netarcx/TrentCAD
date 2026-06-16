@@ -670,11 +670,35 @@ export default function App() {
     }
   }
 
+  // When a Drive op fails because Google auth dropped — a sign-out, or a 401
+  // that invalidated the token mid-session — the only recovery used to be
+  // closing the project and re-signing-in from the welcome screen. Detect that
+  // specific error and offer an inline "Sign in with Google" right on the
+  // banner instead. (Matches the message thrown by getDrive() in drive.ts.)
+  const [reSigningIn, setReSigningIn] = useState(false)
+  const isAuthError = !!error && /not signed in to google/i.test(error)
+  const reSignInToGoogle = useCallback(async () => {
+    setReSigningIn(true)
+    try {
+      const s = await window.api.googleSignIn()
+      if (s.signedIn) dismissError()
+    } catch {
+      /* user closed the consent window — leave the banner up */
+    } finally {
+      setReSigningIn(false)
+    }
+  }, [dismissError])
+
   const displayError = error
   const errorBanner = error && (
     <div className="error-banner">
       <span className="error-banner-message" title={displayError ?? ''}>{displayError}</span>
       <div className="error-banner-actions">
+        {isAuthError && (
+          <button onClick={reSignInToGoogle} className="primary" disabled={reSigningIn}>
+            {reSigningIn ? 'Opening Google…' : 'Sign in with Google'}
+          </button>
+        )}
         {reportState === 'idle' && (
           <button
             onClick={() => setReportState('confirm')}

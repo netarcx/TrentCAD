@@ -68,7 +68,12 @@ export async function open(dir: string): Promise<ProjectConfig | null> {
   // name / local basename are last-resort fallbacks only (offline + legacy).
   let driveName = manifest.projectFolderName
   if (!driveName) {
-    const fetched = await getFolderName(manifest.projectFolderId)
+    // Cosmetic back-fill of the locked display name for legacy manifests.
+    // Best-effort and NON-FATAL: when Drive is unreachable (signed out /
+    // offline) this must not make open() throw — otherwise the caller
+    // mislabels a perfectly valid project as "not a FrameCAD project". The
+    // project still opens with a fallback name; a later open re-tries.
+    const fetched = await getFolderName(manifest.projectFolderId).catch(() => null)
     if (fetched) {
       driveName = fetched
       // Persist through the serialized manifest queue (never a bare save) so

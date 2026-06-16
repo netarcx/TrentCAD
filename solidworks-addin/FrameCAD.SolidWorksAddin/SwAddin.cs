@@ -36,6 +36,19 @@ namespace FrameCAD.SolidWorksAddin
         // holding a closed-doc RCW. This hook proactively cleans up.
         private DPartDocEvents_DestroyNotifyEventHandler _massHookDestroyHandler;
 
+        // Rename / Save-As detection for the active ASSEMBLY or DRAWING.
+        // Parts get rename detection bundled into the mass hook above, but
+        // assemblies and drawings have no single mass property, so they need
+        // their own save hooks purely to report a Save-As to FrameCAD. Each
+        // SolidWorks document type has its own delegate type in the interop,
+        // so the handler field can't be shared across them.
+        private AssemblyDoc _renameHookAsm;
+        private DAssemblyDocEvents_FileSavePostNotifyEventHandler _renameHookAsmHandler;
+        private DAssemblyDocEvents_DestroyNotifyEventHandler _renameHookAsmDestroy;
+        private DrawingDoc _renameHookDrw;
+        private DDrawingDocEvents_FileSavePostNotifyEventHandler _renameHookDrwHandler;
+        private DDrawingDocEvents_DestroyNotifyEventHandler _renameHookDrwDestroy;
+
         /// <summary>
         /// Best-effort release of a COM RCW. SolidWorks holds its own
         /// references internally — dropping ours just collapses our
@@ -99,7 +112,7 @@ namespace FrameCAD.SolidWorksAddin
             // escapes across the COM boundary and can destabilize the unload.
             if (_swEvents != null)
                 _swEvents.ActiveDocChangeNotify -= OnActiveDocChange;
-            UnhookMassNotify();
+            UnhookActiveDocNotify();
 
             try { _taskPaneControl?.StopHealthPolling(); } catch { /* teardown */ }
             try { _taskPaneHost?.ReleaseHandle(); } catch { /* teardown */ }
@@ -113,10 +126,11 @@ namespace FrameCAD.SolidWorksAddin
         }
 
         /// <summary>
-        /// Detach any FileSavePostNotify handler we previously attached.
-        /// Safe to call when no hook is active.
+        /// Detach any FileSavePostNotify / DestroyNotify handlers we previously
+        /// attached to the active part, assembly, or drawing. Safe to call when
+        /// no hook is active.
         /// </summary>
-        private void UnhookMassNotify()
+        private void UnhookActiveDocNotify()
         {
             if (_massHookPart != null)
             {
@@ -129,91 +143,175 @@ namespace FrameCAD.SolidWorksAddin
                     try { _massHookPart.DestroyNotify -= _massHookDestroyHandler; } catch { /* doc may already be closed */ }
                 }
             }
+            if (_renameHookAsm != null)
+            {
+                if (_renameHookAsmHandler != null)
+                {
+                    try { _renameHookAsm.FileSavePostNotify -= _renameHookAsmHandler; } catch { /* doc may already be closed */ }
+                }
+                if (_renameHookAsmDestroy != null)
+                {
+                    try { _renameHookAsm.DestroyNotify -= _renameHookAsmDestroy; } catch { /* doc may already be closed */ }
+                }
+            }
+            if (_renameHookDrw != null)
+            {
+                if (_renameHookDrwHandler != null)
+                {
+                    try { _renameHookDrw.FileSavePostNotify -= _renameHookDrwHandler; } catch { /* doc may already be closed */ }
+                }
+                if (_renameHookDrwDestroy != null)
+                {
+                    try { _renameHookDrw.DestroyNotify -= _renameHookDrwDestroy; } catch { /* doc may already be closed */ }
+                }
+            }
             _massHookPart = null;
             _massHookHandler = null;
             _massHookDestroyHandler = null;
+            _renameHookAsm = null;
+            _renameHookAsmHandler = null;
+            _renameHookAsmDestroy = null;
+            _renameHookDrw = null;
+            _renameHookDrwHandler = null;
+            _renameHookDrwDestroy = null;
         }
 
         /// <summary>
-        /// Hook FileSavePostNotify on the currently-active PartDoc so that
-        /// every save automatically pushes the part's mass to FrameCAD's
-        /// metadata. Assemblies and drawings are skipped (only parts have a
-        /// single mass property). Called from OnActiveDocChange whenever
-        /// the user switches documents.
+        /// Hook save notifications on the currently-active document.
+        ///
+        /// For a PART we hook FileSavePostNotify to (a) auto-push the part's
+        /// mass to FrameCAD on every save and (b) detect a Save-As / rename.
+        /// For an ASSEMBLY or DRAWING we hook FileSavePostNotify only for
+        /// rename detection (they have no single mass property). Each document
+        /// type exposes its own delegate type, so the three branches can't
+        /// share a handler. Called from OnActiveDocChange whenever the user
+        /// switches documents.
         /// </summary>
-        private void HookMassNotifyOnActiveDoc()
+        private void HookActiveDocNotify()
         {
-            UnhookMassNotify();
+            UnhookActiveDocNotify();
             if (_swApp == null) return;
             try
             {
-                var part = _swApp.ActiveDoc as PartDoc;
-                if (part == null) return;  // not a part — nothing to mass-track
+                var model = _swApp.ActiveDoc as ModelDoc2;
+                if (model == null) return;
 
-                // Capture the part in the closure rather than re-reading
-                // _swApp.ActiveDoc when the save fires — by then the user
-                // may have switched documents and ActiveDoc would point at
-                // a different model, making us compute mass for the wrong
-                // part.
-                var hookedPart = part;
                 // Capture the path we last saw this doc at, so a save to a
                 // DIFFERENT path (Save-As / rename) can be reported to FrameCAD.
                 // "" for a brand-new never-saved doc (a first save is not a
-                // rename — the IsNullOrEmpty guard below skips it).
+                // rename — MaybeReportRename's empty guard skips it). The
+                // closure mutates this so we don't re-fire on the next save.
                 var hookedPath = "";
-                try { hookedPath = (part as ModelDoc2)?.GetPathName() ?? ""; } catch { }
-                _massHookHandler = (int saveType, string fileName) =>
-                {
-                    // Fire-and-forget; mass push must NOT block the SW save.
-                    // Errors here would corrupt the save event chain, so
-                    // swallow them and let the user retry manually if needed.
-                    try { _ = OnPartSavedPushMassAsync(hookedPart, fileName); }
-                    catch { /* never throw from a SW event handler */ }
+                try { hookedPath = model.GetPathName() ?? ""; } catch { }
 
-                    // Rename / Save-As detection: the doc was saved to a path
-                    // different from where we last saw it. Tell FrameCAD so the
-                    // manifest + metadata move BY IDENTITY (the desktop decides
-                    // copy-vs-rename by whether the old file still exists), rather
-                    // than relying on the fragile basename-guess rename tracking.
-                    // Only react to SolidWorks files — a STEP/STL/PDF export also
-                    // fires this notify with the export path, which is NOT a rename.
-                    try
-                    {
-                        var newExt = System.IO.Path.GetExtension(fileName ?? "").ToLowerInvariant();
-                        var isSwFile = newExt == ".sldprt" || newExt == ".sldasm" || newExt == ".slddrw";
-                        if (isSwFile &&
-                            !string.IsNullOrEmpty(hookedPath) &&
-                            !string.Equals(hookedPath, fileName, StringComparison.OrdinalIgnoreCase))
-                        {
-                            var oldPath = hookedPath;
-                            hookedPath = fileName;  // don't re-fire on the next save
-                            _ = ReportRenameAsync(oldPath, fileName);
-                        }
-                    }
-                    catch { /* never throw from a SW event handler */ }
-                    return 0;  // event handlers return HRESULT-like int
-                };
-                _massHookDestroyHandler = () =>
+                var part = model as PartDoc;
+                if (part != null)
                 {
-                    // Proactively clean up when the doc closes so we
-                    // don't leak a stale PartDoc RCW until the next
-                    // ActiveDocChangeNotify (which may not fire if
-                    // this was the last open document). DestroyNotify
-                    // delegate signature is int(void) — no args.
-                    try { UnhookMassNotify(); } catch { /* best effort */ }
-                    return 0;
-                };
-                part.FileSavePostNotify += _massHookHandler;
-                try { part.DestroyNotify += _massHookDestroyHandler; }
-                catch { _massHookDestroyHandler = null; /* not fatal */ }
-                _massHookPart = part;
+                    // Capture the part in the closure rather than re-reading
+                    // _swApp.ActiveDoc when the save fires — by then the user
+                    // may have switched documents and ActiveDoc would point at
+                    // a different model, making us compute mass for the wrong
+                    // part.
+                    var hookedPart = part;
+                    _massHookHandler = (int saveType, string fileName) =>
+                    {
+                        // Fire-and-forget; mass push must NOT block the SW save.
+                        // Errors here would corrupt the save event chain, so
+                        // swallow them and let the user retry manually if needed.
+                        try { _ = OnPartSavedPushMassAsync(hookedPart, fileName); }
+                        catch { /* never throw from a SW event handler */ }
+                        hookedPath = MaybeReportRename(hookedPath, fileName);
+                        return 0;  // event handlers return HRESULT-like int
+                    };
+                    _massHookDestroyHandler = () =>
+                    {
+                        // Proactively clean up when the doc closes so we don't
+                        // leak a stale RCW until the next ActiveDocChangeNotify
+                        // (which may not fire if this was the last open doc).
+                        // DestroyNotify delegate signature is int(void) — no args.
+                        try { UnhookActiveDocNotify(); } catch { /* best effort */ }
+                        return 0;
+                    };
+                    part.FileSavePostNotify += _massHookHandler;
+                    try { part.DestroyNotify += _massHookDestroyHandler; }
+                    catch { _massHookDestroyHandler = null; /* not fatal */ }
+                    _massHookPart = part;
+                    return;
+                }
+
+                var asm = model as AssemblyDoc;
+                if (asm != null)
+                {
+                    _renameHookAsmHandler = (int saveType, string fileName) =>
+                    {
+                        hookedPath = MaybeReportRename(hookedPath, fileName);
+                        return 0;
+                    };
+                    _renameHookAsmDestroy = () =>
+                    {
+                        try { UnhookActiveDocNotify(); } catch { /* best effort */ }
+                        return 0;
+                    };
+                    asm.FileSavePostNotify += _renameHookAsmHandler;
+                    try { asm.DestroyNotify += _renameHookAsmDestroy; }
+                    catch { _renameHookAsmDestroy = null; /* not fatal */ }
+                    _renameHookAsm = asm;
+                    return;
+                }
+
+                var drw = model as DrawingDoc;
+                if (drw != null)
+                {
+                    _renameHookDrwHandler = (int saveType, string fileName) =>
+                    {
+                        hookedPath = MaybeReportRename(hookedPath, fileName);
+                        return 0;
+                    };
+                    _renameHookDrwDestroy = () =>
+                    {
+                        try { UnhookActiveDocNotify(); } catch { /* best effort */ }
+                        return 0;
+                    };
+                    drw.FileSavePostNotify += _renameHookDrwHandler;
+                    try { drw.DestroyNotify += _renameHookDrwDestroy; }
+                    catch { _renameHookDrwDestroy = null; /* not fatal */ }
+                    _renameHookDrw = drw;
+                    return;
+                }
             }
             catch
             {
                 // Some SW versions throw on attaching to closed/invalid docs
-                _massHookHandler = null;
-                _massHookPart = null;
+                UnhookActiveDocNotify();
             }
+        }
+
+        /// <summary>
+        /// Compare the path a document was just saved to against where we last
+        /// saw it. If it moved to a different SolidWorks file (a Save-As /
+        /// rename), report it to FrameCAD so the manifest + metadata move BY
+        /// IDENTITY (the desktop decides copy-vs-rename by whether the old file
+        /// still exists). Returns the path to remember for next time — the new
+        /// path after a rename, otherwise the unchanged one. A STEP/STL/PDF
+        /// export fires the same notify with the export path; the SolidWorks-
+        /// extension check filters those out so they aren't treated as renames.
+        /// </summary>
+        private string MaybeReportRename(string lastPath, string savedFileName)
+        {
+            try
+            {
+                var newExt = System.IO.Path.GetExtension(savedFileName ?? "").ToLowerInvariant();
+                var isSwFile = newExt == ".sldprt" || newExt == ".sldasm" || newExt == ".slddrw";
+                if (isSwFile &&
+                    !string.IsNullOrEmpty(lastPath) &&
+                    !string.Equals(lastPath, savedFileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    _ = ReportRenameAsync(lastPath, savedFileName);
+                    return savedFileName;
+                }
+            }
+            catch { /* never throw from a SW event handler path */ }
+            return lastPath;
         }
 
         /// <summary>
@@ -465,6 +563,13 @@ namespace FrameCAD.SolidWorksAddin
             if (string.IsNullOrEmpty(absolutePath)) return "Empty target path";
             try
             {
+                // Idempotency: FrameCAD may re-issue a pending-create whose
+                // /done ack was lost to a network blip. On the retry the file is
+                // already on disk from the first pass — return success without
+                // recreating, so we never silently overwrite the user's work
+                // with a blank NewPart/NewAssembly.
+                if (File.Exists(absolutePath)) return null;
+
                 // NewPart/NewAssembly use the default template configured in
                 // SolidWorks options. Fall back to NewDocument with the
                 // explicit template path if the simple call fails.
@@ -602,10 +707,17 @@ namespace FrameCAD.SolidWorksAddin
                 {
                     if (openedByUs)
                     {
-                        // CloseDoc takes the document title (its filename), not
-                        // the full path. Best-effort — if it fails the user
-                        // just ends up with an extra doc open.
-                        try { _swApp.CloseDoc(Path.GetFileName(sourceAbsPath)); } catch { }
+                        // CloseDoc matches on the document title. Use the doc's
+                        // OWN title (what SolidWorks itself uses) rather than
+                        // reconstructing it from the path — that survives odd
+                        // extension casing and avoids closing the wrong window.
+                        // Fall back to the filename if the title is unavailable.
+                        // Best-effort: if it fails the user just ends up with an
+                        // extra doc open.
+                        string title = null;
+                        try { title = doc?.GetTitle(); } catch { }
+                        if (string.IsNullOrEmpty(title)) title = Path.GetFileName(sourceAbsPath);
+                        try { _swApp.CloseDoc(title); } catch { }
                     }
                 }
             }
@@ -665,10 +777,11 @@ namespace FrameCAD.SolidWorksAddin
                 {
                     _taskPaneControl?.ClearDocument();
                 }
-                // Re-attach the mass-save hook to whichever PartDoc is now active.
+                // Re-attach the save hooks (mass + rename for parts, rename for
+                // assemblies/drawings) to whichever document is now active.
                 // Done AFTER the task pane updates so the user sees doc info
                 // first; mass push happens later on save.
-                HookMassNotifyOnActiveDoc();
+                HookActiveDocNotify();
             }
             catch
             {

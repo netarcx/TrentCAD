@@ -12,7 +12,9 @@ namespace FrameCAD.SolidWorksAddin
     {
         private readonly FrameCadApiClient _api = new FrameCadApiClient();
         private Timer _healthTimer;
+        private Timer _queueTimer;          // drains pending create/export queue off the health path
         private Timer _messageClearTimer;
+        private System.IO.MemoryStream _logoStream;  // kept open for the logo Image's lifetime
         private string _currentFilePath;
         private string _currentFileState;   // last-known sync state of the active file
         private bool _busy;                 // main action buttons (checkout/sync/publish)
@@ -183,13 +185,17 @@ namespace FrameCAD.SolidWorksAddin
                 var logoPath = System.IO.Path.Combine(dllDir ?? "", "logo.png");
                 if (System.IO.File.Exists(logoPath))
                 {
-                    var ms = new System.IO.MemoryStream();
+                    // Image.FromStream requires the stream stay open for the
+                    // image's lifetime, so hold the reference in a field and
+                    // dispose it (with the image) in Dispose rather than leaking
+                    // it for every add-in load.
+                    _logoStream = new System.IO.MemoryStream();
                     using (var fs = System.IO.File.OpenRead(logoPath))
-                        fs.CopyTo(ms);
-                    ms.Position = 0;
+                        fs.CopyTo(_logoStream);
+                    _logoStream.Position = 0;
                     _logo = new PictureBox
                     {
-                        Image = Image.FromStream(ms),
+                        Image = Image.FromStream(_logoStream),
                         SizeMode = PictureBoxSizeMode.Zoom,
                         Size = new Size(LogoSize, LogoSize),
                         Location = new Point(Pad, 8),
@@ -786,8 +792,19 @@ namespace FrameCAD.SolidWorksAddin
                 _disposed = true;
                 _healthTimer?.Stop();
                 _healthTimer?.Dispose();
+                _queueTimer?.Stop();
+                _queueTimer?.Dispose();
                 _messageClearTimer?.Stop();
                 _messageClearTimer?.Dispose();
+                // Free the logo image and its backing stream (the stream had to
+                // stay open while the image lived). Dispose the image first so
+                // GDI+ isn't left pointing at a closed stream.
+                if (_logo != null)
+                {
+                    _logo.Image?.Dispose();
+                    _logo.Image = null;
+                }
+                _logoStream?.Dispose();
                 // ToolTip is a Component, not a Control — it doesn't get
                 // disposed automatically with our parent chain. Dispose
                 // it explicitly so its native tooltip window is freed
@@ -802,6 +819,7 @@ namespace FrameCAD.SolidWorksAddin
         // request/5s forever when FrameCAD is closed.
         private const int HealthPollFastMs = 5000;
         private const int HealthPollSlowMs = 30000;
+        private const int QueuePollMs = 5000;
 
         // Set while a CheckConnection is in flight so the timer can't
         // start a second poll on top — concurrent polls could stomp
@@ -811,13 +829,45 @@ namespace FrameCAD.SolidWorksAddin
 
         public void StartHealthPolling()
         {
+            // Defensive: dispose any existing timers first so a second
+            // StartHealthPolling (re-init) can't orphan the first set and
+            // leave two pollers ticking.
+            StopHealthPolling();
+
             _healthTimer = new Timer { Interval = HealthPollFastMs };
             _healthTimer.Tick += async (s, e) =>
             {
-                if (_polling) return;
-                await CheckConnection();
+                // async void: an exception escaping here is an unobserved fault
+                // that can take down the SolidWorks host. CheckConnection
+                // swallows its own network errors, but guard the whole tick
+                // regardless so a stray throw just skips this poll.
+                try
+                {
+                    if (_polling) return;
+                    await CheckConnection();
+                }
+                catch { /* keep polling on the next tick */ }
             };
             _healthTimer.Start();
+
+            // The pending create/export queue is polled on its OWN timer, NOT
+            // inside the health tick: draining an export runs a synchronous
+            // SolidWorks SaveAs on the UI thread that can take minutes for a big
+            // assembly. Keeping it off the health path means the connection dot
+            // and button state stay responsive instead of wedging behind it.
+            _queueTimer = new Timer { Interval = QueuePollMs };
+            _queueTimer.Tick += async (s, e) =>
+            {
+                try
+                {
+                    if (!_connected) return;   // nothing to drain while down
+                    await ProcessPendingCreates();
+                    await ProcessPendingExports();
+                }
+                catch { /* next tick retries */ }
+            };
+            _queueTimer.Start();
+
             _ = CheckConnection();
         }
 
@@ -825,6 +875,10 @@ namespace FrameCAD.SolidWorksAddin
         {
             _healthTimer?.Stop();
             _healthTimer?.Dispose();
+            _healthTimer = null;
+            _queueTimer?.Stop();
+            _queueTimer?.Dispose();
+            _queueTimer = null;
         }
 
         private async System.Threading.Tasks.Task CheckConnection()
@@ -871,9 +925,8 @@ namespace FrameCAD.SolidWorksAddin
                     if (coord != null) _coordState = coord;
                 }
                 catch { /* keep previous role */ }
-
-                await ProcessPendingCreates();
-                await ProcessPendingExports();
+                // Pending create/export draining runs on _queueTimer, decoupled
+                // from this liveness poll so a long export SaveAs can't wedge it.
             }
 
             SafeInvoke(() =>
@@ -1704,8 +1757,15 @@ namespace FrameCAD.SolidWorksAddin
             LayoutAll();
         }
 
+        /// <summary>True once we've learned the project root from /api/health.
+        /// Until then we can't judge whether a file is inside the project.</summary>
+        private bool ProjectRootKnown => !string.IsNullOrEmpty(_currentProjectPath);
+
         private bool IsUnderProject(string absolutePath)
         {
+            // Returns true when we can't confirm (no path / unknown root) so a
+            // missing root never produces a false "outside the project" alarm —
+            // callers that show that warning must gate on ProjectRootKnown.
             if (string.IsNullOrEmpty(absolutePath) || string.IsNullOrEmpty(_currentProjectPath)) return true;
             var norm = absolutePath.Replace("\\", "/");
             var root = _currentProjectPath.Replace("\\", "/").TrimEnd('/') + "/";
@@ -1720,8 +1780,11 @@ namespace FrameCAD.SolidWorksAddin
                 // A 404 from /api/file = not in the project tree. Distinguish a
                 // file saved OUTSIDE the project (a real foot-gun — its edits
                 // never sync and its references may point at a stray copy) from
-                // a brand-new in-project part that just isn't tracked yet.
-                if (!IsUnderProject(path))
+                // a brand-new in-project part that just isn't tracked yet. Only
+                // assert "outside" once we actually know the project root;
+                // until then fall back to the neutral "Not tracked" rather than
+                // a misleading red warning.
+                if (ProjectRootKnown && !IsUnderProject(path))
                 {
                     ShowFileCard(System.IO.Path.GetFileName(path), "", "",
                         "⚠ Outside the project — won't sync", CRed, "");
@@ -1847,7 +1910,11 @@ namespace FrameCAD.SolidWorksAddin
         {
             if (string.IsNullOrEmpty(_currentFilePath) || _busy) return;
             _busy = true;
-            SetButtonStates(false, false);
+            // Disable everything while busy WITHOUT wiping the cached Check Out /
+            // Check In availability (ApplyButtonStates already gates on !_busy);
+            // the finally re-applies it so the buttons aren't left dead if the
+            // post-op refresh fails.
+            ApplyButtonStates();
             ShowMessage("Checking out…");
             try
             {
@@ -1883,7 +1950,7 @@ namespace FrameCAD.SolidWorksAddin
                 UpdateForDocument(_currentFilePath);
             }
             catch (Exception ex) { SafeInvoke(() => ShowMessage(ex.Message, true)); }
-            finally { _busy = false; }
+            finally { _busy = false; SafeInvoke(() => ApplyButtonStates()); }
         }
 
         private async System.Threading.Tasks.Task DoCheckIn()
@@ -1906,7 +1973,9 @@ namespace FrameCAD.SolidWorksAddin
                 if (confirm != DialogResult.OK) return;
             }
             _busy = true;
-            SetButtonStates(false, false);
+            // See DoCheckOut: disable via _busy without clobbering the cached
+            // Check Out / Check In availability; the finally re-applies it.
+            ApplyButtonStates();
             ShowMessage("Checking in…");
             try
             {
@@ -1938,7 +2007,7 @@ namespace FrameCAD.SolidWorksAddin
                 UpdateForDocument(_currentFilePath);
             }
             catch (Exception ex) { SafeInvoke(() => ShowMessage(ex.Message, true)); }
-            finally { _busy = false; }
+            finally { _busy = false; SafeInvoke(() => ApplyButtonStates()); }
         }
 
         private async System.Threading.Tasks.Task DoSync()
@@ -1959,7 +2028,10 @@ namespace FrameCAD.SolidWorksAddin
                 if (confirm != DialogResult.OK) return;
             }
             _busy = true;
-            SetButtonStates(false, false);
+            // Sync doesn't change lock state, so preserve the cached Check Out /
+            // Check In availability (disable via _busy only); the finally
+            // re-applies it immediately instead of waiting on the doc refresh.
+            ApplyButtonStates();
             ShowMessage("Downloading…");
             try
             {
@@ -1973,7 +2045,7 @@ namespace FrameCAD.SolidWorksAddin
                     UpdateForDocument(_currentFilePath);
             }
             catch (Exception ex) { SafeInvoke(() => ShowMessage(ex.Message, true)); }
-            finally { _busy = false; }
+            finally { _busy = false; SafeInvoke(() => ApplyButtonStates()); }
         }
 
         private async System.Threading.Tasks.Task DoPublish()
@@ -1986,7 +2058,9 @@ namespace FrameCAD.SolidWorksAddin
                 var message = dialog.CommitMessage ?? "";
 
                 _busy = true;
-                SetButtonStates(false, false);
+                // Disable via _busy without wiping the cached Check Out /
+                // Check In availability (publish doesn't change lock state).
+                ApplyButtonStates();
                 ShowMessage("Uploading…");
                 try
                 {
@@ -2001,11 +2075,10 @@ namespace FrameCAD.SolidWorksAddin
                 finally
                 {
                     _busy = false;
-                    // SetButtonStates(false, false) above clobbered the cached
-                    // lock-state availability — re-derive it from the active
-                    // doc (and re-enable the connection-gated buttons now)
-                    // instead of leaving Check Out / Check In dead until the
-                    // user switches documents.
+                    // Re-enable the connection-gated buttons and restore the
+                    // cached Check Out / Check In availability now we're idle;
+                    // also refresh from the active doc in case the publish
+                    // flipped its modified/synced state.
                     if (!string.IsNullOrEmpty(_currentFilePath))
                         UpdateForDocument(_currentFilePath);
                     SafeInvoke(() => ApplyButtonStates());
@@ -2028,7 +2101,9 @@ namespace FrameCAD.SolidWorksAddin
             {
                 if (dialog.ShowDialog() != DialogResult.OK) return;
                 _busy = true;
-                SetButtonStates(false, false);
+                // Disable via _busy without wiping the cached Check Out /
+                // Check In availability; the finally restores it.
+                ApplyButtonStates();
                 try
                 {
                     var desc = string.IsNullOrWhiteSpace(dialog.Description) ? null : dialog.Description;
@@ -2107,10 +2182,10 @@ namespace FrameCAD.SolidWorksAddin
                 finally
                 {
                     _busy = false;
-                    // Same clobber as DoPublish: SetButtonStates(false, false)
-                    // wiped the cached Check Out / Check In availability, and
-                    // the failure paths above never refresh it. Re-derive
-                    // from the active doc so the buttons come back.
+                    // Restore the cached Check Out / Check In availability and
+                    // re-enable the connection-gated buttons now we're idle;
+                    // also refresh from the active doc (the new part may have
+                    // become the active document).
                     if (!string.IsNullOrEmpty(_currentFilePath))
                         UpdateForDocument(_currentFilePath);
                     SafeInvoke(() => ApplyButtonStates());

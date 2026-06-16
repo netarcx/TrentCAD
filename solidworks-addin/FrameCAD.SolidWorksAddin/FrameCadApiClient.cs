@@ -438,8 +438,8 @@ namespace FrameCAD.SolidWorksAddin
         }
 
         /// <summary>
-        /// Append a comment to the part's metadata. Author is resolved server-side
-        /// from `git config user.name`.
+        /// Append a comment to the part's metadata. Author is resolved
+        /// server-side from the enrolled team-server member name.
         /// </summary>
         public async Task<ApiResult> AddCommentAsync(string absolutePath, string text)
         {
@@ -457,12 +457,12 @@ namespace FrameCAD.SolidWorksAddin
         }
 
         /// <summary>
-        /// Fetch the current user's coordination-repo role so the add-in
-        /// can gate UI elements (e.g. hide released/manufactured release
-        /// pills for students) to match the desktop's role tiers.
-        /// Returns null on any failure — caller should treat that as
-        /// "unknown role" and fall back to allowing everything, since
-        /// standalone mode (no coord repo) genuinely has no roles.
+        /// Fetch the current user's team-server role so the add-in can gate
+        /// UI elements (e.g. hide released/manufactured release pills for
+        /// students) to match the desktop's role tiers. Returns null on any
+        /// failure — caller should treat that as "unknown role" and fall back
+        /// to allowing everything, since standalone mode (not enrolled with a
+        /// team server) genuinely has no roles.
         /// </summary>
         public async Task<CoordStateDto> GetCoordStateAsync()
         {

@@ -320,7 +320,11 @@ const api: IpcApi = {
     ipcRenderer.invoke('drive-list-folders', sharedDriveId),
 
   driveJoinProject: (args) =>
-    ipcRenderer.invoke('drive-join-project', args)
+    ipcRenderer.invoke('drive-join-project', args),
+
+  // Lore VCS storage backend
+  loreJoinProject: (args) =>
+    ipcRenderer.invoke('lore-join-project', args)
 }
 
 contextBridge.exposeInMainWorld('api', api)

@@ -12,26 +12,22 @@
  * (e.g. 'parts.json', '.framecad/parts-meta.json').
  */
 
-import * as driveProject from './drive-project'
-import { pullMetadataFile, pushMetadataFile } from './drive'
+import { getActiveBackend } from './project-backend'
 
 /**
  * Refresh the local copy of a shared file from the team's latest before a
  * read-modify-write, so a reservation/edit never clobbers a teammate's.
- * Best effort — no-op if no project is open.
+ * Best effort — no-op if no project is open. Routes to whichever storage
+ * backend (Drive / Lore) currently has a project open.
  */
 export async function pullSharedFile(relPath: string): Promise<void> {
-  const dir = driveProject.currentDir()
-  if (!dir) return
-  await pullMetadataFile(dir, relPath)
+  await getActiveBackend().pullSharedFile(relPath)
 }
 
 /**
- * Upload the local copy of a shared file to the project's Drive folder.
+ * Upload the local copy of a shared file to the project's storage backend.
  * Throws on failure so the caller can roll back an in-memory reservation.
  */
 export async function pushSharedFile(relPath: string, _message: string): Promise<void> {
-  const dir = driveProject.currentDir()
-  if (!dir) throw new Error('No project is open')
-  await pushMetadataFile(dir, relPath)
+  await getActiveBackend().pushSharedFile(relPath)
 }

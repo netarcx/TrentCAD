@@ -3,7 +3,7 @@ import path from 'path'
 import type { BrowserWindow } from 'electron'
 import type { FileEntry, ProjectConfig, PartMeta } from '@shared/types'
 import * as partsOps from './parts'
-import * as driveProject from './drive-project'
+import { getActiveBackend } from './project-backend'
 import * as teamServer from './teamServer'
 import { toGitRel, toProjectRel, getEffectiveProjectRoot, getProjectSubpath } from './paths'
 import {
@@ -14,21 +14,19 @@ import {
   markSwSeen
 } from './export-queue'
 
-// Lock key for the open Drive project = its Drive folder id (server
-// migration v15). Throws if no Drive project is open.
-function restDriveKey(): string {
-  const key = driveProject.currentConfig()?.driveFolderId
-  if (!key) throw new Error('No Drive project open')
-  return key
+// Team-server lock/history key for the open project, from the active storage
+// backend (Drive folder id / lore:// URL). Throws if no project is open.
+function projectKey(): string {
+  return getActiveBackend().projectKey()
 }
 
-// Drive locks shaped like the git LockInfo the add-in expects.
+// Locks shaped like the LockInfo the add-in expects.
 async function restDriveLocks(): Promise<{ path: string; owner: string; id: string }[]> {
-  const locks = await teamServer.listDriveLocks(restDriveKey())
+  const locks = await teamServer.listDriveLocks(projectKey())
   return locks.map(l => ({ path: l.filePath, owner: l.ownerName, id: String(l.ownerMemberId) }))
 }
 
-// Stamp lock state onto a Drive file tree (mirrors ipc's getDriveStatusWithLocks).
+// Stamp lock state onto a file tree (mirrors ipc's getStatusWithLocks).
 function applyDriveLocks(
   entries: FileEntry[],
   locks: { path: string; owner: string; id: string }[],
@@ -105,7 +103,7 @@ let writeLock: Promise<void> = Promise.resolve()
 function broadcastStatus(): void {
   const win = getMainWindowRef?.()
   if (!win || win.isDestroyed()) return
-  const statusFiles = driveProject.status()
+  const statusFiles = getActiveBackend().status()
   statusFiles
     .then(files => { if (!win.isDestroyed()) win.webContents.send('file-change', files) })
     .catch(() => {})
@@ -293,7 +291,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
       case 'GET /api/status': {
         if (!currentProject) { json(res, 503, { error: 'No project open' }); return }
-        const files = await driveProject.status()
+        const files = await getActiveBackend().status()
         try {
           applyDriveLocks(files, await restDriveLocks(), teamServer.currentSnapshot().me?.id)
         } catch { /* offline — local status only */ }
@@ -312,10 +310,10 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         // add-in (whose root is the subpath-prefixed effective root) sends
         // subpath-relative paths — translate at the boundary like the meta
         // endpoints do.
-        const driveFiles = await driveProject.status()
+        const driveFiles = await getActiveBackend().status()
         const driveEntry = findEntry(driveFiles, toGitRel(filePath))
         if (!driveEntry) { json(res, 404, { error: 'File not found' }); return }
-        // Drive sync pulls remote changes wholesale; no cheap per-file probe.
+        // Sync pulls remote changes wholesale; no cheap per-file probe.
         json(res, 200, { ...driveEntry, newerOnRemote: false })
         return
       }
@@ -362,7 +360,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           // Locks are keyed by project-root-relative paths (what the desktop's
           // status tree uses); the add-in sends subpath-relative ones, so
           // translate here or the same file gets two independent lock keys.
-          await serialWrite(() => teamServer.acquireDriveLock(restDriveKey(), toGitRel(safePath)))
+          await serialWrite(() => teamServer.acquireDriveLock(projectKey(), toGitRel(safePath)))
           json(res, 200, { success: true })
         } catch (err) {
           json(res, 500, { success: false, error: (err as Error).message })
@@ -378,7 +376,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           return
         }
         try {
-          await serialWrite(() => teamServer.releaseDriveLock(restDriveKey(), toGitRel(safePath)))
+          await serialWrite(() => teamServer.releaseDriveLock(projectKey(), toGitRel(safePath)))
           json(res, 200, { success: true })
         } catch (err) {
           json(res, 500, { success: false, error: (err as Error).message })
@@ -391,7 +389,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         // clobber an unpushed local release-state/comment edit.
         const driveResult = await serialWrite(async () => {
           await (await import('./meta')).flushMetaCommit()
-          return driveProject.sync()
+          return getActiveBackend().sync()
         })
         json(res, driveResult.success ? 200 : 500, driveResult)
         return
@@ -405,10 +403,10 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         // cost edit ships with this publish instead of on the 60s timer.
         const driveResult = await serialWrite(async () => {
           await (await import('./meta')).flushMetaCommit()
-          return driveProject.publish()
+          return getActiveBackend().publish()
         })
         if (driveResult.success && (driveResult.changedPaths?.length ?? 0) > 0) {
-          teamServer.recordDrivePublish(restDriveKey(), (body?.message ?? '').trim(), driveResult.changedPaths ?? [])
+          teamServer.recordDrivePublish(projectKey(), (body?.message ?? '').trim(), driveResult.changedPaths ?? [])
             .catch(() => { /* best effort */ })
         }
         json(res, driveResult.success ? 200 : 500, driveResult)

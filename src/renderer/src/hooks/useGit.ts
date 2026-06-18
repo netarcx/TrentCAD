@@ -81,6 +81,30 @@ export function useGit() {
     }
   }, [])
 
+  // Join a Lore project: clone the `lore://` repo into a local dir, then
+  // transition into the project view (the main process already set
+  // currentProject + started the watcher). Mirror of joinDriveProject — the
+  // backend is invisible above the IPC boundary because getStatus/getHistory/
+  // getLocks dispatch by backend in the main process.
+  const joinLoreProject = useCallback(async (args: {
+    url: string
+    localPath: string
+    name: string
+  }) => {
+    setIsLoading(true)
+    setError(null)
+    try {
+      const config = await window.api.loreJoinProject(args)
+      setProject(config)
+      await fetchAll()
+    } catch (err) {
+      setError((err as Error).message)
+      throw err
+    } finally {
+      setIsLoading(false)
+    }
+  }, [])
+
   const closeProject = useCallback(async () => {
     try { await window.api.closeProject() } catch { /* best effort */ }
     // Drop the renderer-side thumbnail cache so a long session of opening
@@ -228,6 +252,7 @@ export function useGit() {
     selectedFile,
     setSelectedFile,
     joinDriveProject,
+    joinLoreProject,
     openProject,
     closeProject,
     sync,

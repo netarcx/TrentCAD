@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Factory, Settings, UserPlus, HardDrive, Bug } from 'lucide-react'
+import { Factory, Settings, UserPlus, HardDrive, Bug, GitBranch } from 'lucide-react'
 import logoUrl from '../assets/logo.png'
 import TeamEnroll from './TeamEnroll'
 import DriveJoin from './DriveJoin'
+import LoreJoin from './LoreJoin'
 import { prepareSlamSnapshot, triggerWaterSlam } from '../lib/water-slam'
 import type { GlobalAdminConfig, ProjectConfig, TeamSnapshot } from '@shared/types'
 
@@ -15,6 +16,8 @@ interface Props {
     localPath: string
     name: string
   }) => Promise<void>
+  /** Clone + open a Lore project (the experimental storage backend). */
+  onJoinLoreProject: (args: { url: string; localPath: string; name: string }) => Promise<void>
   onOpenProject: (path: string) => Promise<boolean>
   /** Open a project and jump straight into the Manufacturing View
    *  (shop-floor mode). Disabled when there are no recent projects to
@@ -42,7 +45,7 @@ interface Props {
  *  - `enroll`: paste server URL + PIN via TeamEnroll component.
  *  - `drive`: sign in to Google, pick a Shared Drive + folder, download.
  */
-type Mode = 'select' | 'enroll' | 'drive'
+type Mode = 'select' | 'enroll' | 'drive' | 'lore'
 
 // Module-scoped so the once-per-session welcome-logo intro animation
 // only plays the first time the welcome screen mounts in this process.
@@ -87,12 +90,15 @@ function installClickWaves(): void {
   )
 }
 
-export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnterManufacturingView, onOpenAdmin, isLoading, globalAdmin, teamSnapshot, onTeamRefresh }: Props) {
+export default function ProjectSetup({ onJoinDriveProject, onJoinLoreProject, onOpenProject, onEnterManufacturingView, onOpenAdmin, isLoading, globalAdmin, teamSnapshot, onTeamRefresh }: Props) {
   const [mode, setMode] = useState<Mode>('select')
   // When the user clicks a not-yet-downloaded team project, jump into the
   // Drive join flow pre-targeted at that project's Shared Drive + folder
   // (they only pick a save path). Null = generic "Join from Google Drive".
   const [joinTarget, setJoinTarget] = useState<{ sharedDriveId: string; folderId: string; name: string } | null>(null)
+  // Pre-filled lore:// URL when joining a Lore-backed team project from the
+  // list; empty for the generic "Join from Lore" card.
+  const [loreJoinUrl, setLoreJoinUrl] = useState('')
   // Local clones — used to enable the Manufacturing View button (which
   // needs at least one local project) and to surface already-downloaded
   // Google Drive projects so they can be reopened.
@@ -202,6 +208,13 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
       // Shared Drive when the registry row never recorded one.
       (teamSnapshot.projects?.some(p => !!p.driveFolderId) ?? false)
     )
+  // Lore join gate — mirror canJoinDrive's capability/role check (the Lore card
+  // previously gated on `enrolled` alone, letting a student without the
+  // browseTeamProjects capability use it). Lore projects key on a lore:// URL,
+  // not a Drive folder, so there's no driveFolderId precondition.
+  const canJoinLore =
+    !!teamSnapshot?.enrolled &&
+    (!!teamSnapshot.me?.capabilities?.browseTeamProjects || !!autoOpenTarget)
   const serverProjectByDriveId = new Map(
     (teamSnapshot?.projects ?? [])
       .filter(p => !!p.driveFolderId)
@@ -210,6 +223,15 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
   const localDriveProjects = recentProjects
     .filter(p => p.backend === 'drive')
     .filter(p => teamSnapshot?.me?.role !== 'student' || (!!p.driveFolderId && serverProjectByDriveId.has(p.driveFolderId)))
+  // Locally-cloned Lore projects (the experimental backend). Opening one needs
+  // no Google sign-in, so they're never drive-locked.
+  const localLoreProjects = recentProjects.filter(p => p.backend === 'lore')
+  // Which project the Manufacturing View button would open (mirror App.tsx's
+  // selection: prefer a Drive project, else the first recent). Google sign-in
+  // only gates it when that target is actually a Drive project — a Lore-only
+  // user must not be blocked behind "Sign in to Google Drive first".
+  const mfgTarget = recentProjects.find(r => r.backend === 'drive') ?? recentProjects[0]
+  const mfgDriveLocked = mfgTarget?.backend === 'drive' && driveLocked
   const screensaverActiveRef = useRef(false)
   const bounceStateRef = useRef({
     x: 0, y: 0, vx: 0, vy: 0, naturalX: 0, naturalY: 0
@@ -715,6 +737,32 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
     )
   }
 
+  if (mode === 'lore') {
+    if (!canJoinLore) {
+      return (
+        <div className="setup-screen">
+          <h1>Join from Lore</h1>
+          <div className="setup-form">
+            <p className="form-hint">
+              Your admin hasn't granted you access to join team projects.
+            </p>
+            <div className="form-actions">
+              <button className="toolbar-btn" onClick={() => { setMode('select'); setLoreJoinUrl('') }}>Back</button>
+            </div>
+          </div>
+        </div>
+      )
+    }
+    return (
+      <LoreJoin
+        onBack={() => { setMode('select'); setLoreJoinUrl('') }}
+        onJoinLoreProject={onJoinLoreProject}
+        isLoading={isLoading}
+        initialUrl={loreJoinUrl}
+      />
+    )
+  }
+
   if (mode === 'select') {
     return (
       <div className="setup-screen">
@@ -846,41 +894,52 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
           return (
             <div className="project-list">
               {projects.map(p => {
-                const local = p.driveFolderId
+                // Match a downloaded local clone by the server row's storage
+                // target: a Drive folder id (Drive backend) or a lore:// URL
+                // (Lore backend).
+                const localDrive = p.driveFolderId
                   ? recentProjects.find(r => r.backend === 'drive' && r.driveFolderId === p.driveFolderId)
                   : undefined
+                const localLore = p.loreUrl
+                  ? recentProjects.find(r => r.backend === 'lore' && r.loreUrl === p.loreUrl)
+                  : undefined
+                const local = localDrive ?? localLore
                 // A not-yet-downloaded project is joinable when the server
-                // recorded its Drive folder — clicking it starts a
-                // pre-targeted download instead of being a dead row. A
-                // missing sharedDriveId (rows registered before that column
-                // existed, or with the optional field left blank) is fine:
-                // DriveJoin resolves the containing Shared Drive from the
-                // folder id itself.
-                const joinable = !local && !!p.driveFolderId
+                // recorded a storage target — a Drive folder OR a lore:// URL —
+                // and clicking it starts a pre-targeted join. (Drive: a missing
+                // sharedDriveId is fine; DriveJoin resolves it from the folder
+                // id. Prefer Drive if a row somehow carries both.)
+                const driveJoinable = !local && !!p.driveFolderId
+                const loreJoinable = !local && !p.driveFolderId && !!p.loreUrl
+                const joinable = driveJoinable || loreJoinable
                 const interactive = !!local || joinable
-                // A downloaded project can't be opened until Google Drive is
-                // connected; the download/join rows are exempt (DriveJoin signs
-                // in itself).
-                const localLocked = !!local && driveLocked
+                // A downloaded DRIVE project can't be opened until Google Drive
+                // is connected; Lore locals + the download/join rows are exempt.
+                const localLocked = !!localDrive && driveLocked
                 const RowTag = interactive ? 'button' : 'div'
                 return (
                 <RowTag
                   key={p.id}
                   type={interactive ? 'button' : undefined}
                   className={'project-list-row' + (interactive ? '' : ' project-list-row-static')}
-                  title={localLocked ? 'Sign in to Google Drive to open this project' : local ? local.path : joinable ? `Download “${p.name}” from Google Drive` : 'Not available to join yet — your admin hasn’t recorded this project’s Google Drive folder ID on the team server.'}
+                  title={localLocked ? 'Sign in to Google Drive to open this project' : local ? local.path : driveJoinable ? `Download “${p.name}” from Google Drive` : loreJoinable ? `Clone “${p.name}” from the Lore server` : 'Not available to join yet — your admin hasn’t recorded this project’s storage location on the team server.'}
                   disabled={interactive ? (isLoading || localLocked) : undefined}
                   onClick={
                     localLocked
                       ? undefined
                       : local
                         ? () => onOpenProject(local.path)
-                        : joinable
+                        : driveJoinable
                           ? () => {
                               setJoinTarget({ sharedDriveId: p.sharedDriveId ?? '', folderId: p.driveFolderId!, name: p.name })
                               setMode('drive')
                             }
-                          : undefined
+                          : loreJoinable
+                            ? () => {
+                                setLoreJoinUrl(p.loreUrl!)
+                                setMode('lore')
+                              }
+                            : undefined
                   }
                 >
                   <div className="project-list-row-main">
@@ -893,7 +952,7 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
                   </div>
                   <div className="project-list-row-status">
                     <span className={'pill ' + (local ? 'pill-local' : 'pill-remote')}>
-                      {local ? '✓ Local' : joinable ? '↓ Download' : 'Google Drive'}
+                      {local ? '✓ Local' : driveJoinable ? '↓ Download' : loreJoinable ? '↓ Clone (Lore)' : 'Unavailable'}
                     </span>
                   </div>
                 </RowTag>
@@ -916,8 +975,8 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
               type="button"
               className="setup-mfg-button"
               onClick={() => onEnterManufacturingView?.()}
-              disabled={recentProjects.length === 0 || driveLocked}
-              title={driveLocked
+              disabled={recentProjects.length === 0 || mfgDriveLocked}
+              title={mfgDriveLocked
                 ? 'Sign in to Google Drive first'
                 : recentProjects.length === 0
                   ? 'Open a project first — the manufacturing queue lives inside a project'
@@ -968,6 +1027,38 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
           )
         })()}
 
+        {/* Locally-cloned Lore projects (experimental backend). No Google
+            sign-in needed to open these — they live on the team's Lore
+            server, not Drive. */}
+        {localLoreProjects.length > 0 && (
+          <div className="project-list" style={{ marginTop: 16 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, opacity: 0.7, margin: '0 0 6px 2px' }}>
+              Your Lore projects <span style={{ fontWeight: 500, opacity: 0.7 }}>(beta)</span>
+            </div>
+            {localLoreProjects.map(p => (
+              <button
+                key={p.path}
+                type="button"
+                className="project-list-row"
+                disabled={isLoading}
+                title={p.path}
+                onClick={() => onOpenProject(p.path)}
+              >
+                <div className="project-list-row-main">
+                  <div className="project-list-row-name">
+                    <GitBranch size={14} strokeWidth={1.75} style={{ verticalAlign: '-2px', marginRight: 6 }} />
+                    {p.name}
+                  </div>
+                  <div className="project-list-row-path" title={p.path}>{p.path}</div>
+                </div>
+                <div className="project-list-row-status">
+                  <span className="pill pill-local">✓ Local</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* Google Drive backend — the primary (and only) way to join a
             project. Requires team enrollment because Drive check-out /
             check-in locks use the team server identity. */}
@@ -982,6 +1073,25 @@ export default function ProjectSetup({ onJoinDriveProject, onOpenProject, onEnte
               <span className="card-title">Join from Google Drive</span>
               <span className="card-desc">
                 Pick a project from your<br />team's Shared Drive
+              </span>
+            </button>
+          </div>
+        )}
+
+        {/* Lore VCS backend (experimental). Requires team enrollment because
+            check-out / check-in locks use the team-server identity, same as
+            Drive. Paste a lore:// project address to clone it. */}
+        {canJoinLore && (
+          <div className="setup-cards" style={{ marginTop: 12 }}>
+            <button
+              className="setup-card"
+              onClick={() => { setLoreJoinUrl(''); setMode('lore') }}
+              title="Join a project stored on your team's Lore VCS server (experimental)"
+            >
+              <span className="card-icon"><GitBranch size={32} strokeWidth={1.5} /></span>
+              <span className="card-title">Join from Lore <span style={{ fontSize: 11, opacity: 0.6, fontWeight: 500 }}>(beta)</span></span>
+              <span className="card-desc">
+                Clone a project from your<br />team's Lore server
               </span>
             </button>
           </div>

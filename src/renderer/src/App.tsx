@@ -64,6 +64,7 @@ export default function App() {
     selectedFile,
     setSelectedFile,
     joinDriveProject,
+    joinLoreProject,
     openProject,
     closeProject,
     sync,
@@ -767,7 +768,7 @@ export default function App() {
       ) : updateReady ? (
         <>
           <span>Update v{updateInfo.version} ready to install</span>
-          <button onClick={() => window.api.restartToUpdate()}>Restart Now</button>
+          <button onClick={() => window.api.restartToUpdate()}>Relaunch Now</button>
         </>
       ) : updateProgress != null ? (
         <>
@@ -911,6 +912,7 @@ export default function App() {
         {kioskStuckBanner}
         <ProjectSetup
           onJoinDriveProject={joinDriveProject}
+          onJoinLoreProject={joinLoreProject}
           onOpenProject={openProject}
           teamSnapshot={teamSnapshot}
           onTeamRefresh={team.refresh}

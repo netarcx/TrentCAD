@@ -7,15 +7,20 @@ export interface ProjectConfig {
    *  before unpinned entries on the Open Project picker. */
   pinned?: boolean
   /** Storage backend for this project. 'git' (the historical default —
-   *  Git + LFS) or 'drive' (Google Drive). Absent = 'git' for any
-   *  recent-project entry written before the Drive backend shipped. */
-  backend?: 'git' | 'drive'
+   *  Git + LFS), 'drive' (Google Drive), or 'lore' (self-hosted Lore VCS).
+   *  Absent = 'git' for any recent-project entry written before the Drive
+   *  backend shipped. */
+  backend?: 'git' | 'drive' | 'lore'
   /** Drive backend only: the Shared Drive folder id that IS this
    *  project, and the Shared Drive it lives in. Mirrors what the
    *  `.framecad/drive-manifest.json` records, surfaced here so the
    *  renderer and recent-projects list don't have to read the manifest. */
   driveFolderId?: string
   sharedDriveId?: string
+  /** Lore backend only: the project's remote `lore://host:port/repo` URL.
+   *  Mirrors `.framecad/lore-meta.json`; also the team-server lock/history
+   *  key for a Lore project. */
+  loreUrl?: string
 }
 
 export type FileState = 'synced' | 'modified' | 'untracked' | 'locked-by-you' | 'locked-by-other'
@@ -438,6 +443,10 @@ export interface ProjectEntry {
    *  archive mode). Optional — empty on GitHub-only/legacy rows or a
    *  server that doesn't record it. */
   sharedDriveId?: string
+  /** Lore-backed project: the remote `lore://host:port/repo` URL clients
+   *  clone from. When set, the welcome list routes this project to the
+   *  Lore join flow instead of the Drive picker. Optional. */
+  loreUrl?: string
 }
 
 /** What the renderer reads to decide what to render. Mirrors what the
@@ -679,6 +688,15 @@ export interface IpcApi {
   driveJoinProject(args: {
     folderId: string
     sharedDriveId: string
+    localPath: string
+    name: string
+  }): Promise<ProjectConfig>
+
+  // ── Lore VCS storage backend ──
+  /** Clone a `lore://` repository into a local dir and open it as the active
+   *  project. Emits join-progress events while cloning (same channel as Drive). */
+  loreJoinProject(args: {
+    url: string
     localPath: string
     name: string
   }): Promise<ProjectConfig>

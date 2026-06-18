@@ -22,6 +22,8 @@ import * as teamServer from './teamServer'
 import * as archive from './archive'
 import * as googleAuth from './google-auth'
 import * as driveProject from './drive-project'
+import * as loreProject from './lore-project'
+import { getActiveBackend } from './project-backend'
 import * as driveOps from './drive'
 import * as projectPaths from './project-paths'
 import { clearHashCache } from './drive-manifest'
@@ -37,21 +39,19 @@ export function isPublishing(): boolean {
 }
 
 /**
- * The lock key for the currently-open Drive project — its Drive folder
- * id (see server migration v15). Throws if called when no Drive project
- * is open or the manifest somehow lacks a folder id, so a lock call
- * never silently targets the wrong project.
+ * The team-server lock/history key for the currently-open project, supplied by
+ * whichever storage backend is active — the Drive folder id for a Drive
+ * project, the `lore://` URL for a Lore project. Throws when no project is open
+ * so a lock call never silently targets the wrong project.
  */
-function driveProjectKey(): string {
-  const key = driveProject.currentConfig()?.driveFolderId
-  if (!key) throw new Error('No Drive project open (missing Drive folder id)')
-  return key
+function projectKey(): string {
+  return getActiveBackend().projectKey()
 }
 
-async function getDriveStatusWithLocks(): Promise<FileEntry[]> {
-  const files = await driveProject.status()
+async function getStatusWithLocks(): Promise<FileEntry[]> {
+  const files = await getActiveBackend().status()
   try {
-    const locks = await teamServer.listDriveLocks(driveProjectKey())
+    const locks = await teamServer.listDriveLocks(projectKey())
     const me = teamServer.currentSnapshot().me
     const lockMap = new Map(locks.map(l => [l.filePath, l]))
     const applyLocks = (entries: FileEntry[]): void => {
@@ -111,7 +111,7 @@ async function tryStage(rel: string, sessionKey: string | null): Promise<void> {
   // Only pre-upload files this user has checked out — the lock guarantees
   // nobody else is publishing that path, so staging it is safe.
   try {
-    const locks = await teamServer.listDriveLocks(driveProjectKey())
+    const locks = await teamServer.listDriveLocks(projectKey())
     const me = teamServer.currentSnapshot().me
     if (!locks.some(l => l.filePath === rel && l.ownerMemberId === me?.id)) return
   } catch {
@@ -137,7 +137,7 @@ let driveStatusRerun = false
 function runDriveStatus(win: BrowserWindow): void {
   if (driveStatusInFlight) { driveStatusRerun = true; return }
   driveStatusInFlight = true
-  getDriveStatusWithLocks()
+  getStatusWithLocks()
     .then(files => { if (!win.isDestroyed()) win.webContents.send('file-change', files) })
     .catch(() => {})
     .finally(() => {
@@ -148,8 +148,8 @@ function runDriveStatus(win: BrowserWindow): void {
 
 function notifyFileChange(win: BrowserWindow): void {
   if (win.isDestroyed()) return
-  // Drive projects diff the working tree against the Drive manifest.
-  if (driveProject.isOpen()) runDriveStatus(win)
+  // Either backend diffs the working tree against its own record of the project.
+  if (getActiveBackend().isOpen()) runDriveStatus(win)
 }
 
 /**
@@ -163,9 +163,9 @@ function notifyFileChange(win: BrowserWindow): void {
 function broadcastStatus(getMainWindow: () => BrowserWindow | null): void {
   const win = getMainWindow()
   if (!win || win.isDestroyed()) return
-  // Route through the same status+locks read the watcher uses (no Drive
+  // Route through the same status+locks read the watcher uses (no storage
   // write, so it's safe to call right after a mutation).
-  if (driveProject.isOpen()) runDriveStatus(win)
+  if (getActiveBackend().isOpen()) runDriveStatus(win)
 }
 
 function startWatching(dirPath: string, win: BrowserWindow): void {
@@ -188,7 +188,9 @@ function startWatching(dirPath: string, win: BrowserWindow): void {
   })
   watcher.on('all', (event, changedPath) => {
     debouncedNotify()
-    if ((event === 'add' || event === 'change') && typeof changedPath === 'string' && driveProject.isOpen()) {
+    // Background pre-upload is a Drive-only optimization (Lore content-addresses
+    // at publish time and has no staging area).
+    if ((event === 'add' || event === 'change') && typeof changedPath === 'string' && getActiveBackend().supportsStaging) {
       scheduleStage(dirPath, changedPath)
     }
   })
@@ -241,22 +243,19 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   setRestMainWindow(getMainWindow)
 
   ipcMain.handle('open-project', async (_e, dirPath: string) => {
-    // Drive-only backend: a project folder carries a
-    // .framecad/drive-manifest.json. Opening anything else is an error —
-    // there is no git fallback. New projects start as "make a folder in the
-    // team's Shared Drive, then Join from Google Drive".
-    // open() returns null ONLY when the folder has no
-    // .framecad/drive-manifest.json — a genuine "this isn't a project".
-    // Any other failure (network, I/O) throws with its real cause; let that
-    // propagate instead of mislabeling every failure "not a FrameCAD project"
-    // (which used to send a signed-out user to "Join from Google Drive" — the
-    // very thing they couldn't do — for a project they'd already downloaded).
-    const driveConfig = await driveProject.open(dirPath)
-    if (!driveConfig) {
-      throw new Error('This folder isn’t a FrameCAD project. Use “Join from Google Drive” to download a project first.')
+    // Detect which backend's project this folder is. A Drive project carries a
+    // .framecad/drive-manifest.json; a Lore project carries a .lore/ dir plus
+    // .framecad/lore-meta.json. Try Drive first (the incumbent), then Lore.
+    // open() returns null ONLY when the folder isn't that backend's kind of
+    // project — a genuine "this isn't a project". Any other failure (network,
+    // I/O) throws with its real cause; let that propagate instead of
+    // mislabeling every failure "not a FrameCAD project".
+    const config = (await driveProject.open(dirPath)) ?? (await loreProject.open(dirPath))
+    if (!config) {
+      throw new Error('This folder isn’t a FrameCAD project. Use “Join” to download a project first.')
     }
     projectPaths.setProjectPath(dirPath)
-    currentProject = driveConfig
+    currentProject = config
     setRestProject(currentProject)
     // Seed the path-translation cache from the project's admin config so a
     // configured subpath is honoured on FIRST open (file tree, parts, meta,
@@ -287,7 +286,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     // remote .framecad/parts-meta.json and would otherwise clobber a local
     // release-state/comment edit still sitting on the 60s timer.
     await metaOps.flushMetaCommit()
-    const result = await driveProject.sync(progress => {
+    const result = await getActiveBackend().sync(progress => {
       if (win && !win.isDestroyed()) win.webContents.send('publish-progress', progress)
     })
     if (result.success && result.filesUpdated > 0 && Notification.isSupported()) {
@@ -310,13 +309,13 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
       // comments) so a just-made edit publishes with this batch instead of
       // lingering on the 60s timer and shipping in a later, confusing push.
       await metaOps.flushMetaCommit()
-      const result = await driveProject.publish(progress => {
+      const result = await getActiveBackend().publish(progress => {
         if (win && !win.isDestroyed()) win.webContents.send('publish-progress', progress)
       })
       // Record the publish on the team server so it shows in History /
       // Activity. Best effort — a failure here must never fail the publish.
       if (result.success && (result.changedPaths?.length ?? 0) > 0) {
-        teamServer.recordDrivePublish(driveProjectKey(), message?.trim() || '', result.changedPaths ?? [])
+        teamServer.recordDrivePublish(projectKey(), message?.trim() || '', result.changedPaths ?? [])
           .catch(() => { /* offline / not enrolled */ })
       }
       return result
@@ -326,7 +325,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('get-status', async () => {
-    return getDriveStatusWithLocks()
+    return getStatusWithLocks()
   })
 
   ipcMain.handle('get-history', async (_e, limit?: number) => {
@@ -334,7 +333,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     // graph). Empty when offline / not enrolled so the feed renders clean
     // rather than erroring.
     try {
-      return await teamServer.listDrivePublishHistory(driveProjectKey(), limit ?? 100)
+      return await teamServer.listDrivePublishHistory(projectKey(), limit ?? 100)
     } catch (err) {
       console.warn('[drive] publish-history fetch failed:', (err as Error)?.message ?? err)
       return []
@@ -342,25 +341,26 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('check-out', async (_e, filePath: string) => {
-    // Locks live on the team server (Drive folder id keyed). Paths from the
-    // Drive status tree are already project-relative — no subpath translation.
-    await teamServer.acquireDriveLock(driveProjectKey(), filePath)
+    // Locks live on the team server, keyed by the active backend's projectKey
+    // (Drive folder id / lore:// URL). Paths from the status tree are already
+    // project-relative — no subpath translation.
+    await teamServer.acquireDriveLock(projectKey(), filePath)
     broadcastStatus(getMainWindow)
   })
 
   ipcMain.handle('check-in', async (_e, filePath: string) => {
-    await teamServer.releaseDriveLock(driveProjectKey(), filePath)
+    await teamServer.releaseDriveLock(projectKey(), filePath)
     broadcastStatus(getMainWindow)
   })
 
   ipcMain.handle('force-check-in', async (_e, filePath: string) => {
-    await teamServer.releaseDriveLock(driveProjectKey(), filePath, true)
+    await teamServer.releaseDriveLock(projectKey(), filePath, true)
     broadcastStatus(getMainWindow)
   })
 
   ipcMain.handle('get-locks', async () => {
     try {
-      const locks = await teamServer.listDriveLocks(driveProjectKey())
+      const locks = await teamServer.listDriveLocks(projectKey())
       // Map the server's lock shape to the LockInfo the renderer
       // already understands (path / owner / id).
       return locks.map(l => ({
@@ -389,7 +389,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('open-file-explorer', async (_e, filePath: string) => {
-    const projectDir = driveProject.currentDir() ?? projectPaths.getProjectPath()
+    const projectDir = getActiveBackend().currentDir() ?? projectPaths.getProjectPath()
     if (!projectDir) return
     const target = path.join(projectDir, filePath)
     // showItemInFolder silently no-ops on a missing path (e.g. a part number
@@ -469,7 +469,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     // nothing is pending.
     await metaOps.flushMetaCommit()
     currentProject = null
-    driveProject.close()
+    getActiveBackend().close()
     projectPaths.clearProjectPath()
     clearRestProject()
     stopWatching()
@@ -498,7 +498,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('backup-project', async () => {
-    return driveProject.backup()
+    return getActiveBackend().backup()
   })
 
   ipcMain.handle('generate-document', async (_e, type: DocType) => {
@@ -592,7 +592,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     if (!config.cotsDriveFolderId || !config.cotsSharedDriveId) {
       return { success: false, error: 'No COTS Drive folder configured' }
     }
-    const dir = driveProject.currentDir()
+    const dir = getActiveBackend().currentDir()
     if (!dir) return { success: false, error: 'No project open' }
     try {
       await driveOps.syncCotsDrive(dir, config.cotsDriveFolderId, config.cotsSharedDriveId)
@@ -910,6 +910,30 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     reconcilePartNumbersBestEffort()
     if (win) startWatching(config.path, win)
     void syncDriveCotsBestEffort(config.path)
+    return config
+  })
+
+  // ── Lore VCS storage backend ──
+  ipcMain.handle('lore-join-project', async (_e, args: {
+    url: string
+    localPath: string
+    name: string
+  }) => {
+    const win = getMainWindow()
+    const config = await loreProject.join(
+      args.url,
+      args.localPath,
+      args.name,
+      progress => {
+        if (win && !win.isDestroyed()) win.webContents.send('join-progress', progress)
+      }
+    )
+    projectPaths.setProjectPath(config.path)
+    currentProject = config
+    setRestProject(currentProject)
+    try { await partsOps.syncManifest() } catch { /* best effort */ }
+    reconcilePartNumbersBestEffort()
+    if (win) startWatching(config.path, win)
     return config
   })
 

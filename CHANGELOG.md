@@ -5,7 +5,7 @@ All notable changes to FrameCAD are recorded here. The format follows
 uses [SemVer](https://semver.org/) — though for a single-team app the
 versions are mostly chronology markers.
 
-## [1.1.1] — 2026-07-04
+## [1.1.12] — 2026-07-04
 
 Cross-cutting bug-fix pass over the whole product (desktop, team server,
 SolidWorks add-in, and the Lore backend) — 45 audited defects plus 7 issues

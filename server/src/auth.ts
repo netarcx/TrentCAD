@@ -66,12 +66,28 @@ export function generateToken(): string {
 }
 
 /**
- * Hash a token for storage. argon2id with conservative defaults; tokens
- * are random 256-bit values so we don't need brute-force-resistant
- * parameters — we use argon2 mostly to defend against DB-leak replay.
+ * Fast, non-secret lookup key for a bearer token: SHA-256 hex of the token.
+ * Stored (indexed) alongside the argon2 hash so `findDeviceByToken` can
+ * point-lookup the ONE candidate row to verify, instead of argon2-verifying
+ * every active device (an unauthenticated CPU/memory DoS). Safe to store: the
+ * token is 256 bits of randomness, so SHA-256 of it isn't reversible — a DB
+ * leak reveals neither the token nor anything usable to authenticate (auth
+ * still requires the raw token, checked against the argon2 hash).
+ */
+export function tokenLookup(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex')
+}
+
+/**
+ * Hash a token for storage. Tokens are random 256-bit values, so
+ * brute-force-resistant parameters are pointless — a leaked hash can't be
+ * reversed regardless. Use LIGHT argon2 params so the single verify per authed
+ * request (after the tokenLookup index narrows to one row) costs a few ms rather
+ * than ~100ms. Existing hashes with heavier params still verify (argon2.verify
+ * reads params from the encoded hash).
  */
 export function hashToken(token: string): Promise<string> {
-  return argon2.hash(token, { type: argon2.argon2id })
+  return argon2.hash(token, { type: argon2.argon2id, memoryCost: 4096, timeCost: 1, parallelism: 1 })
 }
 
 /**
@@ -332,45 +348,61 @@ declare module 'fastify' {
 }
 
 /**
- * Look up which device owns a given token. Walks every device row and
- * argon2-verifies the candidate; with ≤a few hundred devices per team
- * that's well under a millisecond worst-case, and we avoid storing
- * tokens themselves (only hashes) so a DB leak isn't immediate
- * impersonation.
- *
- * If the team grows past ~1000 devices we'd add a short non-secret
- * prefix index on each token to filter candidates first — for now,
- * the brute walk is fine.
+ * Look up which device owns a given token. Uses the non-secret `tokenLookup`
+ * (SHA-256) index to fetch just the ONE candidate row, then argon2-verifies it.
+ * A bogus token point-lookups zero rows, so it does zero argon2 work — closing
+ * the old "verify every device" DoS. Legacy device rows enrolled before the
+ * tokenLookup column existed have it NULL until they next authenticate; those
+ * are found via a narrow fallback and backfilled on match, so the fallback set
+ * shrinks to empty as devices reconnect.
  */
+type DeviceRow = {
+  dId: number
+  memberId: number
+  label: string
+  tokenHash: string
+  lastSeenAt: number
+  kind: string
+  mId: number
+  displayName: string
+  githubUsername: string | null
+  role: Role
+  status: 'active' | 'inactive'
+  capabilities: string | null
+  allowedProjectIds: string | null
+  autoOpenProjectId: number | null
+  kioskMode: number
+  archiveMode: number
+}
+const DEVICE_ROW_COLS = `d.id AS dId, d.memberId, d.label, d.tokenHash, d.lastSeenAt, d.kind,
+            m.id AS mId, m.displayName, m.githubUsername, m.role, m.status,
+            m.capabilities, m.allowedProjectIds, m.autoOpenProjectId, m.kioskMode, m.archiveMode`
+
 async function findDeviceByToken(token: string): Promise<{
   device: AuthedDevice
   member: AuthedMember
 } | null> {
-  const rows = getDb().prepare(
-    `SELECT d.id AS dId, d.memberId, d.label, d.tokenHash, d.lastSeenAt, d.kind,
-            m.id AS mId, m.displayName, m.githubUsername, m.role, m.status,
-            m.capabilities, m.allowedProjectIds, m.autoOpenProjectId, m.kioskMode, m.archiveMode
-       FROM devices d
-       JOIN members m ON m.id = d.memberId
-      WHERE m.status = 'active'`
-  ).all() as Array<{
-    dId: number
-    memberId: number
-    label: string
-    tokenHash: string
-    lastSeenAt: number
-    kind: string
-    mId: number
-    displayName: string
-    githubUsername: string | null
-    role: Role
-    status: 'active' | 'inactive'
-    capabilities: string | null
-    allowedProjectIds: string | null
-    autoOpenProjectId: number | null
-    kioskMode: number
-    archiveMode: number
-  }>
+  const db = getDb()
+  const lookup = tokenLookup(token)
+  // Fast path: point-lookup by the non-secret token index (0 or 1 rows).
+  let rows = db.prepare(
+    `SELECT ${DEVICE_ROW_COLS}
+       FROM devices d JOIN members m ON m.id = d.memberId
+      WHERE m.status = 'active' AND d.tokenLookup = ?`
+  ).all(lookup) as DeviceRow[]
+  // Fallback ONLY over legacy rows that predate the tokenLookup column (still
+  // NULL). This set empties as each device reconnects and gets backfilled below,
+  // so the old full-table argon2 scan can't be triggered once every device has
+  // authenticated once post-upgrade.
+  let backfilling = false
+  if (rows.length === 0) {
+    rows = db.prepare(
+      `SELECT ${DEVICE_ROW_COLS}
+         FROM devices d JOIN members m ON m.id = d.memberId
+        WHERE m.status = 'active' AND d.tokenLookup IS NULL`
+    ).all() as DeviceRow[]
+    backfilling = true
+  }
 
   // 30 days for browser/web sessions; desktop devices never expire
   // by time (they're revoked explicitly via the admin Devices page
@@ -382,6 +414,10 @@ async function findDeviceByToken(token: string): Promise<{
 
   for (const row of rows) {
     if (await verifyToken(row.tokenHash, token)) {
+      // Backfill the lookup for a legacy row so it takes the fast path next time.
+      if (backfilling) {
+        try { db.prepare(`UPDATE devices SET tokenLookup = ? WHERE id = ?`).run(lookup, row.dId) } catch { /* best effort */ }
+      }
       // Per-kind expiry. An expired web session returns null (401)
       // here so the next request from that browser flips them back
       // to the sign-in screen. The device row stays — admin can

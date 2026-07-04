@@ -21,6 +21,11 @@ export interface ProjectConfig {
    *  Mirrors `.framecad/lore-meta.json`; also the team-server lock/history
    *  key for a Lore project. */
   loreUrl?: string
+  /** Lore backend only: loreUrl was RECOVERED from `.lore/config.toml` because
+   *  the FrameCAD marker was missing, and may be imprecise. While set, the main
+   *  process refuses team-coordinated ops (locks/history/part numbers) under it
+   *  so it can't fork the namespace — the user re-joins to restore the exact URL. */
+  loreUrlUncertain?: boolean
 }
 
 export type FileState = 'synced' | 'modified' | 'untracked' | 'locked-by-you' | 'locked-by-other'

@@ -168,6 +168,44 @@ describe('parts module (with temp project dir)', () => {
     })
   })
 
+  // Regression for the IPC-1 pull-overwrite class: pullSharedFile OVERWRITES the
+  // local parts.json with the team's remote copy, which lacks entries that were
+  // created while the team server was unreachable (they're `provisional` and
+  // never pushed). If those aren't re-attached after the pull, the next create
+  // runs its counter scan against a manifest missing them and re-issues an
+  // already-used number. The default suite's persistence mock is a no-op, so
+  // this hazard is only exercised by making the mock rewrite parts.json.
+  describe('createNewPart offline — pull must not reissue provisional numbers', () => {
+    it('keeps distinct numbers when the pull returns a remote copy lacking the local entry', async () => {
+      const yy = new Date().getFullYear().toString().slice(-2)
+      const persistence = (await import('./persistence')) as unknown as {
+        pullSharedFile: ReturnType<typeof vi.fn>
+      }
+      // Simulate the Drive pull clobbering local parts.json with a stale/empty
+      // remote (the routine "team server down, Drive up" state).
+      const remote = { prefix: `${yy}-2129`, nextCounters: {}, nextAssemblyCounters: {}, entries: {}, assemblies: {} }
+      persistence.pullSharedFile.mockImplementation(async () => {
+        await fs.writeFile(path.join(tempDir, 'parts.json'), JSON.stringify(remote))
+      })
+      try {
+        const a = await parts.createNewPart('', 'first')
+        const b = await parts.createNewPart('', 'second')
+        // Without the re-attach fix, b would collide with a on the same number.
+        expect(a.partNumber).not.toBe(b.partNumber)
+        expect(a.partNumber).toBe(`${yy}-2129-001`)
+        expect(b.partNumber).toBe(`${yy}-2129-002`)
+        // And a's (provisional, unpushed) entry must survive the pull.
+        const manifest = await readManifest(tempDir)
+        const entries = manifest.entries as Record<string, { partNumber: string }>
+        expect(entries[a.filePath]?.partNumber).toBe(a.partNumber)
+        expect(entries[b.filePath]?.partNumber).toBe(b.partNumber)
+      } finally {
+        persistence.pullSharedFile.mockReset()
+        persistence.pullSharedFile.mockResolvedValue(undefined)
+      }
+    })
+  })
+
   describe('createNewAssembly', () => {
     it('reserves the assembly number for a new folder under root', async () => {
       const r = await parts.createNewAssembly('', 'Drivetrain', 'gearboxes etc')

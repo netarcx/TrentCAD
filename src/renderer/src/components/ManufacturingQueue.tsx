@@ -71,6 +71,7 @@ export default function ManufacturingQueue() {
     try {
       const list = await window.api.getManufacturingQueue()
       setItems(list)
+      setError(null) // a later successful refresh must clear a stale error banner
     } catch (err) {
       setError((err as Error).message)
     } finally {

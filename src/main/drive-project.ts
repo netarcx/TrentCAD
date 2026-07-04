@@ -165,13 +165,27 @@ export async function join(
     ? savePath
     : joinTargetDir(savePath, name, folderId, path.sep)
   await assertJoinTargetSafe(localPath, folderId)
-  await downloadProject(folderId, sharedDriveId, localPath, prog => {
+  const forward = (prog: { percent: number; detail?: string }): void => {
     onProgress?.({
       phase: prog.percent >= 100 ? 'done' : 'uploading',
       percent: prog.percent,
       detail: prog.detail
     })
-  }, name)
+  }
+  // Re-joining a project that already exists locally (partial-download repair,
+  // or "reconnect this folder") must NOT clobber unpublished local edits.
+  // downloadProject starts from an empty manifest and renames every remote file
+  // straight over the local copy with no dirty check — a user who re-joins to
+  // reconnect a project that has unpublished changes would lose them all. Route
+  // that case through syncRemote, which downloads missing/changed files but
+  // keeps any locally-modified or untracked file intact (and runs under the
+  // per-project manifest lock, unlike downloadProject's bare saves).
+  const existingManifest = await loadManifest(localPath)
+  if (existingManifest?.projectFolderId === folderId) {
+    await syncRemote(localPath, forward)
+  } else {
+    await downloadProject(folderId, sharedDriveId, localPath, forward, name)
+  }
   const config: ProjectConfig = {
     // `name` is the Drive folder name from the picker — the authoritative
     // display name, now also persisted in the manifest by downloadProject.
@@ -360,7 +374,18 @@ export async function stageFile(relativePath: string): Promise<void> {
   await driveStageFile(current.dir, relativePath)
 }
 
-export async function sync(onProgress?: (p: PublishProgress) => void): Promise<{
+// NOTE: concurrent syncs are already made safe by two other mechanisms, so this
+// deliberately does NOT coalesce: syncRemote serializes on the per-project
+// manifest lock (no manifest corruption from overlapping passes), and the
+// renderer guards the Sync button against a double-click. Crucially, each caller
+// must run with ITS OWN `opts.protectPaths` — coalescing a REST sync (which
+// wants the unpushed meta file protected) onto an in-flight IPC sync (which
+// doesn't) could drop that protection and clobber the edit. A rare redundant
+// pass (IPC + add-in syncing at the same instant) is a fine price for that.
+export async function sync(
+  onProgress?: (p: PublishProgress) => void,
+  opts?: { protectPaths?: Set<string> }
+): Promise<{
   success: boolean
   filesUpdated: number
   error?: string
@@ -385,7 +410,7 @@ export async function sync(onProgress?: (p: PublishProgress) => void): Promise<{
         percent: prog.percent,
         detail: prog.detail
       })
-    }, lockedByMe)
+    }, lockedByMe, opts?.protectPaths)
     // Keep the GUI name in step with Drive: if the folder was renamed on
     // Drive, pick that up here and persist it. Best effort — a failed lookup
     // (offline mid-sync, perms) just leaves the existing name untouched. The

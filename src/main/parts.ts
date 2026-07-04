@@ -168,6 +168,36 @@ export async function saveManifest(manifest: PartsManifest): Promise<void> {
   await fs.rename(tmp, filePath)
 }
 
+/**
+ * `pullSharedFile(parts.json)` OVERWRITES the local manifest with the team's
+ * copy — but entries created while the team server was unreachable are
+ * `provisional` and live ONLY in the local copy until reconciled. Dropping them
+ * makes `nextCounterFor`/`isNumberTaken` run against a manifest missing those
+ * numbers, so the next create re-issues an already-used number (and the saved
+ * file's manifest identity is lost). After any pull-inside-a-mutator, call this
+ * with the PRE-pull local manifest to re-attach that local-only state:
+ * provisional entries, their subsystem (top-level → XX) mapping, and the counter
+ * high-water marks (which also protect against reuse even if an entry is missed,
+ * since counters never move backwards). Mirrors the re-attach in
+ * reconcilePartNumbers.
+ */
+function reattachLocalProvisional(localBefore: PartsManifest, pulled: PartsManifest): void {
+  for (const [relPath, entry] of Object.entries(localBefore.entries)) {
+    if (!entry.provisional) continue
+    if (!pulled.entries[relPath]) pulled.entries[relPath] = entry
+    const topLevel = relPath.replace(/\\/g, '/').split('/')[0]
+    const localNum = localBefore.assemblies[topLevel]
+    if (localNum && !pulled.assemblies[topLevel]) pulled.assemblies[topLevel] = localNum
+  }
+  // Never let a pulled counter regress below our local high-water mark.
+  for (const [scope, n] of Object.entries(localBefore.nextCounters)) {
+    if ((pulled.nextCounters[scope] ?? 0) < n) pulled.nextCounters[scope] = n
+  }
+  for (const [scope, n] of Object.entries(localBefore.nextAssemblyCounters)) {
+    if ((pulled.nextAssemblyCounters[scope] ?? 0) < n) pulled.nextAssemblyCounters[scope] = n
+  }
+}
+
 export function classifyFile(filename: string): PartType | null {
   const ext = path.extname(filename).toLowerCase()
   if (!SOLIDWORKS_EXTS.has(ext)) return null
@@ -435,6 +465,14 @@ async function handleFileMoves(manifest: PartsManifest, currentPaths: Set<string
       if (path.basename(currentPath) === filename && !manifest.entries[currentPath]) {
         manifest.entries[currentPath] = entry
         delete manifest.entries[oldPath]
+        // Repoint any drawing that linked to the old path (mirrors renameEntry).
+        // Without this the drawing dangles: title-block data falls back to the
+        // drawing's own (empty) meta, integrity checks flag it orphaned, and the
+        // reconcile relabel pass misses it so a relabelled part's drawing keeps
+        // the stale number.
+        for (const e of Object.values(manifest.entries)) {
+          if (e.linkedTo === oldPath) e.linkedTo = currentPath
+        }
         // Drag the parts-meta.json entry along so release state,
         // comments, mass/cost/method/material survive the rename
         // instead of orphaning at the old path key.
@@ -504,18 +542,21 @@ export async function setLegacyMode(enabled: boolean): Promise<void> {
   // pull→save→push here racing a syncManifest/createNewPart cycle would push
   // a stale snapshot that drops the concurrent writer's new entries team-wide.
   await withManifestLock(async () => {
-    await pullSharedFile(MANIFEST_FILE)
     const projectDir = getProjectPath()
-    const snapshot = await fs.readFile(path.join(projectDir, MANIFEST_FILE), 'utf-8').catch(() => null)
+    const localBefore = await loadManifest()
+    await pullSharedFile(MANIFEST_FILE)
     const manifest = await loadManifest()
+    reattachLocalProvisional(localBefore, manifest)
+    // Rollback target = the merged manifest BEFORE the flip, so a failed push
+    // reverts only the legacyMode change and keeps the re-attached provisional
+    // entries (the pull's raw copy would drop them again).
+    const rollback = JSON.stringify(manifest, null, 2) + '\n'
     manifest.legacyMode = !!enabled
     await saveManifest(manifest)
     try {
       await pushSharedFile(MANIFEST_FILE, enabled ? 'legacy mode on' : 'legacy mode off')
     } catch (err) {
-      if (snapshot !== null) {
-        await fs.writeFile(path.join(projectDir, MANIFEST_FILE), snapshot)
-      }
+      await fs.writeFile(path.join(projectDir, MANIFEST_FILE), rollback)
       throw err
     }
   })
@@ -530,19 +571,30 @@ export function syncManifest(): Promise<PartsManifest> {
   return p
 }
 
-/** The open project's Drive folder id — the key the team server coordinates
- *  part numbers (and locks) under. Read straight from drive-manifest.json (the
- *  same import-free pattern as isCotsProject) to avoid pulling the Electron-
- *  dependent drive layer into this module. Null when there's no Drive project
- *  (e.g. unit tests) → callers fall back to provisional numbers. */
+/** The open project's team-server coordination key — the key the team server
+ *  coordinates part numbers (and locks) under. Backend-agnostic: a Drive project
+ *  keys on its Drive folder id, a Lore project on its `lore://` URL. Read
+ *  straight from the on-disk marker files (the same import-free pattern as
+ *  isCotsProject) to avoid pulling the Electron-dependent drive/lore layers into
+ *  this module (which would break the unit tests, since Lore's koffi FFI can't
+ *  load under vitest). Must return the SAME value each backend's own
+ *  projectKey() returns. Null when there's no coordinated project (e.g. unit
+ *  tests) → callers fall back to provisional numbers. */
 async function projectKey(): Promise<string | null> {
+  const framecadDir = path.join(getProjectPath(), '.framecad')
+  // Drive project: key is the Drive folder id (drive-project.ts projectKey()).
   try {
-    const f = path.join(getProjectPath(), '.framecad', 'drive-manifest.json')
-    const id = JSON.parse(await fs.readFile(f, 'utf-8')).projectFolderId
-    return typeof id === 'string' && id ? id : null
-  } catch {
-    return null
-  }
+    const id = JSON.parse(await fs.readFile(path.join(framecadDir, 'drive-manifest.json'), 'utf-8')).projectFolderId
+    if (typeof id === 'string' && id) return id
+  } catch { /* not a Drive project */ }
+  // Lore project: key is the lore:// URL (lore-project.ts projectKey()). A URL
+  // recovered from .lore/config.toml (loreUrlUncertain) may be wrong, so don't
+  // claim numbers under it — fall back to provisional until a re-join fixes it.
+  try {
+    const meta = JSON.parse(await fs.readFile(path.join(framecadDir, 'lore-meta.json'), 'utf-8'))
+    if (!meta.loreUrlUncertain && typeof meta.loreUrl === 'string' && meta.loreUrl) return meta.loreUrl
+  } catch { /* not a Lore project */ }
+  return null
 }
 
 /**
@@ -769,8 +821,10 @@ export function renameEntry(oldRel: string, newRel: string): Promise<{ moved: bo
       return { moved: false }
     } catch { /* old file is gone → genuine rename, proceed */ }
 
+    const localBefore = await loadManifest()
     await pullSharedFile(MANIFEST_FILE)
     const manifest = await loadManifest()
+    reattachLocalProvisional(localBefore, manifest) // don't drop offline-created entries on the pull
     const entry = manifest.entries[oldRel]
     if (!entry) return { moved: false }                    // old path wasn't tracked
     if (manifest.entries[newRel]) return { moved: false }  // target already tracked
@@ -807,11 +861,15 @@ async function createNewPartImpl(
     throw new Error('COTS library projects do not use part numbers')
   }
   // Pull the latest parts.json from the team so we don't reserve a number
-  // someone else already took
+  // someone else already took. Snapshot our local copy first so provisional
+  // (offline-created, unpushed) entries the pull would drop are re-attached —
+  // otherwise the number handed out below could collide with one of them.
+  const localBefore = await loadManifest()
   await pullSharedFile(MANIFEST_FILE)
 
   const projectDir = getProjectPath()
   const manifest = await loadManifest()
+  reattachLocalProvisional(localBefore, manifest)
 
   // Compute the next number locally, then CLAIM it from the team server so a
   // teammate can't take the same one. `build(c)` formats the number + the file
@@ -902,13 +960,28 @@ async function createNewAssemblyImpl(
   if (!name.trim() || /[\\/:"*?<>|]/.test(name) || name === '.' || name === '..') {
     throw new Error('Invalid assembly name')
   }
+  // Snapshot local before the pull so offline-created provisional entries aren't
+  // dropped (which would let this assembly's number collide with one). See
+  // reattachLocalProvisional.
+  const localBefore = await loadManifest()
   await pullSharedFile(MANIFEST_FILE)
 
   const projectDir = getProjectPath()
   const manifest = await loadManifest()
+  reattachLocalProvisional(localBefore, manifest)
 
   const folderPath = parentFolder ? `${parentFolder}/${name}` : name
   const topLevel = topLevelSegment(folderPath)
+
+  // Guard traversal BEFORE any server claim: a `..`-laden parentFolder must not
+  // burn a part number (the claim is a durable server-side reservation, but the
+  // local manifest isn't saved on the throw — so a rejected-late request left a
+  // ghost claim in the team registry). The final file is folderPath/<n>.sldasm,
+  // so if folderPath escapes, the file would too. The final guard below stays as
+  // a belt-and-suspenders check on the resolved path.
+  if (!path.join(projectDir, folderPath).startsWith(projectDir + path.sep)) {
+    throw new Error('Assembly path escapes project directory')
+  }
 
   // Compute the number locally, then CLAIM it from the team server (bump on a
   // collision, provisional when offline) — see createNewPart.

@@ -1,7 +1,7 @@
 import { google, type drive_v3 } from 'googleapis'
 import fs from 'fs/promises'
 import { createWriteStream, createReadStream } from 'fs'
-import { randomBytes } from 'crypto'
+import { randomBytes, createHash } from 'crypto'
 import path from 'path'
 import { Readable } from 'stream'
 import { pipeline } from 'stream/promises'
@@ -108,13 +108,29 @@ async function mapPool<T>(
   fn: (item: T, index: number) => Promise<void>
 ): Promise<void> {
   let next = 0
+  let firstErr: unknown
+  let failed = false
   const workerCount = Math.min(concurrency, items.length)
   const workers = Array.from({ length: workerCount }, async () => {
     for (let i = next++; i < items.length; i = next++) {
-      await fn(items[i], i)
+      try {
+        await fn(items[i], i)
+      } catch (err) {
+        // CRITICAL: do NOT abort the pool on the first failure. Every caller
+        // (publish/sync/join) saves the manifest for whatever DID transfer as
+        // soon as this returns; if a straggler worker were still running after
+        // that save, it would mutate an already-persisted manifest — orphaning
+        // an uploaded file (re-uploaded as a duplicate next pass) or, worse,
+        // completing a fast-path promote that trashes the live published file
+        // while the saved manifest points at the trashed id. Record the first
+        // error, keep draining every worker, and rethrow once all have settled
+        // so no callback outlives the manifest save.
+        if (!failed) { failed = true; firstErr = err }
+      }
     }
   })
   await Promise.all(workers)
+  if (failed) throw firstErr
 }
 
 // Retry a transfer with exponential backoff. Running many requests in parallel
@@ -470,6 +486,16 @@ async function listAllFilesInner(
       if (f.mimeType === 'application/vnd.google-apps.folder') {
         const children = await listAllFilesInner(drive, f.id, relPath, driveId)
         results.push(...children)
+      } else if (f.mimeType?.startsWith('application/vnd.google-apps.')) {
+        // Google-native items (Docs/Sheets/Slides, shortcuts) are NOT binary-
+        // downloadable: files.get(alt:'media') returns 403 fileNotDownloadable,
+        // which is neither a 404 nor an auth error, so withRetry burns its full
+        // backoff (~3.5s) and then throws — wedging sync/join for the WHOLE team
+        // on every run until the item is removed. A teammate dropping a Google
+        // Sheet BOM into the project folder is a normal thing to do, so skip
+        // these rather than trying (and failing) to download them.
+        console.warn(`[drive] skipping non-downloadable Google-native item: ${JSON.stringify(relPath)} (${f.mimeType})`)
+        continue
       } else {
         results.push({
           driveFileId: f.id,
@@ -741,6 +767,21 @@ async function ensureStagingFolder(
   return deviceFolder
 }
 
+// Name a staged copy uniquely per project-relative path. Staged files live
+// FLAT in one device folder, so two paths that share a basename
+// (AssemA/plate.sldprt, AssemB/plate.sldprt) would otherwise collide there.
+// That matters because createFileSafe's create-retry re-finds a file BY NAME —
+// on a collision it would update (overwrite) the wrong path's staged bytes,
+// silently corrupting one CAD file into another. Suffixing with a hash of the
+// full relative path guarantees uniqueness. The name is internal to staging
+// only: promotion (drive.files.update with addParents/name) renames the file to
+// its real name before it ever becomes visible to teammates.
+function stagedFileName(relativePath: string): string {
+  const base = relativePath.split('/').pop() || relativePath
+  const tag = createHash('sha1').update(relativePath).digest('hex').slice(0, 12)
+  return `${base}.${tag}.framecad-staged`
+}
+
 /**
  * Upload the current bytes of `relativePath` to the staging folder (best
  * effort). No-op if the file is unchanged since it was last staged, if the
@@ -792,7 +833,7 @@ export function stageFile(projectDir: string, relativePath: string): Promise<voi
             fields: 'id'
           }, { timeout: DRIVE_TRANSFER_TIMEOUT_MS })
         )
-      : await createFileSafe(drive, manifest.sharedDriveId, stagingFolderId, relativePath.split('/').pop()!, localPath)
+      : await createFileSafe(drive, manifest.sharedDriveId, stagingFolderId, stagedFileName(relativePath), localPath)
 
     if (stagingPaused) {
       // A publish took exclusive control of staging while this upload was in
@@ -807,6 +848,34 @@ export function stageFile(projectDir: string, relativePath: string): Promise<voi
           await drive.files.update({ fileId: resp.data.id!, requestBody: { trashed: true }, supportsAllDrives: true, fields: 'id' })
         } catch { /* the orphan sweep catches it */ }
       }
+      return
+    }
+
+    // DRV-8: re-hash after the upload to catch a concurrent save that happened
+    // while the file's bytes were being streamed. If the content changed under
+    // us, the staged copy is torn relative to the stagedHash we'd record — and
+    // if the file later reverts to `hash`, publish's fast path would promote
+    // those mismatched bytes. Invalidate rather than record: trash the copy AND,
+    // on the update branch, drop the now-stale tracking entry (its stagedFileId
+    // was just overwritten with the torn bytes) so nothing promotes it; the
+    // orphan sweep cleans up and a later stage pass redoes it once the file is
+    // stable. Runs only in the not-paused path, so mutating staging state here
+    // can't race a publish. Best effort: a now-unreadable file skips this.
+    let hashAfter: string
+    try {
+      hashAfter = await computeFileHash(localPath)
+    } catch {
+      hashAfter = hash
+    }
+    if (hashAfter !== hash) {
+      const staleId = existing?.stagedFileId ?? resp.data.id!
+      if (existing?.stagedFileId) {
+        delete state.files[relativePath]
+        await saveStagingState(projectDir, state)
+      }
+      try {
+        await drive.files.update({ fileId: staleId, requestBody: { trashed: true }, supportsAllDrives: true, fields: 'id' })
+      } catch { /* the orphan sweep catches it */ }
       return
     }
 
@@ -833,7 +902,18 @@ async function reconcileStaging(
   projectDir: string,
   sharedDriveId: string,
   state: DriveStagingState,
-  keepRelPaths: Set<string>
+  keepRelPaths: Set<string>,
+  // gcStaging runs CONCURRENTLY with publish: publish only waits a bounded 5s
+  // for the stage chain before taking over, so a slow gc (one Drive call per
+  // stale entry + a listing sweep) can still be running afterwards. In that case
+  // our in-memory `state` is stale — it can still hold an entry publish just
+  // PROMOTED (moved the staged file into the live location) and dropped from its
+  // own state. Blindly writing our stale `state` back would resurrect that entry
+  // pointing at what is now the LIVE published file, so a later reconcile trashes
+  // it (and teammates' next sync deletes their copies). When true, merge only the
+  // removals we actually performed into the freshest on-disk state at save time.
+  // Publish passes false: it holds staging paused and its `state` is authoritative.
+  reloadBeforeSave = false
 ): Promise<void> {
   // Trash staged copies we no longer need. Only stop tracking an entry once
   // its file is confirmed gone (trash succeeded, or it was already absent) —
@@ -841,15 +921,25 @@ async function reconcileStaging(
   // State is saved at the end regardless of which trashes succeeded, so a
   // partial failure persists the progress that did happen and the rest is
   // retried next round (plus caught by the orphan sweep below).
+  const trashedRelPaths: string[] = []
   for (const [relPath, entry] of Object.entries(state.files)) {
+    // gc path only: if a publish takes over mid-loop it promotes a staged file
+    // OUT of the staging folder into the live location (keeping the same id). A
+    // stale `keepRelPaths` computed before that promotion would then have us
+    // trash the now-LIVE file by id. Bail the moment publish takes exclusive
+    // control; the reload-before-save below still persists what we did trash.
+    // (Publish's own call passes reloadBeforeSave=false and legitimately runs
+    // while paused.)
+    if (reloadBeforeSave && stagingPaused) break
     if (keepRelPaths.has(relPath)) continue
     try {
       await drive.files.update({ fileId: entry.stagedFileId, requestBody: { trashed: true }, supportsAllDrives: true, fields: 'id' })
       delete state.files[relPath]
+      trashedRelPaths.push(relPath)
     } catch (err) {
       // 404 → already gone; safe to forget. Anything else is transient: keep
       // the entry so a later reconcile retries the trash.
-      if (isNotFound(err)) delete state.files[relPath]
+      if (isNotFound(err)) { delete state.files[relPath]; trashedRelPaths.push(relPath) }
     }
   }
 
@@ -878,7 +968,16 @@ async function reconcileStaging(
     } catch { /* listing failed — skip the orphan sweep this round */ }
   }
 
-  await saveStagingState(projectDir, state)
+  if (reloadBeforeSave) {
+    // Re-read the freshest on-disk state and apply only the entries WE removed,
+    // so a concurrent publish's promotions/drops (written while we ran) survive
+    // instead of being clobbered back into existence.
+    const fresh = (await loadStagingState(projectDir)) ?? state
+    for (const relPath of trashedRelPaths) delete fresh.files[relPath]
+    await saveStagingState(projectDir, fresh)
+  } else {
+    await saveStagingState(projectDir, state)
+  }
 }
 
 /**
@@ -900,7 +999,9 @@ export async function gcStaging(projectDir: string): Promise<void> {
     }
     const changes = await getLocalChanges(projectDir, manifest)
     const keep = new Set(changes.filter(c => c.type === 'added' || c.type === 'modified').map(c => c.relativePath))
-    await reconcileStaging(drive, projectDir, manifest.sharedDriveId, state, keep)
+    // reloadBeforeSave: a publish may take over (and finish) while this gc runs;
+    // merge our removals into the freshest state rather than clobbering it.
+    await reconcileStaging(drive, projectDir, manifest.sharedDriveId, state, keep, true)
   })
 }
 
@@ -1252,13 +1353,21 @@ async function publishChangesImpl(
       const existing = manifest.files[c.relativePath]
       if (existing?.driveFileId) {
         try {
-          await drive.files.update({
+          await withRetry(() => drive.files.update({
             fileId: existing.driveFileId,
             requestBody: { trashed: true },
             supportsAllDrives: true,
             fields: 'id'
-          })
-        } catch { /* already removed on Drive — converge anyway */ }
+          }))
+        } catch (err) {
+          // Only converge (drop the manifest entry below) when the Drive file is
+          // genuinely gone. On a transient failure the file is still LIVE, so
+          // dropping the entry would make the next sync see it as new-remote and
+          // re-download the file the user just deleted — on every client. Fail
+          // this item instead: the entry stays, publish surfaces the error, and
+          // the delete is retried on the next publish.
+          if (!isNotFound(err)) throw err
+        }
       }
       delete manifest.files[c.relativePath]
       done++
@@ -1327,14 +1436,20 @@ export function syncRemote(
   onProgress?: (progress: DownloadProgress) => void,
   /** Project-relative paths this user holds a check-out lock on. The
    *  rename-reconcile must not move these out from under the held lock. */
-  lockedByMe?: Set<string>
+  lockedByMe?: Set<string>,
+  /** Project-relative paths whose LOCAL copy is authoritative and must never be
+   *  downloaded or deleted this pass — e.g. `.framecad/parts-meta.json` when a
+   *  deferred meta push hasn't landed yet. The local walk skips `.framecad/`, so
+   *  these can't otherwise be detected as locally-dirty and would be clobbered. */
+  protectPaths?: Set<string>
 ): Promise<SyncRemoteResult> {
-  return withManifestLock(projectDir, () => syncRemoteImpl(projectDir, onProgress, lockedByMe))
+  return withManifestLock(projectDir, () => syncRemoteImpl(projectDir, onProgress, lockedByMe, protectPaths))
 }
 async function syncRemoteImpl(
   projectDir: string,
   onProgress?: (progress: DownloadProgress) => void,
-  lockedByMe?: Set<string>
+  lockedByMe?: Set<string>,
+  protectPaths?: Set<string>
 ): Promise<SyncRemoteResult> {
   const manifest = await loadManifest(projectDir)
   if (!manifest) throw new Error('No Drive manifest — this project is not a Drive project.')
@@ -1415,15 +1530,32 @@ async function syncRemoteImpl(
 
   // Pick the files that actually need pulling: new on Drive, or remotely
   // changed and not being edited locally (conflict guard — local copy wins).
+  const conflicts: string[] = []
   const toDownload = remote.filter(r => {
     if (skipDownloadPaths.has(r.relativePath)) return false
+    // Caller-pinned local file (e.g. parts-meta.json with an unpushed edit) —
+    // local copy wins, never download over it.
+    if (protectPaths?.has(r.relativePath)) return false
     const entry = manifest.files[r.relativePath]
     const isNew = !entry
     const remoteChanged = !!entry && entry.driveModifiedTime !== r.modifiedTime
     if (!isNew && !remoteChanged) return false
-    if (!isNew && locallyDirty.has(r.relativePath)) return false
+    // Never overwrite a file the user is working on. This must cover BOTH a
+    // locally-modified tracked file AND a locally-added untracked file that
+    // happens to share a path with a file a teammate just published (two
+    // students both create Drivetrain/Plate.sldprt): downloading the remote
+    // copy would rename straight over the user's unpublished part — silent,
+    // unrecoverable data loss. Local copy wins; the user resolves it on their
+    // next publish (last-write-wins, never silent loss).
+    if (locallyDirty.has(r.relativePath)) {
+      if (isNew) conflicts.push(r.relativePath)
+      return false
+    }
     return true
   })
+  if (conflicts.length) {
+    console.warn(`[drive] sync: kept local copies that collide with newly-published remote files (rename one to resolve): ${conflicts.join(', ')}`)
+  }
 
   let done = 0
   const total = toDownload.length
@@ -1465,6 +1597,7 @@ async function syncRemoteImpl(
   for (const relPath of Object.keys(manifest.files)) {
     if (remoteByPath.has(relPath)) continue
     if (locallyDirty.has(relPath)) continue
+    if (protectPaths?.has(relPath)) continue // caller-pinned local file (unpushed meta)
     // Ignored paths (.framecad/ metadata entries recorded by push/pullMetadataFile)
     // can never be locallyDirty — the local walk skips them — so without this
     // guard a Drive-side trash (e.g. from a client running an older build)

@@ -26,6 +26,12 @@ import { getPolicies, currentSnapshot, listDriveLocks } from './teamServer'
 interface LoreMeta {
   loreUrl: string
   name: string
+  /** Set when loreUrl was RECOVERED from .lore/config.toml (the marker was
+   *  missing/corrupt) and may lack the repo-path segment. The team server keys
+   *  locks/history/part-numbers on the exact URL, so coordinating under a
+   *  guessed one would silently fork the namespace away from teammates. While
+   *  set, projectKey() refuses — the user must re-join to restore the exact URL. */
+  loreUrlUncertain?: boolean
 }
 
 const META_REL = path.join('.framecad', 'lore-meta.json')
@@ -54,11 +60,17 @@ export function close(): void {
 }
 
 /** The team-server lock/history key for the open Lore project = its remote
- *  `lore://` URL (stable + unique per project). Throws if none is open. */
+ *  `lore://` URL (stable + unique per project). Throws if none is open, or if
+ *  the URL is only a recovered guess (see LoreMeta.loreUrlUncertain) — better to
+ *  refuse a check-out / publish loudly than to acquire locks and record history
+ *  under a key that diverges from the rest of the team. */
 export function projectKey(): string {
-  const key = current?.config.loreUrl
-  if (!key) throw new Error('No Lore project open (missing lore:// URL)')
-  return key
+  const cfg = current?.config
+  if (!cfg?.loreUrl) throw new Error('No Lore project open (missing lore:// URL)')
+  if (cfg.loreUrlUncertain) {
+    throw new Error('This Lore project’s exact server address couldn’t be determined (its FrameCAD marker was missing). Re-join it from the team project list to restore check-outs, history, and part-number coordination.')
+  }
+  return cfg.loreUrl
 }
 
 /** The Lore commit author / lock owner = the enrolled team member's name. */
@@ -122,7 +134,10 @@ export async function open(dir: string): Promise<ProjectConfig | null> {
     if (!(await hasLoreRepo(dir))) return null
     const recovered = await recoverUrlFromLoreConfig(dir)
     if (!recovered) return null
-    meta = { loreUrl: recovered, name: path.basename(dir) }
+    // The recovered URL may lack the repo-path segment, so mark it uncertain:
+    // the project opens (files visible, backup works) but projectKey() refuses
+    // team-coordinated ops until a re-join restores the exact URL.
+    meta = { loreUrl: recovered, name: path.basename(dir), loreUrlUncertain: true }
     await writeMeta(dir, meta).catch(() => { /* best effort */ })
   } else if (!(await hasLoreRepo(dir))) {
     return null
@@ -132,7 +147,8 @@ export async function open(dir: string): Promise<ProjectConfig | null> {
     path: dir,
     remote: meta.loreUrl,
     backend: 'lore',
-    loreUrl: meta.loreUrl
+    loreUrl: meta.loreUrl,
+    ...(meta.loreUrlUncertain ? { loreUrlUncertain: true } : {})
   }
   current = { dir, config }
   await addRecentProject(config).catch(() => { /* best effort */ })
@@ -164,6 +180,16 @@ async function assertJoinTargetSafe(dir: string, url: string): Promise<void> {
   }
   // Existing, non-empty, and not already this project → would publish strays.
   if (!meta) {
+    // A clone of THIS url that was interrupted (network drop) leaves a .lore/
+    // repo and partial files but NO lore-meta marker. Without recognizing that,
+    // the non-empty check below permanently dead-ends the documented
+    // partial-clone repair path ("pick a different save location") — the one
+    // case that most needs the re-join. Treat a .lore repo whose recorded remote
+    // matches the join URL as the same project and allow the repair.
+    if (await hasLoreRepo(dir)) {
+      const recovered = await recoverUrlFromLoreConfig(dir)
+      if (recovered && loreUrlsRelated(recovered, url)) return
+    }
     const entries = await fs.readdir(dir).catch(() => [] as string[])
     if (entries.length > 0) {
       throw new Error(
@@ -172,6 +198,20 @@ async function assertJoinTargetSafe(dir: string, url: string): Promise<void> {
       )
     }
   }
+}
+
+/**
+ * Whether two lore:// URLs refer to the same project. recoverUrlFromLoreConfig
+ * can return just the server base (lore://host:port) while the join URL carries
+ * the repo path (lore://host:port/repo), so one being a path-prefix of the other
+ * counts as related. Tolerant on purpose — enough to RECOGNIZE a partial clone
+ * for the repair path, NOT to key locks (that needs the exact URL; see
+ * loreUrlUncertain).
+ */
+function loreUrlsRelated(a: string, b: string): boolean {
+  const na = a.replace(/\/+$/, '')
+  const nb = b.replace(/\/+$/, '')
+  return na === nb || nb.startsWith(na + '/') || na.startsWith(nb + '/')
 }
 
 /**
@@ -279,8 +319,16 @@ async function assertLocksHeld(key: string, modified: string[]): Promise<void> {
   let locks: { filePath: string; ownerMemberId: number; ownerName: string }[]
   try {
     locks = await listDriveLocks(key)
-  } catch {
-    return // server unreachable / no Lore project row — don't block the experiment
+  } catch (err) {
+    // A 403 is the server AUTHORITATIVELY denying access to this project's locks
+    // — not "offline". Surface it instead of silently publishing with zero lock
+    // enforcement (the old behavior, which let the least-privileged users
+    // overwrite teammates' work). A genuine network failure stays lenient for
+    // the experiment.
+    if ((err as { status?: number }).status === 403) {
+      throw new Error('The team server denied access to this Lore project’s check-outs. Ask an admin to grant you access to it, then try publishing again.')
+    }
+    return // server unreachable — don't block the experiment
   }
   const myId = snap.me?.id
   const byPath = new Map(locks.map(l => [l.filePath, l]))
@@ -304,21 +352,26 @@ export async function publish(onProgress?: (p: PublishProgress) => void): Promis
   const { dir } = current
   try {
     onProgress?.({ phase: 'preparing', percent: 0 })
-    // Compute changes BEFORE staging/commit (commit clears the dirty flags).
-    // `deleted` must be included so a delete-only publish isn't short-circuited;
-    // `isLocalAhead` means a prior publish committed but its push failed — we
-    // still need to publish to flush that stranded commit.
-    const { modified, untracked, deleted, isLocalAhead } = await loreOps.listChanges(dir)
-    const changedPaths = [...modified, ...untracked, ...deleted]
-    if (changedPaths.length === 0 && !isLocalAhead) {
+    // Cheap pre-check to short-circuit a genuine no-op publish. `deleted` must
+    // be included so a delete-only publish isn't short-circuited; `isLocalAhead`
+    // means a prior publish committed but its push failed — we still publish to
+    // flush that stranded commit. This is only an optimization: the authoritative
+    // policy/lock validation happens INSIDE publishWorkingTree against the exact
+    // staged set, so a save landing after this pre-check is still checked.
+    const pre = await loreOps.listChanges(dir)
+    if (pre.modified.length + pre.untracked.length + pre.deleted.length === 0 && !pre.isLocalAhead) {
       onProgress?.({ phase: 'done', percent: 100 })
       return { success: true, changedPaths: [] }
     }
-    // Only stat existing files for the policy check; deleted ones are gone.
-    await assertPublishAllowed(dir, [...modified, ...untracked])
-    await assertLocksHeld(projectKey(), modified)
-    // Atomic stage→commit→push (always pushes, flushing any stranded commit).
-    const { committed } = await loreOps.publishWorkingTree(dir, identity(), '', onProgress)
+    // Atomic stage→(validate)→commit→push. The guard runs on the EXACT staged
+    // set inside the serialized unit, so a SolidWorks save (or an oversized /
+    // blocked-extension file) landing during the pre-flight — especially the
+    // networked lock check — can't be committed and pushed unchecked.
+    const { committed, changedPaths } = await loreOps.publishWorkingTree(dir, identity(), '', onProgress, async changes => {
+      // Only stat existing files for the policy check; deleted ones are gone.
+      await assertPublishAllowed(dir, [...changes.modified, ...changes.untracked])
+      await assertLocksHeld(projectKey(), changes.modified)
+    })
     onProgress?.({ phase: 'done', percent: 100 })
     // History records only what THIS publish committed; a pure stranded-commit
     // flush (committed=false via isLocalAhead) records nothing.

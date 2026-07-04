@@ -322,23 +322,42 @@ export async function stageAll(dir: string, identity?: string): Promise<void> {
 }
 
 /**
- * Atomically stage → commit → push the working tree as ONE serialized unit, so
- * a watcher status-scan can't interleave between commit and push. Always pushes
- * (even when commit found nothing) to flush any commit stranded by a previous
- * failed push — so committed-but-unpushed changes can't be lost forever.
- * Returns whether THIS call produced a new commit.
+ * Atomically stage → (validate) → commit → push the working tree as ONE
+ * serialized unit, so a watcher status-scan can't interleave between commit and
+ * push. Always pushes (even when commit found nothing) to flush any commit
+ * stranded by a previous failed push — so committed-but-unpushed changes can't
+ * be lost forever.
+ *
+ * `guard` (if given) runs AFTER staging, against the EXACT staged change set
+ * (re-scanned here), and may throw to abort before commit/push. Validating the
+ * staged set — not a snapshot taken before publish() did its slow, networked
+ * lock check — is what stops a file saved during that window from being
+ * committed and pushed with no policy/lock check (the Drive backend does the
+ * same via publishChanges' in-lock guard). Returns whether THIS call produced a
+ * new commit plus the exact paths that were staged (for history).
  */
 export async function publishWorkingTree(
   dir: string,
   identity: string | undefined,
   message: string,
-  onProgress?: (p: PublishProgress) => void
-): Promise<{ committed: boolean }> {
+  onProgress?: (p: PublishProgress) => void,
+  guard?: (changes: { modified: string[]; untracked: string[]; deleted: string[] }) => Promise<void>
+): Promise<{ committed: boolean; changedPaths: string[] }> {
   return serialize(async () => {
     await rawStageAll(dir, identity)
+    // Re-scan the staged state so the guard (and the recorded history) reflect
+    // exactly what commit will capture, not a pre-flight snapshot.
+    const { states, deleted } = await scanStatus(dir)
+    const modified: string[] = []
+    const untracked: string[] = []
+    for (const [rel, st] of states) {
+      if (st === 'modified') modified.push(rel)
+      else if (st === 'untracked') untracked.push(rel)
+    }
+    if (guard) await guard({ modified, untracked, deleted })
     const committed = await rawCommit(dir, identity, message)
     await rawPush(dir, identity, onProgress)
-    return { committed }
+    return { committed, changedPaths: [...modified, ...untracked, ...deleted] }
   })
 }
 

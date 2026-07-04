@@ -497,6 +497,42 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE pins ADD COLUMN boundMemberId INTEGER REFERENCES members(id) ON DELETE CASCADE;
   `,
+  // v25: fast, non-secret token lookup index. `findDeviceByToken` used to
+  // argon2-verify EVERY active device row until one matched — so any request
+  // bearing a bogus `Authorization: Bearer …` header forced N × 64 MiB argon2
+  // hashes (~100ms each), an unauthenticated CPU/memory DoS that pegs the
+  // documented Raspberry Pi target. `tokenLookup` stores SHA-256(token) (not
+  // reversible — the token is 256 bits of randomness, so a DB leak reveals
+  // nothing), letting auth point-lookup the ONE candidate row to verify. Legacy
+  // rows keep tokenLookup NULL until they next authenticate (auth backfills it),
+  // since the raw token needed to compute it isn't stored.
+  `
+  ALTER TABLE devices ADD COLUMN tokenLookup TEXT;
+  CREATE INDEX IF NOT EXISTS devices_tokenLookup_idx ON devices(tokenLookup);
+  `,
+  // v26: rebuild publish_log so authorId is ON DELETE SET NULL, not CASCADE.
+  // Hard-deleting a member CASCADE-erased their ENTIRE publish history from
+  // every project — the Drive backend's git-log replacement — defeating the
+  // denormalized `authorName` that exists precisely so history survives the
+  // member going away. SET NULL keeps the rows (matching audit_events /
+  // issue_reports / part_numbers). No table references publish_log, so the
+  // rebuild is safe with foreign_keys ON.
+  `
+  CREATE TABLE publish_log_new (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    projectKey  TEXT NOT NULL,
+    authorId    INTEGER REFERENCES members(id) ON DELETE SET NULL,
+    authorName  TEXT NOT NULL,
+    message     TEXT NOT NULL DEFAULT '',
+    filesJson   TEXT NOT NULL DEFAULT '[]',
+    publishedAt INTEGER NOT NULL
+  );
+  INSERT INTO publish_log_new (id, projectKey, authorId, authorName, message, filesJson, publishedAt)
+    SELECT id, projectKey, authorId, authorName, message, filesJson, publishedAt FROM publish_log;
+  DROP TABLE publish_log;
+  ALTER TABLE publish_log_new RENAME TO publish_log;
+  CREATE INDEX publish_log_projectKey_idx ON publish_log(projectKey, publishedAt DESC);
+  `,
 ]
 
 /** Default quota applied when an admin creates a project without an
@@ -523,8 +559,17 @@ export function migrate(): void {
   const conn = ensureDb()
   const current = (conn.pragma('user_version', { simple: true }) as number) ?? 0
   for (let i = current; i < MIGRATIONS.length; i++) {
-    conn.exec(MIGRATIONS[i])
-    conn.pragma(`user_version = ${i + 1}`)
+    // Wrap each migration body AND its user_version bump in ONE transaction. A
+    // multi-statement migration killed partway (disk full, process kill) used to
+    // leave some statements applied with user_version behind — so the next boot
+    // re-ran the migration from the top and the already-applied ALTER TABLE threw
+    // "duplicate column name", crash-looping the server into manual DB surgery.
+    // SQLite DDL is transactional, so a rollback here undoes the partial apply.
+    const applyOne = conn.transaction(() => {
+      conn.exec(MIGRATIONS[i])
+      conn.exec(`PRAGMA user_version = ${i + 1}`)
+    })
+    applyOne()
   }
 
   // Seed the singleton `team` row on first run. The migration created

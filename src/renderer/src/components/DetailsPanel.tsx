@@ -113,9 +113,20 @@ export default function DetailsPanel({ file, onCheckOut, onCheckIn, onClose, onN
     }
   }, [])
 
+  const filePath = file?.path
+  const isDir = !!file?.isDirectory
+
   useEffect(() => {
-    if (file && !file.isDirectory) refreshMeta(file.path)
-  }, [file, refreshMeta])
+    // Key on the PATH, not the `file` OBJECT. useGit hands DetailsPanel a FRESH
+    // FileEntry object on every file-tree refresh (each chokidar tick, and after
+    // checkOut / checkIn / sync / publish / create). Keying this effect on `file`
+    // re-ran refreshMeta on every one of those, unconditionally overwriting the
+    // user's in-progress UNSAVED edits (notes / material / method / mass / cost)
+    // with the server values — e.g. type notes, then Check Out, and the draft
+    // vanished. The where-used effect below already keys on the path for exactly
+    // this reason.
+    if (filePath && !isDir) refreshMeta(filePath)
+  }, [filePath, isDir, refreshMeta])
 
   // Purchasing details persist immediately (separate from the dirty-patch save
   // bar) — each field saves on blur, the status on change.
@@ -136,8 +147,6 @@ export default function DetailsPanel({ file, onCheckOut, onCheckIn, onClose, onN
   // just hands us a new FileEntry object for the same path doesn't
   // trigger a redundant IPC.
   const [whereUsed, setWhereUsed] = useState<string[]>([])
-  const filePath = file?.path
-  const isDir = !!file?.isDirectory
   useEffect(() => {
     if (!filePath || isDir) { setWhereUsed([]); return }
     let cancelled = false

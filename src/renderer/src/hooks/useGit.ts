@@ -204,7 +204,13 @@ export function useGit() {
     }
   }, [])
 
+  // These set isLoading like the other mutators so the Toolbar's
+  // `disabled={isLoading}` (and Enter-key paths) actually engage during the
+  // in-flight create — otherwise a double-click / double-Enter fires two
+  // create IPCs and mints two sequential part numbers, and tombstones make the
+  // stray reservation permanent.
   const createNewPart = useCallback(async (folder: string, description?: string) => {
+    setIsLoading(true)
     setError(null)
     try {
       const result = await window.api.createNewPart(folder, description)
@@ -213,10 +219,13 @@ export function useGit() {
     } catch (err) {
       setError((err as Error).message)
       return null
+    } finally {
+      setIsLoading(false)
     }
   }, [])
 
   const createSubsystem = useCallback(async (parentFolder: string, name: string) => {
+    setIsLoading(true)
     setError(null)
     try {
       const result = await window.api.createSubsystem(parentFolder, name)
@@ -225,10 +234,13 @@ export function useGit() {
     } catch (err) {
       setError((err as Error).message)
       return null
+    } finally {
+      setIsLoading(false)
     }
   }, [])
 
   const createNewAssembly = useCallback(async (parentFolder: string, name: string, description?: string) => {
+    setIsLoading(true)
     setError(null)
     try {
       const result = await window.api.createNewAssembly(parentFolder, name, description)
@@ -237,6 +249,8 @@ export function useGit() {
     } catch (err) {
       setError((err as Error).message)
       return null
+    } finally {
+      setIsLoading(false)
     }
   }, [])
 

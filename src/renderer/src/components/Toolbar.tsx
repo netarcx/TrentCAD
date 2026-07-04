@@ -53,6 +53,12 @@ export default function Toolbar({
   const [createdFolder, setCreatedFolder] = useState<string | null>(null)
   const [showCreateMenu, setShowCreateMenu] = useState(false)
   const createMenuRef = useRef<HTMLDivElement>(null)
+  // Synchronous re-entrancy guard for the create handlers. `isLoading` is a prop
+  // captured at render time and setIsLoading is async, so a double-click (or
+  // double-Enter) can fire two creates before the disabled state repaints —
+  // minting two sequential part numbers, one of them a permanent tombstone. A
+  // ref flips synchronously, before the first await, so the second call bails.
+  const creatingRef = useRef(false)
 
   useEffect(() => {
     if (!showCreateMenu) return
@@ -81,38 +87,53 @@ export default function Toolbar({
   }
 
   const handleNewPart = async () => {
-    if (isLoading) return
-    const folder = getSelectedFolder(selectedFile)
-    const result = await onNewPart(folder, partDescription.trim() || undefined)
-    if (result) {
-      setCreatedInfo(result)
-      setPartDescription('')
-      setShowNewPart(false)
+    if (isLoading || creatingRef.current) return
+    creatingRef.current = true
+    try {
+      const folder = getSelectedFolder(selectedFile)
+      const result = await onNewPart(folder, partDescription.trim() || undefined)
+      if (result) {
+        setCreatedInfo(result)
+        setPartDescription('')
+        setShowNewPart(false)
+      }
+    } finally {
+      creatingRef.current = false
     }
   }
 
   const handleNewSubsystem = async () => {
-    if (isLoading) return
+    if (isLoading || creatingRef.current) return
     if (!subsystemName.trim()) return
-    const parentFolder = getSelectedFolder(selectedFile)
-    const result = await onNewSubsystem(parentFolder, subsystemName.trim())
-    if (result) {
-      setCreatedFolder(result.folderPath)
-      setSubsystemName('')
-      setShowNewSubsystem(false)
+    creatingRef.current = true
+    try {
+      const parentFolder = getSelectedFolder(selectedFile)
+      const result = await onNewSubsystem(parentFolder, subsystemName.trim())
+      if (result) {
+        setCreatedFolder(result.folderPath)
+        setSubsystemName('')
+        setShowNewSubsystem(false)
+      }
+    } finally {
+      creatingRef.current = false
     }
   }
 
   const handleNewAssembly = async () => {
-    if (isLoading) return
+    if (isLoading || creatingRef.current) return
     if (!assemblyName.trim()) return
-    const parentFolder = getSelectedFolder(selectedFile)
-    const result = await onNewAssembly(parentFolder, assemblyName.trim(), assemblyDescription.trim() || undefined)
-    if (result) {
-      setCreatedInfo(result)
-      setAssemblyName('')
-      setAssemblyDescription('')
-      setShowNewAssembly(false)
+    creatingRef.current = true
+    try {
+      const parentFolder = getSelectedFolder(selectedFile)
+      const result = await onNewAssembly(parentFolder, assemblyName.trim(), assemblyDescription.trim() || undefined)
+      if (result) {
+        setCreatedInfo(result)
+        setAssemblyName('')
+        setAssemblyDescription('')
+        setShowNewAssembly(false)
+      }
+    } finally {
+      creatingRef.current = false
     }
   }
 

@@ -951,6 +951,7 @@ function ExportQueueTab() {
       setItems(s.needsExport)
       setSwAlive(s.swAlive)
       setPendingTasks(s.pendingTasks)
+      setError(null) // clear a stale error once a 4s poll succeeds again
     } catch (err) {
       setError((err as Error).message)
     } finally {

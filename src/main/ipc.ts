@@ -29,14 +29,13 @@ import * as projectPaths from './project-paths'
 import { clearHashCache } from './drive-manifest'
 import { setRestProject, clearRestProject, stopRestServer, queuePendingCreate, setRestMainWindow } from './rest'
 import { getThumbnail, clearThumbnailCache } from './thumbnails'
+import { isPublishing, setPublishing } from './publish-state'
 import type { FileEntry, ProjectConfig } from '@shared/types'
 
 let watcher: ReturnType<typeof watch> | null = null
-let publishingNow = false
 
-export function isPublishing(): boolean {
-  return publishingNow
-}
+// Re-exported so index.ts's window-close guard keeps its existing import site.
+export { isPublishing }
 
 /**
  * The team-server lock/history key for the currently-open project, supplied by
@@ -105,7 +104,7 @@ function scheduleStage(rootDir: string, changedPath: string): void {
 }
 
 async function tryStage(rel: string, sessionKey: string | null): Promise<void> {
-  if (!driveProject.isOpen() || publishingNow) return
+  if (!driveProject.isOpen() || isPublishing()) return
   // Project switched out from under this pending stage — abandon it.
   if (driveProject.currentConfig()?.driveFolderId !== sessionKey) return
   // Only pre-upload files this user has checked out — the lock guarantees
@@ -171,17 +170,26 @@ function broadcastStatus(getMainWindow: () => BrowserWindow | null): void {
 function startWatching(dirPath: string, win: BrowserWindow): void {
   stopWatching()
   const debouncedNotify = debounce(() => notifyFileChange(win), 500)
-  // Dot-file ignore is matched against the path RELATIVE to the watch root —
-  // chokidar hands us absolute paths, and a project that merely lives under a
-  // dot-directory ancestor (e.g. ~/.local/share/...) would otherwise match
-  // /(^|[/\\])\../ on every event and the watcher would go silently dead.
+  // ALL ignore rules are matched against the path RELATIVE to the watch root.
+  // chokidar hands us absolute paths, so bare regexes (/node_modules/,
+  // /parts\.json$/) tested against the absolute path would false-match a project
+  // that merely lives under an ancestor named e.g. `node_modules` (the whole
+  // watcher goes silently dead) or a user file like `spareparts.json`. Compute
+  // the relative path once and match segments precisely: any dotfile/dot-dir,
+  // `node_modules` as a path SEGMENT, and only the ROOT-level parts.json (the
+  // FrameCAD manifest whose own writes must not re-trigger the watcher).
   const dotRel = /(^|[/\\])\../
-  const ignoreDotOutsideRoot = (p: string): boolean => {
+  const ignored = (p: string): boolean => {
     const rel = path.relative(dirPath, p)
-    return rel ? dotRel.test(rel) : false
+    if (!rel) return false // the watch root itself
+    if (dotRel.test(rel)) return true
+    const segments = rel.split(/[/\\]/)
+    if (segments.includes('node_modules')) return true
+    if (rel === 'parts.json') return true
+    return false
   }
   watcher = watch(dirPath, {
-    ignored: [ignoreDotOutsideRoot, /node_modules/, /parts\.json$/],
+    ignored,
     persistent: true,
     ignoreInitial: true,
     depth: 10
@@ -243,6 +251,10 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   setRestMainWindow(getMainWindow)
 
   ipcMain.handle('open-project', async (_e, dirPath: string) => {
+    // (Deferred meta state is project-tagged in meta.ts, so a prior project's
+    // pending push can't fire against this one or suppress its pull-before-edit —
+    // no reset needed here, and keeping the tag lets the SAME project preserve an
+    // offline-unpushed edit on reopen.)
     // Detect which backend's project this folder is. A Drive project carries a
     // .framecad/drive-manifest.json; a Lore project carries a .lore/ dir plus
     // .framecad/lore-meta.json. Try Drive first (the incumbent), then Lore.
@@ -284,11 +296,14 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     const win = getMainWindow()
     // Flush any deferred meta commit BEFORE pulling — sync downloads the
     // remote .framecad/parts-meta.json and would otherwise clobber a local
-    // release-state/comment edit still sitting on the 60s timer.
-    await metaOps.flushMetaCommit()
+    // release-state/comment edit still sitting on the 60s timer. If the flush
+    // couldn't land the push (offline mid-flush, permissions), protect the meta
+    // file from being overwritten this sync — the local copy is still ahead.
+    const flushed = await metaOps.flushMetaCommit()
+    const opts = flushed ? undefined : { protectPaths: new Set([metaOps.metaRelPath()]) }
     const result = await getActiveBackend().sync(progress => {
       if (win && !win.isDestroyed()) win.webContents.send('publish-progress', progress)
-    })
+    }, opts)
     if (result.success && result.filesUpdated > 0 && Notification.isSupported()) {
       try {
         new Notification({
@@ -303,7 +318,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('publish', async (_e, message: string) => {
     const win = getMainWindow()
-    publishingNow = true
+    setPublishing(true)
     try {
       // Flush any deferred metadata commit (release-state / mass / cost /
       // comments) so a just-made edit publishes with this batch instead of
@@ -320,7 +335,7 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
       }
       return result
     } finally {
-      publishingNow = false
+      setPublishing(false)
     }
   })
 
@@ -463,10 +478,12 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('close-project', async () => {
-    // Flush a pending deferred meta commit BEFORE we tear down the project
-    // path — otherwise the 60s timer fires later against the next project's
-    // path (or throws and is dropped), silently losing the edit. No-ops when
-    // nothing is pending.
+    // Flush a pending deferred meta commit BEFORE we tear down the project path
+    // (the project is still current here, so the push targets the right file).
+    // No-ops when nothing is pending. If the push fails (offline), the edits stay
+    // queued+project-tagged: they can't leak into the next project (the tag
+    // scopes both the push and the pull-before-edit) and are preserved for this
+    // same project on reopen — so no hard reset is needed.
     await metaOps.flushMetaCommit()
     currentProject = null
     getActiveBackend().close()
@@ -746,6 +763,11 @@ export function setupIpc(getMainWindow: () => BrowserWindow | null): void {
     let queued = 0
     for (const item of queue) {
       if (!item.needsExport) continue
+      // Only queue parts inside the active project subpath, matching what
+      // get-export-status shows — otherwise the batch queues exports for parts
+      // in sibling projects sharing the repo folder and the count exceeds the
+      // visible list.
+      if (pathsOps.toProjectRel(item.path) === null) continue
       const task = exportQueue.queuePendingExport(projectPath, item.path, item.needsExport)
       if (task) queued++
     }

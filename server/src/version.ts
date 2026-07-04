@@ -14,8 +14,14 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+// The releases LIST, not /releases/latest. `/latest` excludes prereleases and
+// drafts by GitHub's definition — and this project ships its builds as
+// `1.0.1-rc.N` PRErelease tags, so /latest 404s until a GA release exists,
+// leaving `cache.version` null and isOutdated() permanently false (the update
+// banner + "outdated clients" list never populate). Fetching the list lets us
+// pick the newest published release ourselves, prereleases included.
 const RELEASES_URL =
-  'https://api.github.com/repos/netarcx/framecad/releases/latest'
+  'https://api.github.com/repos/netarcx/framecad/releases?per_page=30'
 
 /** How long a successful GitHub fetch stays fresh before we re-check. */
 const CACHE_TTL_MS = 60 * 60 * 1000
@@ -117,9 +123,16 @@ async function fetchLatestRelease(): Promise<string> {
     // catch path keeps a previously-good cached version instead of
     // overwriting it with a null marked fresh for the next hour.
     if (!res.ok) throw new Error(`GitHub releases API returned ${res.status}`)
-    const json = (await res.json()) as { tag_name?: string }
-    if (!json.tag_name) throw new Error('GitHub releases API response missing tag_name')
-    return json.tag_name.replace(/^v/i, '')
+    const json = (await res.json()) as Array<{ tag_name?: string; draft?: boolean }>
+    if (!Array.isArray(json)) throw new Error('GitHub releases API response was not an array')
+    // Consider every non-draft release (prereleases included) and pick the
+    // HIGHEST version via the same comparator the outdated check uses — robust
+    // against a hotfix to an older line being published after a newer one.
+    const versions = json
+      .filter(r => r.tag_name && !r.draft)
+      .map(r => r.tag_name!.replace(/^v/i, ''))
+    if (versions.length === 0) throw new Error('GitHub releases API returned no published releases')
+    return versions.reduce((best, v) => (compareVersions(v, best) > 0 ? v : best), versions[0])
   } finally {
     clearTimeout(timer)
   }

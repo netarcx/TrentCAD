@@ -17,41 +17,89 @@ const META_FILE = 'parts-meta.json'
 const META_COMMIT_DELAY = 60_000
 let metaCommitTimer: ReturnType<typeof setTimeout> | null = null
 let pendingCommitMessages: string[] = []
+// The project the queued edits belong to. The deferred state is process-global
+// but a project's edits are only valid against ITS parts-meta.json, so every
+// consumer checks this tag against the currently-open project: a stale queue
+// from a closed/other project must neither be pushed against the wrong file nor
+// suppress a different project's pull-before-edit. Also lets an offline close
+// keep the queue so the SAME project, on reopen, still skips the clobbering pull
+// and preserves the unpushed edit (no reset needed).
+let pendingProjectPath: string | null = null
+
+/** getProjectPath() throws when no project is open; this returns null instead. */
+function currentProjectPathSafe(): string | null {
+  try { return getProjectPath() } catch { return null }
+}
 
 function scheduleMetaCommit(message: string): void {
   pendingCommitMessages.push(message)
+  pendingProjectPath = currentProjectPathSafe()
   if (metaCommitTimer) clearTimeout(metaCommitTimer)
-  metaCommitTimer = setTimeout(flushMetaCommit, META_COMMIT_DELAY)
+  metaCommitTimer = setTimeout(() => { void flushMetaCommit() }, META_COMMIT_DELAY)
 }
 
-async function flushMetaCommit(): Promise<void> {
+// Coalesce overlapping flushes. The 60s timer fires flushMetaCommit
+// fire-and-forget while a Sync/Publish handler also awaits it, so two flushes
+// could run at once — each snapshotting the SAME queue, both pushing, and both
+// splice-by-count, which drops a message (and thus the "still dirty" signal) for
+// an edit saved during the uploads. An in-flight guard makes the second caller
+// ride the first's result instead.
+let flushInFlight: Promise<boolean> | null = null
+
+/**
+ * Push the deferred meta edits to the team now. Returns TRUE only when nothing
+ * is left pending FOR THE CURRENT PROJECT (everything is on the remote). Callers
+ * that pull/overwrite the meta file afterwards (sync) MUST honor a false return
+ * and skip that overwrite, or they'll clobber the still-unpushed local edits.
+ */
+function flushMetaCommit(): Promise<boolean> {
+  if (flushInFlight) return flushInFlight
+  flushInFlight = flushMetaCommitImpl().finally(() => { flushInFlight = null })
+  return flushInFlight
+}
+
+async function flushMetaCommitImpl(): Promise<boolean> {
   metaCommitTimer = null
-  const messages = pendingCommitMessages.splice(0)
-  if (messages.length === 0) return
+  if (pendingCommitMessages.length === 0) return true
+  // Only push while the project these edits belong to is still the open one. A
+  // timer that fires after the project closed/switched must not push them against
+  // the wrong project's parts-meta.json — and must NOT re-arm (which would
+  // busy-loop). The edits stay queued+tagged for when that project reopens.
+  if (pendingProjectPath !== currentProjectPathSafe()) return false
+  // Snapshot but do NOT clear the queue yet. The non-empty queue is exactly what
+  // makes pullMetaUnlessDirty (and, via this boolean, the sync path) skip the
+  // pull that would overwrite these unpushed edits. Drop the messages only once
+  // the push has actually landed.
+  const messages = pendingCommitMessages.slice()
   const combined = messages.length === 1
     ? messages[0]
     : `[meta] ${messages.length} changes\n\n${messages.map(m => `- ${m}`).join('\n')}`
   try {
     await pushSharedFile(metaRelPath(), combined)
   } catch (err) {
-    // Log but don't crash — the local file is already saved. Put the messages
-    // back: they are what marks the local file as ahead-of-Drive, so mutators
-    // keep skipping the pull (which would overwrite the unpushed edits), and
-    // the retry timer / next edit pushes them again.
+    // Log but don't crash — the local file is already saved and the queue is
+    // still populated, so the local copy stays marked ahead-of-remote. The retry
+    // timer / next edit pushes it again.
     console.error('[meta] deferred commit/push failed:', (err as Error).message)
-    pendingCommitMessages.unshift(...messages)
-    if (!metaCommitTimer) metaCommitTimer = setTimeout(flushMetaCommit, META_COMMIT_DELAY)
+    if (!metaCommitTimer) metaCommitTimer = setTimeout(() => { void flushMetaCommit() }, META_COMMIT_DELAY)
+    return false
   }
+  // Pushed — remove exactly the messages we sent; anything enqueued during the
+  // push stays for the next flush.
+  pendingCommitMessages.splice(0, messages.length)
+  if (pendingCommitMessages.length === 0) pendingProjectPath = null
+  return pendingCommitMessages.length === 0
 }
 
 // Pull the latest team copy from Drive UNLESS local edits are still waiting on
-// the deferred push. The pull is unconditional (no merge), so pulling while
-// dirty would overwrite the local file with a remote copy that lacks the
-// pending edits — any two edits within the 60s commit window silently lost the
-// first one. Local-dirty wins, matching the sync conflict rule; the deferred
-// push then propagates everything.
+// the deferred push FOR THIS PROJECT. The pull is unconditional (no merge), so
+// pulling while dirty would overwrite the local file with a remote copy that
+// lacks the pending edits — any two edits within the 60s commit window silently
+// lost the first one. Local-dirty wins, matching the sync conflict rule; the
+// deferred push then propagates everything. The project-tag check means a stale
+// queue from a DIFFERENT project doesn't wrongly suppress this project's pull.
 async function pullMetaUnlessDirty(): Promise<void> {
-  if (pendingCommitMessages.length > 0) return
+  if (pendingCommitMessages.length > 0 && pendingProjectPath === currentProjectPathSafe()) return
   await pullSharedFile(metaRelPath())
 }
 
@@ -63,7 +111,7 @@ function metaAbsPath(): string {
   return path.join(getProjectPath(), META_DIR, META_FILE)
 }
 
-function metaRelPath(): string {
+export function metaRelPath(): string {
   return `${META_DIR}/${META_FILE}`
 }
 

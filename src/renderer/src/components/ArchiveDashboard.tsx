@@ -49,6 +49,9 @@ export default function ArchiveDashboard(props: Props) {
   const { teamSnapshot, serverReach, gitName, theme, onToggleTheme } = props
   const [status, setStatus] = useState<ArchiveStatus>(EMPTY_STATUS)
   const [busy, setBusy] = useState(false)
+  // Surfaced when a manual action (Sync now / Change folder) throws — otherwise
+  // the rejection escaped to the global handler and the operator saw nothing.
+  const [actionError, setActionError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -78,7 +81,9 @@ export default function ArchiveDashboard(props: Props) {
 
   async function syncNow(): Promise<void> {
     setBusy(true)
+    setActionError(null)
     try { setStatus(await window.api.archiveSyncNow()) }
+    catch (err) { setActionError((err as Error).message) }
     finally { setBusy(false) }
   }
 
@@ -98,7 +103,9 @@ export default function ArchiveDashboard(props: Props) {
 
   async function chooseRoot(): Promise<void> {
     setBusy(true)
+    setActionError(null)
     try { setStatus(await window.api.archiveChooseRoot()) }
+    catch (err) { setActionError((err as Error).message) }
     finally { setBusy(false) }
   }
 
@@ -153,6 +160,10 @@ export default function ArchiveDashboard(props: Props) {
             <RefreshCw size={15} className={syncing ? 'spin' : ''} /> Sync now
           </button>
         </div>
+
+        {actionError && (
+          <div className="archive-card-error" style={{ margin: '0 0 12px' }} role="alert">{actionError}</div>
+        )}
 
         {status.projects.length === 0 ? (
           <div className="archive-empty">

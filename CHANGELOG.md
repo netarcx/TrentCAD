@@ -5,6 +5,40 @@ All notable changes to FrameCAD are recorded here. The format follows
 uses [SemVer](https://semver.org/) — though for a single-team app the
 versions are mostly chronology markers.
 
+## [1.1.1] — 2026-07-04
+
+Cross-cutting bug-fix pass over the whole product (desktop, team server,
+SolidWorks add-in, and the Lore backend) — 45 audited defects plus 7 issues
+caught in an adversarial verification pass. Highlights:
+
+### Fixed
+- **Sync/publish data-safety (Drive):** sync no longer overwrites an untracked
+  local file that collides with a newly-published one; the staging garbage
+  collector can no longer resurrect a promoted entry and trash the live file;
+  the parallel transfer pool now drains every worker before failing, so a
+  straggler can't corrupt an already-saved manifest; deleted files are only
+  dropped from the manifest once the Drive trash is confirmed; Google-native
+  files (Docs/Sheets) in a project folder no longer wedge sync; re-joining an
+  existing project no longer clobbers unpublished edits.
+- **Part numbering:** offline-created (provisional) numbers are re-attached
+  after a shared-file pull, so a second "+ Part" can't re-issue a number;
+  coordination now works on Lore projects; drawings' links follow a rename.
+- **Metadata:** deferred release-state/mass/cost edits are protected from being
+  clobbered by a concurrent sync, are project-scoped so they can't leak across a
+  project switch, and survive an offline close.
+- **Team server:** closed an unauthenticated argon2 CPU/memory DoS in token
+  auth (indexed lookup); deleting a member no longer erases their publish
+  history; migrations are now atomic; the update banner recognises `rc.N`
+  prereleases; `TRUST_PROXY` support for reverse-proxy deployments.
+- **SolidWorks add-in:** export no longer closes (and discards unsaved changes
+  in) a document the user already had open; add-in state re-derives on a
+  desktop project switch; safer COM teardown; mass pushes coalesce to the newest
+  value; failed part creates no longer silently orphan the reserved number.
+- **Renderer:** the details panel stops wiping unsaved metadata edits on every
+  file-tree refresh; create/sync/publish/enroll buttons no longer double-submit;
+  thumbnails can't leak across a project switch; sticky error banners clear on
+  recovery; the opt-in screensaver pauses when the window is hidden.
+
 ## [5.x] — Google Drive backend
 
 > The big architectural arc since 1.0. Exact per-version dates aren't

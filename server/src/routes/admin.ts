@@ -444,8 +444,9 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     if (id === req.member!.id) {
       return reply.code(400).send({ error: "Can't delete yourself" })
     }
-    // The foreign_keys pragma is off, so the boundMemberId REFERENCES clause
-    // won't cascade — clear this member's re-enroll PINs explicitly.
+    // foreign_keys IS on (db.ts), so pins.boundMemberId ON DELETE CASCADE would
+    // already clear this member's re-enroll PINs when the member row is deleted
+    // below. This explicit delete is harmless (belt-and-suspenders / clarity).
     getDb().prepare(`DELETE FROM pins WHERE boundMemberId = ?`).run(id)
     const result = getDb().prepare(`DELETE FROM members WHERE id = ?`).run(id)
     if (result.changes === 0) return reply.code(404).send({ error: 'Member not found' })
@@ -981,6 +982,16 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         db.prepare('DELETE FROM audit_events').run()
         db.prepare('DELETE FROM devices').run()
         db.prepare('DELETE FROM pins').run()
+        // locks + publish_log cascade off members, but part_numbers.memberId and
+        // issue_reports.memberId are ON DELETE SET NULL, so those rows would
+        // SURVIVE the member delete with stale projectKeys while sqlite_sequence
+        // is cleared (project ids restart at 1) — a re-registered folder could
+        // then hit resurrected part-number claims, and old reports linger. Delete
+        // them explicitly so "fresh install" is actually fresh.
+        db.prepare('DELETE FROM locks').run()
+        db.prepare('DELETE FROM publish_log').run()
+        db.prepare('DELETE FROM part_numbers').run()
+        db.prepare('DELETE FROM issue_reports').run()
         db.prepare('DELETE FROM members').run()
         db.prepare('DELETE FROM projects').run()
         // Reset the singleton team row to defaults rather than

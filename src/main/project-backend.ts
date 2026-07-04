@@ -17,6 +17,14 @@ import * as loreProject from './lore-project'
 import { pullMetadataFile, pushMetadataFile } from './drive'
 import * as loreOps from './lore'
 
+/** Options for a backend sync pass. */
+export interface SyncOpts {
+  /** Project-relative paths whose LOCAL copy is authoritative this pass (never
+   *  download/overwrite them) — e.g. `.framecad/parts-meta.json` when a deferred
+   *  meta push hasn't landed. Drive honors it; Lore merges tracked files itself. */
+  protectPaths?: Set<string>
+}
+
 export interface ProjectBackend {
   /** Which storage this backend drives. */
   readonly kind: 'drive' | 'lore'
@@ -29,7 +37,7 @@ export interface ProjectBackend {
   /** Returns null when `dir` isn't THIS backend's kind of project. */
   open(dir: string): Promise<ProjectConfig | null>
   status(): Promise<FileEntry[]>
-  sync(onProgress?: (p: PublishProgress) => void): Promise<{ success: boolean; filesUpdated: number; error?: string }>
+  sync(onProgress?: (p: PublishProgress) => void, opts?: SyncOpts): Promise<{ success: boolean; filesUpdated: number; error?: string }>
   publish(onProgress?: (p: PublishProgress) => void): Promise<{ success: boolean; error?: string; changedPaths?: string[] }>
   backup(): Promise<{ success: boolean; path?: string; error?: string; skipped?: string[] }>
   /** Drive-only background pre-upload optimization; a no-op elsewhere. */

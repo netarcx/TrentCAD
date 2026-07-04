@@ -12,6 +12,15 @@ import { useEffect, useState, type ReactNode } from 'react'
  */
 const rendererCache = new Map<string, string | null | Promise<string | null>>()
 
+// Bumped every time the cache is cleared (project close/switch). Thumbnail keys
+// are `<size>:<PROJECT-RELATIVE-path>`, and the same relative path exists in
+// different projects — so a fetch started in project A that resolves after a
+// switch to B would otherwise cache A's image under a key B also uses (B shows
+// A's thumbnail), and a queued fetch that runs while no project is open resolves
+// to null and poisons the key permanently. A fetch captures the generation it
+// began in and refuses to write the cache once that generation is stale.
+let cacheGeneration = 0
+
 // Cap concurrent getThumbnail IPC calls. Opening a 500+ file project mounts
 // that many FileThumbnail rows at once; firing every getThumbnail immediately
 // floods the IPC channel so status/sync/ping responses queue behind the
@@ -37,15 +46,22 @@ function fetchThumbnail(path: string, size: number): Promise<string | null> {
   }
   // Each unique key enters the queue exactly once; duplicate mounts await the
   // same promise via the cache check above.
+  const gen = cacheGeneration
   const promise = new Promise<string | null>(resolve => {
     const run = (): void => {
+      // Cache was cleared (project switched) before this got a slot — don't run
+      // it against the new project; resolve as "no thumbnail" without caching.
+      if (gen !== cacheGeneration) { resolve(null); return }
       thumbActive++
       window.api.getThumbnail(path, size)
-        .then(dataUrl => { rendererCache.set(key, dataUrl); return dataUrl })
-        .catch(() => { rendererCache.set(key, null); return null })
+        .then(dataUrl => dataUrl, () => null)
         .then(result => {
           thumbActive--
           pumpThumbQueue()
+          // Only write the cache if we're still in the SAME generation — a
+          // resolution landing after a clear belongs to the old project and
+          // would poison the fresh cache under a colliding relative-path key.
+          if (gen === cacheGeneration) rendererCache.set(key, result)
           resolve(result)
         })
     }
@@ -93,7 +109,11 @@ export default function FileThumbnail({ path, size, fallback, className, title }
   return <>{fallback}</>
 }
 
-/** Drop the renderer-side cache, e.g. when the project closes. */
+/** Drop the renderer-side cache, e.g. when the project closes. Also invalidates
+ *  the generation so any in-flight/queued fetch from the old project can't write
+ *  back into the fresh cache, and drains the pending queue. */
 export function clearRendererThumbnailCache(): void {
+  cacheGeneration++
   rendererCache.clear()
+  thumbQueue.length = 0
 }

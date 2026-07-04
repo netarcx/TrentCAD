@@ -61,6 +61,7 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
   }, [])
 
   async function submitEnroll(): Promise<void> {
+    if (busy) return // the Enter-key path doesn't check busy — don't double-enroll
     if (!parsed) return
     setBusy(true)
     setError(null)
@@ -87,6 +88,7 @@ export default function TeamEnroll({ onBack, onEnrolled, globalAdmin }: Props): 
   }
 
   async function submitSignIn(): Promise<void> {
+    if (busy) return // the Enter-key path doesn't check busy — don't double-submit
     setBusy(true)
     setError(null)
     setStep('submit')

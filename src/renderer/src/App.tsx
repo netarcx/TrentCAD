@@ -609,14 +609,33 @@ export default function App() {
   // main process BEFORE syncing or publishing. Without this, a metadata edit
   // made within the debounce window of clicking Sync/Publish never reaches
   // parts-meta.json in time and silently ships in a *later* publish.
+  // Synchronous re-entrancy guards: the button's `disabled={isLoading}` only
+  // flips true INSIDE sync()/publish(), but flushNow() (a bulkUpdateMeta
+  // round-trip, up to ~seconds) runs first with the button still enabled — so a
+  // double-click would launch two sync/publish passes. A ref flips before the
+  // first await, so the second click bails.
+  const syncingRef = useRef(false)
+  const publishingRef = useRef(false)
   const syncWithFlush = useCallback(async () => {
-    await parts.flushNow()
-    return sync()
+    if (syncingRef.current) return
+    syncingRef.current = true
+    try {
+      await parts.flushNow()
+      return await sync()
+    } finally {
+      syncingRef.current = false
+    }
   }, [parts.flushNow, sync])
 
   const publishWithFlush = useCallback(async (message: string) => {
-    await parts.flushNow()
-    return publish(message)
+    if (publishingRef.current) return
+    publishingRef.current = true
+    try {
+      await parts.flushNow()
+      return await publish(message)
+    } finally {
+      publishingRef.current = false
+    }
   }, [parts.flushNow, publish])
 
   const stats = useMemo(() => ({

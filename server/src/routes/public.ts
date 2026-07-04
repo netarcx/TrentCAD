@@ -17,7 +17,7 @@ import {
   type MemberStatus,
   type MemberCapabilities,
 } from '../db.js'
-import { consumePin, findPin, generateToken, hashToken, verifyPassword } from '../auth.js'
+import { consumePin, findPin, generateToken, hashToken, tokenLookup, verifyPassword } from '../auth.js'
 
 interface EnrollBody {
   pin?: string
@@ -342,9 +342,9 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
     const clientVersion =
       ((body.clientVersion ?? '').replace(/^v/i, '').slice(0, 32).trim()) || null
     const deviceResult = db.prepare(
-      `INSERT INTO devices (memberId, label, tokenHash, createdAt, lastSeenAt, kind, clientVersion)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).run(member.id, deviceLabel, tokenHash, now, now, deviceKind, clientVersion)
+      `INSERT INTO devices (memberId, label, tokenHash, tokenLookup, createdAt, lastSeenAt, kind, clientVersion)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(member.id, deviceLabel, tokenHash, tokenLookup(token), now, now, deviceKind, clientVersion)
 
     const team = db.prepare(`SELECT * FROM team WHERE id = 1`).get() as TeamRow
 
@@ -527,9 +527,9 @@ export async function registerPublicRoutes(app: FastifyInstance): Promise<void> 
       const clientVersion =
         ((req.body?.clientVersion ?? '').replace(/^v/i, '').slice(0, 32).trim()) || null
       const deviceResult = db.prepare(
-        `INSERT INTO devices (memberId, label, tokenHash, createdAt, lastSeenAt, kind, clientVersion)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).run(member.id, deviceLabel, tokenHash, now, now, deviceKind, clientVersion)
+        `INSERT INTO devices (memberId, label, tokenHash, tokenLookup, createdAt, lastSeenAt, kind, clientVersion)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(member.id, deviceLabel, tokenHash, tokenLookup(token), now, now, deviceKind, clientVersion)
 
       const teamRow = db.prepare(`SELECT * FROM team WHERE id = 1`).get() as TeamRow
 

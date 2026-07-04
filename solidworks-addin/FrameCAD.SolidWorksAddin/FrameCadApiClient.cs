@@ -264,11 +264,16 @@ namespace FrameCAD.SolidWorksAddin
             return JsonConvert.DeserializeObject<List<PendingCreate>>(json);
         }
 
-        public async Task MarkPendingDoneAsync(string id)
+        public async Task MarkPendingDoneAsync(string id, string error = null)
         {
+            // Mirror MarkExportDoneAsync: passing `error` lets the desktop keep
+            // the create QUEUED for a bounded number of retries instead of
+            // silently orphaning the reserved part number when the file couldn't
+            // be created (e.g. no default part template configured).
             // EnsureSuccessStatusCode so a 5xx surfaces instead of silently
             // looking like success — caller can retry / log.
-            var response = await PostJsonAsync("/api/pending-creates/done", new { id });
+            object payload = error == null ? (object)new { id } : new { id, error };
+            var response = await PostJsonAsync("/api/pending-creates/done", payload);
             response.EnsureSuccessStatusCode();
         }
 

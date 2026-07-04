@@ -455,15 +455,25 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
         ORDER BY createdAt DESC`
     ).all() as Array<Omit<ProjectRow, 'archived'>>
 
+    // Surface a Lore project's clone URL as `loreUrl`. A Lore project registers
+    // its lore:// URL in `repoUrl` (the same way a Drive project uses
+    // `drive:<folderId>`), so map it through — otherwise the desktop welcome
+    // list has no loreUrl to route on and always renders the project as
+    // "Unavailable" (the row-level Lore join flow is dead without this).
+    const projects = rows.map(p => ({
+      ...p,
+      loreUrl: typeof p.repoUrl === 'string' && p.repoUrl.startsWith('lore://') ? p.repoUrl : undefined,
+    }))
+
     if (member.role === 'student') {
       // The auto-open/kiosk target counts as allowed even when the admin
       // forgot to also tick it in the allowlist — setting it IS an explicit
       // "this member belongs in that project". Without this, a kiosk member
       // gets an empty project list and dead-ends on a fresh install.
       const allowed = new Set(member.allowedProjectIds)
-      return { projects: rows.filter(p => allowed.has(p.id) || p.id === member.autoOpenProjectId) }
+      return { projects: projects.filter(p => allowed.has(p.id) || p.id === member.autoOpenProjectId) }
     }
-    return { projects: rows }
+    return { projects }
   })
 
   // ── Drive-backend check-out / check-in locks ──
@@ -487,6 +497,14 @@ export async function registerClientRoutes(app: FastifyInstance): Promise<void> 
   // team uses project allowlists, the server is the authoritative write gate.
   function keyAllowed(member: { role: string; allowedProjectIds: number[]; autoOpenProjectId: number | null }, key: string): boolean {
     if (member.role !== 'student') return true
+    // Lore projects aren't registered in the Drive-folder-keyed `projects` table,
+    // so the registration + allowlist gate below can't apply to them. Without
+    // this, EVERY student lock / history / part-number call on a Lore project
+    // 403s — and the desktop misreads that 403 as "server unreachable" and then
+    // publishes with NO lock enforcement (exactly what locks exist to prevent).
+    // Treat a lore:// key like the free-text mentor path (allowed) until Lore
+    // projects get first-class server registration.
+    if (key.startsWith('lore://')) return true
     const proj = getDb().prepare(`SELECT id FROM projects WHERE driveFolderId = ?`).get(key) as { id: number } | undefined
     if (!proj) return false
     // Auto-open/kiosk target is implicitly allowed — must match the

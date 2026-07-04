@@ -38,6 +38,11 @@ async function main(): Promise<void> {
   const app = Fastify({
     logger: { level: config.logLevel },
     disableRequestLogging: false,
+    // When fronted by a trusted reverse proxy, derive req.ip from
+    // X-Forwarded-For so the per-IP enroll/login throttles bucket by the REAL
+    // client, not the proxy's single IP. Opt-in (see config.trustProxy) so a
+    // directly-exposed LAN server never trusts a spoofable header.
+    trustProxy: config.trustProxy,
   })
 
   await maybeBootstrapAdminPin(app.log)

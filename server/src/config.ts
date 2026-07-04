@@ -14,6 +14,10 @@ function num(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
+function bool(value: string | undefined): boolean {
+  return value === '1' || value?.toLowerCase() === 'true'
+}
+
 export const config = {
   /** TCP port to listen on. 42130 by convention (FrameCAD desktop uses
    *  42129; this is its sibling). */
@@ -38,6 +42,15 @@ export const config = {
    *  mentor sees it in chat without opening the admin UI. Blank = disabled;
    *  reports still land in the admin Reports page either way. */
   issueWebhookUrl: process.env.FRAMECAD_ISSUE_WEBHOOK_URL || '',
+
+  /** Trust `X-Forwarded-For` when fronted by a reverse proxy. OFF by default
+   *  so a direct-LAN deployment doesn't trust a spoofable header. Turn ON
+   *  (TRUST_PROXY=1) ONLY when the server sits behind a trusted proxy
+   *  (nginx/Caddy) — otherwise every request appears to come from the proxy's
+   *  single IP, collapsing the per-IP enroll + login brute-force throttles (20
+   *  fumbled PINs from anyone would lock out the whole team, and an attacker
+   *  who knows an admin username could trip the 5-fail lock on the real admin). */
+  trustProxy: bool(process.env.TRUST_PROXY),
 } as const
 
 export type AppConfig = typeof config

@@ -88,7 +88,14 @@ namespace FrameCAD.SolidWorksAddin
         public bool ConnectToSW(object ThisSW, int Cookie)
         {
             _swApp = (ISldWorks)ThisSW;
-            _swEvents = (SldWorks)ThisSW;
+            // `as`, not a hard cast: on an interop-assembly identity mismatch (a
+            // differently-versioned/embedded SolidWorks.Interop.sldworks on the
+            // machine) a hard cast throws InvalidCastException that escapes
+            // ConnectToSW across the COM boundary and aborts the whole add-in
+            // load. `as` yields null, the guard below skips just the doc-change
+            // subscription, and the add-in still loads (only ActiveDoc-change
+            // events degrade). The null-guard on the next line is now live.
+            _swEvents = ThisSW as SldWorks;
             _addinCookie = Cookie;
 
             if (_swEvents != null)
@@ -107,11 +114,18 @@ namespace FrameCAD.SolidWorksAddin
 
         public bool DisconnectFromSW()
         {
-            // Null-guard every step: SW can call disconnect after a connect that
-            // partially failed, or twice on some crash/reload paths. An NRE here
-            // escapes across the COM boundary and can destabilize the unload.
-            if (_swEvents != null)
-                _swEvents.ActiveDocChangeNotify -= OnActiveDocChange;
+            // Null-guard AND try-wrap every step: SW can call disconnect after a
+            // connect that partially failed, or twice on some crash/reload paths.
+            // An exception here (an NRE, or a COMException/InvalidComObjectException
+            // when the RCW is already disconnected) escapes across the COM boundary
+            // and destabilizes the unload — and would skip the entire teardown
+            // below, leaking the task pane + timers.
+            try
+            {
+                if (_swEvents != null)
+                    _swEvents.ActiveDocChangeNotify -= OnActiveDocChange;
+            }
+            catch { /* teardown — the RCW may already be dead */ }
             UnhookActiveDocNotify();
 
             try { _taskPaneControl?.StopHealthPolling(); } catch { /* teardown */ }
@@ -680,7 +694,17 @@ namespace FrameCAD.SolidWorksAddin
                         ref openWarnings) as ModelDoc2;
                     if (doc == null)
                         return "OpenDoc6 failed (errors=" + openErrors + " warnings=" + openWarnings + ")";
-                    openedByUs = true;
+                    // If SolidWorks reports the doc was ALREADY OPEN, our
+                    // GetOpenDocument lookup missed a document the user already
+                    // has open (e.g. opened under a different path spelling — a
+                    // mapped/subst drive or symlinked project folder — since our
+                    // path comes from the desktop's project root, not how the
+                    // user opened it). OpenDoc6 then returns that LIVE document,
+                    // not a fresh one, so we must NOT close it in the finally:
+                    // closing would discard the user's unsaved work with no prompt.
+                    bool alreadyOpen =
+                        (openWarnings & (int)swFileLoadWarning_e.swFileLoadWarning_AlreadyOpen) != 0;
+                    openedByUs = !alreadyOpen;
                 }
 
                 try

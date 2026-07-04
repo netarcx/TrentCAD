@@ -310,6 +310,11 @@ export default function ProjectSetup({ onJoinDriveProject, onJoinLoreProject, on
 
   const startScreensaver = useCallback(() => {
     if (screensaverActiveRef.current) return
+    // Never start the rAF loop while the window is hidden (minimized/occluded) —
+    // Chromium doesn't reliably throttle rAF for a hidden Electron window, so it
+    // would burn the GPU at 60fps with no viewer. This guards ALL start paths,
+    // including the 45s idle timer firing after the window was hidden.
+    if (document.hidden) return
     const wrap = logoBounceRef.current
     if (!wrap) return
     // Don't kick off during the welcome-intro spin — looks chaotic.
@@ -396,16 +401,27 @@ export default function ProjectSetup({ onJoinDriveProject, onJoinLoreProject, on
       stopScreensaver()
       resetIdle()
     }
-    const onBlur = (): void => startScreensaver()
+    // Only bounce while the window is actually VISIBLE — a blurred-but-visible
+    // window is the intended DVD-bounce case, but a hidden (minimized/occluded)
+    // one has no viewer. Chromium doesn't reliably throttle requestAnimationFrame
+    // for a hidden Electron window, so without this a kiosk parked on the welcome
+    // screen would burn the GPU at 60fps all night.
+    const onBlur = (): void => { if (!document.hidden) startScreensaver() }
     const onFocus = (): void => stopScreensaver()
+    const onVisibility = (): void => {
+      if (document.hidden) stopScreensaver()            // occluded → halt the rAF loop
+      else if (!document.hasFocus()) startScreensaver() // visible again + still unfocused → resume
+    }
     document.addEventListener('mousemove', onActivity, { passive: true })
     window.addEventListener('blur', onBlur)
     window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisibility)
     resetIdle()
     return () => {
       document.removeEventListener('mousemove', onActivity)
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisibility)
       if (idleTimerRef.current !== null) {
         window.clearTimeout(idleTimerRef.current)
         idleTimerRef.current = null

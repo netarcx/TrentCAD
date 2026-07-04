@@ -140,23 +140,53 @@ namespace FrameCAD.SolidWorksAddin
         /// Failures are silently ignored; the user can still set mass
         /// manually if the auto-push misses.
         /// </summary>
-        // Paths with a mass-push currently in flight — so a rapid Ctrl-S burst
-        // doesn't fan out overlapping POSTs for the same file.
+        // Coalescing state for background mass pushes. A rapid Ctrl-S burst
+        // shouldn't fan out overlapping POSTs for the same file — but it also
+        // must not DROP the newest value. `_massPending` holds the latest mass
+        // awaiting a push per path; `_massPushInFlight` marks which paths have a
+        // push loop running. Both are guarded by lock(_massPushInFlight).
         private readonly System.Collections.Generic.HashSet<string> _massPushInFlight =
             new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly System.Collections.Generic.Dictionary<string, double> _massPending =
+            new System.Collections.Generic.Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
 
         public async void NotifyPartMassFromSwAsync(string absolutePath, double massPounds)
         {
             if (string.IsNullOrEmpty(absolutePath) || massPounds <= 0) return;
-            // Coalesce: drop this push if one is already in flight for the file.
             lock (_massPushInFlight)
             {
-                if (!_massPushInFlight.Add(absolutePath)) return;
+                // Always record the LATEST value. If a push loop is already
+                // running for this path, it will pick this up on its next pass —
+                // so we don't drop a newer save (a geometry change) just because
+                // an older push is still in flight.
+                _massPending[absolutePath] = massPounds;
+                if (_massPushInFlight.Contains(absolutePath)) return;
+                _massPushInFlight.Add(absolutePath);
             }
-            try { await _api.SetPartMassAutoAsync(absolutePath, massPounds); }
-            catch { /* silent — SW save must not be blocked by network issues */ }
-            finally
+            try
             {
+                while (true)
+                {
+                    double value;
+                    lock (_massPushInFlight)
+                    {
+                        if (!_massPending.TryGetValue(absolutePath, out value))
+                        {
+                            // No newer value queued. Clear in-flight ATOMICALLY
+                            // here so a save arriving right now takes the "start a
+                            // new loop" path above instead of being stranded.
+                            _massPushInFlight.Remove(absolutePath);
+                            return;
+                        }
+                        _massPending.Remove(absolutePath);
+                    }
+                    try { await _api.SetPartMassAutoAsync(absolutePath, value); }
+                    catch { /* silent — SW save must not be blocked by network issues */ }
+                }
+            }
+            catch
+            {
+                // Defensive: never leave a path stuck marked in-flight.
                 lock (_massPushInFlight) { _massPushInFlight.Remove(absolutePath); }
             }
         }
@@ -967,12 +997,31 @@ namespace FrameCAD.SolidWorksAddin
                     // Re-apply (don't reset) — keeps the file-state buttons
                     // alive across 5-second health ticks
                     ApplyButtonStates();
+                    bool refreshedForDoc = false;
                     if (!string.IsNullOrEmpty(health.Project.Path) && _currentProjectPath != health.Project.Path)
                     {
+                        bool hadProject = !string.IsNullOrEmpty(_currentProjectPath);
                         _currentProjectPath = health.Project.Path;
                         OnProjectPathChanged?.Invoke(health.Project.Path);
+                        // The desktop switched projects between two 5s polls while
+                        // we stayed "connected" (wasConnected==true). Without
+                        // re-deriving here, the pane keeps showing the OLD
+                        // project's lock/checkout state for the active doc, and a
+                        // Check Out / Check In would send a path that can't be
+                        // translated against the new project root. Refresh the
+                        // active document against the new root. (Skip on the
+                        // initial connect — hadProject==false — since the
+                        // !wasConnected branch below handles that.)
+                        if (hadProject && !string.IsNullOrEmpty(_currentFilePath))
+                        {
+                            UpdateForDocument(_currentFilePath);
+                            refreshedForDoc = true;
+                        }
                     }
-                    if (!wasConnected && !string.IsNullOrEmpty(_currentFilePath))
+                    // Guard against double-refresh: on a reconnect to a DIFFERENT
+                    // project (wasConnected==false AND the path changed), the
+                    // branch above already refreshed, so don't do it twice.
+                    if (!refreshedForDoc && !wasConnected && !string.IsNullOrEmpty(_currentFilePath))
                         UpdateForDocument(_currentFilePath);
                 }
                 else if (isConnected)
@@ -1020,8 +1069,13 @@ namespace FrameCAD.SolidWorksAddin
                     // the continuation preserves the SynchronizationContext), so it's safe to
                     // call into the SolidWorks COM API directly here.
                     var error = OnCreateSolidWorksFile?.Invoke(p.AbsolutePath, isAssembly);
-                    // Always mark done so a broken pending entry doesn't loop forever
-                    try { await _api.MarkPendingDoneAsync(p.Id); } catch { }
+                    // Report the OUTCOME (not an unconditional "done"). On success
+                    // the desktop drops the pending create; on failure it keeps it
+                    // queued for a bounded number of retries, then gives up + logs
+                    // — instead of the old behavior that silently orphaned the
+                    // reserved part number on the very first (possibly persistent)
+                    // failure. Mirrors ProcessPendingExports.
+                    try { await _api.MarkPendingDoneAsync(p.Id, error); } catch { }
                     if (error == null)
                     {
                         if (OnStageFile != null && !string.IsNullOrEmpty(p.RelativePath))

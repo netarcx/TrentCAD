@@ -4,6 +4,7 @@ import type { BrowserWindow } from 'electron'
 import type { FileEntry, ProjectConfig, PartMeta } from '@shared/types'
 import * as partsOps from './parts'
 import { getActiveBackend } from './project-backend'
+import { setPublishing } from './publish-state'
 import * as teamServer from './teamServer'
 import { toGitRel, toProjectRel, getEffectiveProjectRoot, getProjectSubpath } from './paths'
 import {
@@ -63,6 +64,10 @@ interface PendingCreate {
   relativePath: string
   absolutePath: string
   partNumber?: string
+  /** Failed create attempts reported by the add-in. Bounded so a persistent
+   *  failure (e.g. no default part template) doesn't loop forever, but a single
+   *  transient failure no longer silently marks the create done. */
+  attempts?: number
 }
 
 const pendingCreates: PendingCreate[] = []
@@ -386,10 +391,13 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
       case 'POST /api/sync': {
         // Flush deferred meta first (mirror the IPC sync) so a pull can't
-        // clobber an unpushed local release-state/comment edit.
+        // clobber an unpushed local release-state/comment edit. If the push
+        // didn't land, protect the meta file from being overwritten this sync.
         const driveResult = await serialWrite(async () => {
-          await (await import('./meta')).flushMetaCommit()
-          return getActiveBackend().sync()
+          const meta = await import('./meta')
+          const flushed = await meta.flushMetaCommit()
+          const opts = flushed ? undefined : { protectPaths: new Set([meta.metaRelPath()]) }
+          return getActiveBackend().sync(undefined, opts)
         })
         json(res, driveResult.success ? 200 : 500, driveResult)
         return
@@ -401,10 +409,14 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         // entry just gets a blank label). Flush any deferred meta commit first
         // (mirrors the IPC publish handler) so a just-made release-state/mass/
         // cost edit ships with this publish instead of on the 60s timer.
+        // Mark publish in-flight so the main-window close guard (index.ts)
+        // protects an add-in-triggered publish exactly like a desktop one —
+        // otherwise the user could close FrameCAD mid-upload with no warning.
+        setPublishing(true)
         const driveResult = await serialWrite(async () => {
           await (await import('./meta')).flushMetaCommit()
           return getActiveBackend().publish()
-        })
+        }).finally(() => setPublishing(false))
         if (driveResult.success && (driveResult.changedPaths?.length ?? 0) > 0) {
           teamServer.recordDrivePublish(projectKey(), (body?.message ?? '').trim(), driveResult.changedPaths ?? [])
             .catch(() => { /* best effort */ })
@@ -659,13 +671,32 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       }
 
       case 'POST /api/pending-creates/done': {
-        const body = parseJson(await readBody(req)) as { id?: string } | null
+        const body = parseJson(await readBody(req)) as { id?: string; error?: string } | null
         if (!body?.id) {
           json(res, 400, { error: 'Missing id' })
           return
         }
         const idx = pendingCreates.findIndex(p => p.id === body.id)
-        if (idx >= 0) pendingCreates.splice(idx, 1)
+        if (idx < 0) { json(res, 200, { success: true }); return } // already gone — idempotent
+        if (body.error) {
+          // The add-in couldn't create the file (e.g. no default part template
+          // configured). The desktop already reserved the part number + manifest
+          // entry, so acking "done" unconditionally (as this used to) orphans
+          // that reservation forever with no trace. Keep the task queued for a
+          // bounded number of retries, then give up loudly rather than looping.
+          const item = pendingCreates[idx]
+          item.attempts = (item.attempts ?? 0) + 1
+          const MAX_CREATE_ATTEMPTS = 3
+          if (item.attempts >= MAX_CREATE_ATTEMPTS) {
+            pendingCreates.splice(idx, 1)
+            console.warn(`[rest] gave up creating ${item.relativePath} (${item.partNumber ?? 'no number'}) after ${item.attempts} attempts: ${body.error}. The reserved number stays in parts.json — clean it up in the Parts view if unused.`)
+          } else {
+            console.warn(`[rest] create failed for ${item.relativePath} (attempt ${item.attempts}/${MAX_CREATE_ATTEMPTS}): ${body.error}`)
+          }
+          json(res, 200, { success: true, retry: item.attempts < MAX_CREATE_ATTEMPTS })
+          return
+        }
+        pendingCreates.splice(idx, 1)
         json(res, 200, { success: true })
         return
       }
@@ -723,10 +754,14 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           return
         }
         // parentFolder is subpath-relative from the add-in's perspective;
-        // partsOps wants git-relative. Translate in, translate the
-        // returned folderPath back out.
+        // partsOps wants git-relative. Sanitize it (mirroring new-part) so a
+        // traversal request can't escape the project root, then translate in and
+        // translate the returned folderPath back out.
+        const rawParentSub = body.parentFolder ?? ''
+        const parentFolderSub = rawParentSub === '' ? '' : sanitizeProjectRelPath(rawParentSub)
+        if (parentFolderSub === null) { json(res, 400, { error: 'Invalid parent folder path' }); return }
         const result = await serialWrite(() =>
-          partsOps.createSubsystem(toGitRel(body.parentFolder ?? ''), body.name!)
+          partsOps.createSubsystem(toGitRel(parentFolderSub), body.name!)
         )
         const displayFolder = toProjectRel(result.folderPath) ?? result.folderPath
         json(res, 200, { success: true, ...result, folderPath: displayFolder })
@@ -744,8 +779,14 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           json(res, 400, { error: 'Missing name for assembly' })
           return
         }
+        // Sanitize parentFolder at the boundary (mirroring new-part) so a
+        // traversal request can't reach the parts engine — where it would burn a
+        // server-claimed part number before the late escape guard rejects it.
+        const rawParentAsm = body.parentFolder ?? ''
+        const parentFolderAsm = rawParentAsm === '' ? '' : sanitizeProjectRelPath(rawParentAsm)
+        if (parentFolderAsm === null) { json(res, 400, { error: 'Invalid parent folder path' }); return }
         const result = await serialWrite(() =>
-          partsOps.createNewAssembly(toGitRel(body.parentFolder ?? ''), body.name!, body.description)
+          partsOps.createNewAssembly(toGitRel(parentFolderAsm), body.name!, body.description)
         )
         const displayPath = toProjectRel(result.filePath) ?? result.filePath
         json(res, 200, { success: true, ...result, filePath: displayPath })

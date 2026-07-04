@@ -35,22 +35,32 @@ export function parseEnrollLink(
   const trimmed = input.trim()
   if (!trimmed) return null
 
-  // 1) Try as a full URL first. `new URL()` will throw on plain
-  //    text or things like `ABCDEF` — that's the signal to fall
-  //    through to the bare-PIN branch below.
-  try {
-    const url = new URL(trimmed)
-    const m = url.pathname.match(PIN_IN_PATH_REGEX)
-    if (m) {
-      return {
-        serverUrl: `${url.protocol}//${url.host}`,
-        pin: m[1].toUpperCase(),
+  // 1) Try as a full URL. `new URL()` throws on plain text / bare PINs — the
+  //    signal to fall through to the bare-PIN branch. A scheme-less paste like
+  //    `host:42130/enroll/ABC234` does NOT throw: new URL() parses it as
+  //    protocol `host:` with an EMPTY host, and matching the PIN-in-path regex
+  //    would then hand back a broken `host://` serverUrl shown as valid until
+  //    enrollment fails. Guard on a real http(s) protocol + non-empty host, and
+  //    retry a scheme-less candidate with an `http://` prefix so the common
+  //    "copied the link without http://" case still resolves.
+  const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
+  const candidates = hasScheme ? [trimmed] : [trimmed, `http://${trimmed}`]
+  for (const candidate of candidates) {
+    try {
+      const url = new URL(candidate)
+      if ((url.protocol === 'http:' || url.protocol === 'https:') && url.host) {
+        const m = url.pathname.match(PIN_IN_PATH_REGEX)
+        if (m) {
+          return {
+            serverUrl: `${url.protocol}//${url.host}`,
+            pin: m[1].toUpperCase(),
+          }
+        }
       }
-    }
-    // Looked like a URL but didn't have the `/enroll/<PIN>` shape.
-    // Fall through — could still be a PIN that happens to be a
-    // valid URL string (unlikely, but cheap to handle).
-  } catch { /* not a URL — try bare-PIN branch */ }
+      // Looked like a URL but didn't have the `/enroll/<PIN>` shape (or wasn't
+      // http/https) — fall through to the bare-PIN branch.
+    } catch { /* not a URL — try the next candidate / bare-PIN branch */ }
+  }
 
   // 2) Bare PIN. Only succeeds when we have a default server URL
   //    baked in. Otherwise the caller surfaces a hint asking for

@@ -175,7 +175,7 @@ jobs:
           path: |
             dist/*.exe
             !dist/*-uninstaller-*.exe
-          retention-days: 90
+          retention-days: 7
 
       - name: Upload macOS installer artifact
         if: matrix.platform == 'mac'
@@ -183,7 +183,7 @@ jobs:
         with:
           name: FrameCAD-Installer-macOS
           path: dist/*.dmg
-          retention-days: 90
+          retention-days: 7
 
       - name: Upload Linux installer artifact
         if: matrix.platform == 'linux'
@@ -193,7 +193,7 @@ jobs:
           path: |
             dist/*.AppImage
             dist/*.deb
-          retention-days: 90
+          retention-days: 7
 
       - name: Upload add-in artifact
         if: matrix.platform == 'win'
@@ -201,7 +201,7 @@ jobs:
         with:
           name: FrameCAD-SolidWorksAddin
           path: build/solidworks-addin/
-          retention-days: 90
+          retention-days: 7
 
   # Team server image — pushed to GitHub Container Registry when the
   # package.json version bumps, tagged with that version + `latest`.
